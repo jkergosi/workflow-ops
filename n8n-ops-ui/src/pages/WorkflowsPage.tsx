@@ -116,7 +116,10 @@ export function WorkflowsPage() {
       toast.success('Workflow updated successfully');
 
       // Force refresh from N8N to get updated tags
+      // The backend should have already updated the cache, but we force refresh to be sure
       await api.getWorkflows(selectedEnvironment, true);
+
+      // Invalidate and refetch the query to update the UI
       queryClient.invalidateQueries({ queryKey: ['workflows', selectedEnvironment] });
 
       setEditDialogOpen(false);
