@@ -17,10 +17,10 @@ function Show-Menu {
     Write-Host "  =======================" -ForegroundColor Cyan
     Write-Host ""
     Write-Host "  START (create/open Claude Code)" -ForegroundColor Green
-    Write-Host "    1  Start f1"
-    Write-Host "    2  Start f2"
-    Write-Host "    3  Start f3"
-    Write-Host "    4  Start f4"
+    Write-Host "    1  Start f1  (localhost:3001 / 4001)"
+    Write-Host "    2  Start f2  (localhost:3002 / 4002)"
+    Write-Host "    3  Start f3  (localhost:3003 / 4003)"
+    Write-Host "    4  Start f4  (localhost:3004 / 4004)"
     Write-Host ""
     Write-Host "  FINISH (commit, merge, cleanup)" -ForegroundColor Yellow
     Write-Host "    5  Finish f1"
@@ -29,8 +29,8 @@ function Show-Menu {
     Write-Host "    8  Finish f4"
     Write-Host ""
     Write-Host "  OTHER" -ForegroundColor Magenta
-    Write-Host "    9  List worktrees"
-    Write-Host "    M  Open main"
+    Write-Host "    L  List worktrees"
+    Write-Host "    M  Open main (localhost:3000 / 4000)"
     Write-Host "    Q  Quit"
     Write-Host ""
 }
@@ -42,11 +42,25 @@ function Start-Feature {
     $FrontendPort = $PortMap[$FeatureName].Frontend
     $BackendPort = $PortMap[$FeatureName].Backend
 
+    # Build the startup message that will show in the new window
+    $StartupMessage = @"
+Write-Host ''
+Write-Host '  =======================================' -ForegroundColor Cyan
+Write-Host '  $FeatureName - n8n-ops' -ForegroundColor Cyan
+Write-Host '  =======================================' -ForegroundColor Cyan
+Write-Host ''
+Write-Host '  Frontend: http://localhost:$FrontendPort' -ForegroundColor Green
+Write-Host '  Backend:  http://localhost:$BackendPort' -ForegroundColor Green
+Write-Host ''
+Write-Host '  .env.local has these ports configured' -ForegroundColor Gray
+Write-Host ''
+claude --dangerously-skip-permissions
+"@
+
     # Check if worktree already exists
     if (Test-Path $FeaturePath) {
         Write-Host "Worktree '$FeatureName' exists. Opening Claude Code..." -ForegroundColor Cyan
-        Write-Host "Ports: Frontend=$FrontendPort, Backend=$BackendPort" -ForegroundColor Gray
-        Start-Process powershell -ArgumentList "-NoExit", "-Command", "cd '$FeaturePath'; claude --dangerously-skip-permissions"
+        Start-Process powershell -ArgumentList "-NoExit", "-Command", "cd '$FeaturePath'; $StartupMessage"
         return
     }
 
@@ -71,11 +85,9 @@ VITE_PORT=$FrontendPort
         
         Write-Host "Created worktree '$FeatureName'" -ForegroundColor Green
         Write-Host "Location: $FeaturePath" -ForegroundColor Cyan
-        Write-Host "Ports: Frontend=$FrontendPort, Backend=$BackendPort" -ForegroundColor Cyan
-        Write-Host ".env.local created" -ForegroundColor Gray
         Write-Host "Opening Claude Code..." -ForegroundColor Cyan
         
-        Start-Process powershell -ArgumentList "-NoExit", "-Command", "cd '$FeaturePath'; claude --dangerously-skip-permissions"
+        Start-Process powershell -ArgumentList "-NoExit", "-Command", "cd '$FeaturePath'; $StartupMessage"
     } else {
         Write-Host "Failed to create worktree" -ForegroundColor Red
     }
@@ -173,7 +185,7 @@ do {
         "6" { Finish-Feature "f2"; pause }
         "7" { Finish-Feature "f3"; pause }
         "8" { Finish-Feature "f4"; pause }
-        "9" { List-Worktrees; pause }
+        "L" { List-Worktrees; pause }
         "M" { Start-Feature "main"; pause }
         "Q" { exit }
         default { Write-Host "Invalid choice" -ForegroundColor Red; Start-Sleep -Seconds 1 }
