@@ -1,75 +1,139 @@
 import { useQuery } from '@tanstack/react-query';
+import { Link } from 'react-router-dom';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
-import { mockApi } from '@/lib/mock-api';
-import { Activity, Workflow, Database, Server } from 'lucide-react';
+import { Button } from '@/components/ui/button';
+import { apiClient } from '@/lib/api-client';
+import { useAuth } from '@/lib/auth';
+import { Activity, Workflow, Server, Plus, Rocket } from 'lucide-react';
 
 export function DashboardPage() {
-  const { data: tenant } = useQuery({
-    queryKey: ['tenant'],
-    queryFn: () => mockApi.getTenant(),
-  });
+  const { user, hasEnvironment } = useAuth();
 
-  const { data: environments } = useQuery({
+  const { data: environments, isLoading: loadingEnvs } = useQuery({
     queryKey: ['environments'],
-    queryFn: () => mockApi.getEnvironments(),
+    queryFn: () => apiClient.getEnvironments(),
   });
 
-  const { data: metrics } = useQuery({
-    queryKey: ['metrics'],
-    queryFn: () => mockApi.getWorkflowMetrics(),
+  const { data: executions } = useQuery({
+    queryKey: ['executions'],
+    queryFn: () => apiClient.getExecutions(),
+    enabled: hasEnvironment,
   });
+
+  const envCount = environments?.data?.filter((e) => e.isActive).length || 0;
+  const totalWorkflows = environments?.data?.reduce((sum, e) => sum + (e.workflowCount || 0), 0) || 0;
+  const totalExecutions = executions?.data?.length || 0;
 
   const stats = [
     {
-      title: 'Active Workflows',
-      value: metrics?.data?.reduce((sum, m) => sum + (m.totalExecutions > 0 ? 1 : 0), 0) || 0,
+      title: 'Total Workflows',
+      value: totalWorkflows,
       icon: Workflow,
       description: 'Across all environments',
     },
     {
-      title: 'Total Executions',
-      value: metrics?.data?.reduce((sum, m) => sum + m.totalExecutions, 0) || 0,
+      title: 'Recent Executions',
+      value: totalExecutions,
       icon: Activity,
-      description: 'Last 30 days',
+      description: 'In the last sync',
     },
     {
       title: 'Environments',
-      value: environments?.data?.filter((e) => e.isActive).length || 0,
+      value: envCount,
       icon: Server,
       description: 'Connected and active',
     },
-    {
-      title: 'Success Rate',
-      value: metrics?.data
-        ? `${(
-            (metrics.data.reduce((sum, m) => sum + m.successfulExecutions, 0) /
-              metrics.data.reduce((sum, m) => sum + m.totalExecutions, 0)) *
-            100
-          ).toFixed(1)}%`
-        : '0%',
-      icon: Database,
-      description: 'Overall performance',
-    },
   ];
+
+  // Show empty state if no environments
+  if (!loadingEnvs && (!environments?.data || environments.data.length === 0)) {
+    return (
+      <div className="space-y-6">
+        <div>
+          <h1 className="text-3xl font-bold">Dashboard</h1>
+          <p className="text-muted-foreground">
+            Welcome back, {user?.name || 'User'}
+          </p>
+        </div>
+
+        <Card className="border-dashed">
+          <CardContent className="flex flex-col items-center justify-center py-16">
+            <div className="h-16 w-16 rounded-full bg-primary/10 flex items-center justify-center mb-6">
+              <Rocket className="h-8 w-8 text-primary" />
+            </div>
+            <h2 className="text-2xl font-semibold mb-2">Get Started with N8N Ops</h2>
+            <p className="text-muted-foreground text-center max-w-md mb-6">
+              Connect your first N8N environment to start managing and monitoring your workflows.
+            </p>
+            <Link to="/environments/new?first=true">
+              <Button size="lg">
+                <Plus className="h-5 w-5 mr-2" />
+                Create Your First Environment
+              </Button>
+            </Link>
+          </CardContent>
+        </Card>
+
+        <div className="grid gap-4 md:grid-cols-3">
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-lg">1. Connect N8N</CardTitle>
+            </CardHeader>
+            <CardContent>
+              <p className="text-sm text-muted-foreground">
+                Add your N8N instance URL and API key to connect your workflows.
+              </p>
+            </CardContent>
+          </Card>
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-lg">2. Sync Workflows</CardTitle>
+            </CardHeader>
+            <CardContent>
+              <p className="text-sm text-muted-foreground">
+                Your workflows will be automatically synced and available for management.
+              </p>
+            </CardContent>
+          </Card>
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-lg">3. Monitor & Manage</CardTitle>
+            </CardHeader>
+            <CardContent>
+              <p className="text-sm text-muted-foreground">
+                Track executions, manage versions, and deploy across environments.
+              </p>
+            </CardContent>
+          </Card>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-6">
-      <div>
-        <h1 className="text-3xl font-bold">Dashboard</h1>
-        <p className="text-muted-foreground">
-          Welcome back, {tenant?.data?.name || 'User'}
-        </p>
+      <div className="flex items-center justify-between">
+        <div>
+          <h1 className="text-3xl font-bold">Dashboard</h1>
+          <p className="text-muted-foreground">
+            Welcome back, {user?.name || 'User'}
+          </p>
+        </div>
+        <Link to="/environments/new">
+          <Button>
+            <Plus className="h-4 w-4 mr-2" />
+            Add Environment
+          </Button>
+        </Link>
       </div>
 
       <div className="flex items-center gap-2">
-        <Badge variant="outline">Subscription: {tenant?.data?.subscriptionTier}</Badge>
-        <Badge variant={tenant?.data?.subscriptionTier === 'free' ? 'warning' : 'success'}>
-          {tenant?.data?.subscriptionTier === 'free' ? 'Upgrade Available' : 'Active'}
-        </Badge>
+        <Badge variant="outline">Plan: {user?.subscriptionPlan || 'Free'}</Badge>
+        <Badge variant="outline">{user?.tenantName}</Badge>
       </div>
 
-      <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
+      <div className="grid gap-4 md:grid-cols-3">
         {stats.map((stat) => {
           const Icon = stat.icon;
           return (
@@ -90,35 +154,8 @@ export function DashboardPage() {
       <div className="grid gap-4 md:grid-cols-2">
         <Card>
           <CardHeader>
-            <CardTitle>Recent Activity</CardTitle>
-            <CardDescription>Latest workflow executions</CardDescription>
-          </CardHeader>
-          <CardContent>
-            <div className="space-y-2">
-              {metrics?.data?.slice(0, 5).map((metric) => (
-                <div
-                  key={metric.workflowId}
-                  className="flex items-center justify-between p-2 rounded-md border"
-                >
-                  <div>
-                    <p className="font-medium">{metric.workflowName}</p>
-                    <p className="text-sm text-muted-foreground">
-                      {metric.totalExecutions} executions
-                    </p>
-                  </div>
-                  <Badge variant={metric.errorRate < 5 ? 'success' : 'destructive'}>
-                    {metric.errorRate.toFixed(1)}% errors
-                  </Badge>
-                </div>
-              ))}
-            </div>
-          </CardContent>
-        </Card>
-
-        <Card>
-          <CardHeader>
             <CardTitle>Environment Status</CardTitle>
-            <CardDescription>Connected n8n instances</CardDescription>
+            <CardDescription>Connected N8N instances</CardDescription>
           </CardHeader>
           <CardContent>
             <div className="space-y-2">
@@ -129,13 +166,49 @@ export function DashboardPage() {
                 >
                   <div>
                     <p className="font-medium">{env.name}</p>
-                    <p className="text-sm text-muted-foreground">{env.type}</p>
+                    <p className="text-sm text-muted-foreground">
+                      {env.type} - {env.workflowCount || 0} workflows
+                    </p>
                   </div>
                   <Badge variant={env.isActive ? 'success' : 'outline'}>
                     {env.isActive ? 'Active' : 'Inactive'}
                   </Badge>
                 </div>
               ))}
+              {(!environments?.data || environments.data.length === 0) && (
+                <p className="text-sm text-muted-foreground py-4 text-center">
+                  No environments connected yet
+                </p>
+              )}
+            </div>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader>
+            <CardTitle>Quick Actions</CardTitle>
+            <CardDescription>Common tasks</CardDescription>
+          </CardHeader>
+          <CardContent>
+            <div className="grid gap-2">
+              <Link to="/workflows">
+                <Button variant="outline" className="w-full justify-start">
+                  <Workflow className="h-4 w-4 mr-2" />
+                  View Workflows
+                </Button>
+              </Link>
+              <Link to="/executions">
+                <Button variant="outline" className="w-full justify-start">
+                  <Activity className="h-4 w-4 mr-2" />
+                  View Executions
+                </Button>
+              </Link>
+              <Link to="/environments">
+                <Button variant="outline" className="w-full justify-start">
+                  <Server className="h-4 w-4 mr-2" />
+                  Manage Environments
+                </Button>
+              </Link>
             </div>
           </CardContent>
         </Card>

@@ -1,4 +1,4 @@
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, HTTPException, status, Depends
 from typing import List
 from datetime import datetime
 
@@ -12,6 +12,8 @@ from app.schemas.environment import (
 from app.services.database import db_service
 from app.services.n8n_client import N8NClient
 from app.services.github_service import GitHubService
+from app.services.feature_service import feature_service
+from app.core.feature_gate import require_environment_limit
 
 router = APIRouter()
 
@@ -35,6 +37,24 @@ async def get_environments():
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to fetch environments: {str(e)}"
+        )
+
+
+@router.get("/limits")
+async def get_environment_limits():
+    """Get environment limits and current usage for the tenant"""
+    try:
+        can_add, message, current, max_allowed = await feature_service.can_add_environment(MOCK_TENANT_ID)
+        return {
+            "can_add": can_add,
+            "message": message,
+            "current": current,
+            "max": max_allowed if max_allowed != float('inf') else "unlimited"
+        }
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to fetch environment limits: {str(e)}"
         )
 
 
@@ -155,7 +175,10 @@ async def get_environment(environment_id: str):
 
 
 @router.post("/", response_model=EnvironmentResponse, status_code=status.HTTP_201_CREATED, response_model_exclude_none=False)
-async def create_environment(environment: EnvironmentCreate):
+async def create_environment(
+    environment: EnvironmentCreate,
+    _: dict = Depends(require_environment_limit())
+):
     """Create a new environment"""
     try:
         # Check if environment type already exists for this tenant

@@ -1,9 +1,11 @@
 import { Link, Outlet, useLocation, useNavigate } from 'react-router-dom';
 import { useAuth } from '@/lib/auth';
 import { useAppStore } from '@/store/use-app-store';
+import { useFeatures, type PlanFeatures } from '@/lib/features';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { ThemeToggle } from '@/components/ThemeToggle';
+import { PlanBadge } from '@/components/FeatureGate';
 import {
   LayoutDashboard,
   Server,
@@ -19,21 +21,60 @@ import {
   LogOut,
   Menu,
   X,
+  Building2,
+  Shield,
+  BarChart3,
+  Settings,
+  FileText,
+  Bell,
+  Sparkles,
+  Crown,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
-const navigation = [
-  { name: 'Dashboard', href: '/', icon: LayoutDashboard },
-  { name: 'Environments', href: '/environments', icon: Server },
-  { name: 'Workflows', href: '/workflows', icon: Workflow },
-  { name: 'Executions', href: '/executions', icon: ListChecks },
-  { name: 'Tags', href: '/tags', icon: Tag },
-  { name: 'Snapshots', href: '/snapshots', icon: Camera },
-  { name: 'Deployments', href: '/deployments', icon: Rocket },
-  { name: 'Observability', href: '/observability', icon: Activity },
-  { name: 'N8N Users', href: '/n8n-users', icon: UserCog },
-  { name: 'Team', href: '/team', icon: Users },
-  { name: 'Billing', href: '/billing', icon: CreditCard },
+interface NavItem {
+  name: string;
+  href: string;
+  icon: React.ComponentType<{ className?: string }>;
+  requiredPlan?: 'pro' | 'enterprise';
+  feature?: keyof PlanFeatures;
+  comingSoon?: boolean;
+}
+
+interface NavSection {
+  title: string;
+  items: NavItem[];
+}
+
+const navigationSections: NavSection[] = [
+  {
+    title: 'N8N Ops',
+    items: [
+      { name: 'Dashboard', href: '/', icon: LayoutDashboard },
+      { name: 'Environments', href: '/environments', icon: Server },
+      { name: 'Workflows', href: '/workflows', icon: Workflow },
+      { name: 'Executions', href: '/executions', icon: ListChecks },
+      { name: 'Tags', href: '/tags', icon: Tag },
+      { name: 'Snapshots', href: '/snapshots', icon: Camera },
+      { name: 'Deployments', href: '/deployments', icon: Rocket, requiredPlan: 'pro', feature: 'environment_promotion' },
+      { name: 'Observability', href: '/observability', icon: Activity, requiredPlan: 'pro', feature: 'execution_metrics' },
+      { name: 'N8N Users', href: '/n8n-users', icon: UserCog },
+      { name: 'Team', href: '/team', icon: Users, requiredPlan: 'pro', feature: 'role_based_access' },
+      { name: 'Billing', href: '/billing', icon: CreditCard },
+    ],
+  },
+  {
+    title: 'Admin',
+    items: [
+      { name: 'Tenants', href: '/admin/tenants', icon: Building2, requiredPlan: 'enterprise' },
+      { name: 'System Billing', href: '/admin/billing', icon: CreditCard, requiredPlan: 'enterprise' },
+      { name: 'Performance', href: '/admin/performance', icon: BarChart3, requiredPlan: 'enterprise' },
+      { name: 'Audit Logs', href: '/admin/audit-logs', icon: FileText, requiredPlan: 'pro', feature: 'audit_logs' },
+      { name: 'Notifications', href: '/admin/notifications', icon: Bell, requiredPlan: 'pro', feature: 'alerting' },
+      { name: 'Security', href: '/admin/security', icon: Shield, requiredPlan: 'enterprise', feature: 'sso_scim' },
+      { name: 'Settings', href: '/admin/settings', icon: Settings },
+    ],
+  },
 ];
 
 export function AppLayout() {
@@ -41,6 +82,13 @@ export function AppLayout() {
   const navigate = useNavigate();
   const { user, logout } = useAuth();
   const { sidebarOpen, toggleSidebar } = useAppStore();
+  const { canUseFeature, planName } = useFeatures();
+
+  // Check if a nav item is accessible based on plan
+  const isFeatureAvailable = (item: NavItem): boolean => {
+    if (!item.feature) return true;
+    return canUseFeature(item.feature);
+  };
 
   const handleLogout = () => {
     logout();
@@ -76,26 +124,46 @@ export function AppLayout() {
           </div>
 
           {/* Navigation */}
-          <nav className="flex-1 px-4 py-6 space-y-1 overflow-y-auto">
-            {navigation.map((item) => {
-              const Icon = item.icon;
-              const isActive = location.pathname === item.href;
-              return (
-                <Link
-                  key={item.name}
-                  to={item.href}
-                  className={cn(
-                    'flex items-center gap-3 px-3 py-2 text-sm font-medium rounded-lg transition-colors',
-                    isActive
-                      ? 'bg-primary text-primary-foreground'
-                      : 'text-foreground/80 hover:bg-accent hover:text-accent-foreground'
-                  )}
-                >
-                  <Icon className="h-5 w-5" />
-                  {item.name}
-                </Link>
-              );
-            })}
+          <nav className="flex-1 px-4 py-4 overflow-y-auto">
+            {navigationSections.map((section, sectionIndex) => (
+              <div key={section.title} className={cn(sectionIndex > 0 && 'mt-6')}>
+                <h3 className="px-3 mb-2 text-xs font-semibold text-muted-foreground uppercase tracking-wider">
+                  {section.title}
+                </h3>
+                <div className="space-y-1">
+                  {section.items.map((item) => {
+                    const Icon = item.icon;
+                    const isActive = location.pathname === item.href;
+                    const isAvailable = isFeatureAvailable(item);
+                    return (
+                      <Link
+                        key={item.href}
+                        to={item.href}
+                        className={cn(
+                          'flex items-center gap-3 px-3 py-2 text-sm font-medium rounded-lg transition-colors',
+                          isActive
+                            ? 'bg-primary text-primary-foreground'
+                            : 'text-foreground/80 hover:bg-accent hover:text-accent-foreground',
+                          !isAvailable && 'opacity-60'
+                        )}
+                      >
+                        <Icon className="h-5 w-5" />
+                        <span className="flex-1">{item.name}</span>
+                        {!isAvailable && item.requiredPlan && (
+                          <span className="flex items-center">
+                            {item.requiredPlan === 'enterprise' ? (
+                              <Crown className="h-3 w-3 text-amber-500" />
+                            ) : (
+                              <Sparkles className="h-3 w-3 text-blue-500" />
+                            )}
+                          </span>
+                        )}
+                      </Link>
+                    );
+                  })}
+                </div>
+              </div>
+            ))}
           </nav>
 
           {/* User Info & Logout */}
@@ -107,9 +175,7 @@ export function AppLayout() {
               </div>
             </div>
             <div className="flex items-center gap-2 mb-3">
-              <Badge variant="outline" className="text-xs">
-                {user?.subscriptionTier}
-              </Badge>
+              <PlanBadge plan={planName} />
             </div>
             <Button
               variant="outline"

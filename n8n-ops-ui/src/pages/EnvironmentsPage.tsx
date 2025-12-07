@@ -23,16 +23,15 @@ import {
   TableRow,
 } from '@/components/ui/table';
 import { api } from '@/lib/api';
-import { useAuth } from '@/lib/auth';
 import { useAppStore } from '@/store/use-app-store';
-import { Plus, Server, RefreshCw, Edit, Database, Download, Trash2, RefreshCcw } from 'lucide-react';
+import { Plus, Server, RefreshCw, Edit, Database, Download, Trash2, RefreshCcw, RotateCcw, AlertTriangle, Sparkles } from 'lucide-react';
 import { toast } from 'sonner';
-import type { Environment } from '@/types';
+import type { Environment, EnvironmentType } from '@/types';
+import { useFeatures } from '@/lib/features';
 
 export function EnvironmentsPage() {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
-  const { user } = useAuth();
   const setSelectedEnvironment = useAppStore((state) => state.setSelectedEnvironment);
   const [editingEnv, setEditingEnv] = useState<Environment | null>(null);
   const [isAddMode, setIsAddMode] = useState(false);
@@ -42,9 +41,17 @@ export function EnvironmentsPage() {
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const [selectedEnvForAction, setSelectedEnvForAction] = useState<Environment | null>(null);
   const [syncingEnvId, setSyncingEnvId] = useState<string | null>(null);
-  const [formData, setFormData] = useState({
+  const [formData, setFormData] = useState<{
+    name: string;
+    type: EnvironmentType;
+    baseUrl: string;
+    apiKey: string;
+    gitRepoUrl: string;
+    gitBranch: string;
+    gitPat: string;
+  }>({
     name: '',
-    type: 'dev' as const,
+    type: 'dev',
     baseUrl: '',
     apiKey: '',
     gitRepoUrl: '',
@@ -122,7 +129,7 @@ export function EnvironmentsPage() {
   });
 
   const updateMutation = useMutation({
-    mutationFn: (data: { id: string; updates: { name?: string; base_url?: string; api_key?: string } }) =>
+    mutationFn: (data: { id: string; updates: { name?: string; base_url?: string; api_key?: string; git_repo_url?: string; git_branch?: string; git_pat?: string } }) =>
       api.updateEnvironment(data.id, data.updates),
     onSuccess: () => {
       toast.success('Environment updated successfully');
@@ -136,7 +143,7 @@ export function EnvironmentsPage() {
   });
 
   const createMutation = useMutation({
-    mutationFn: (data: { name: string; type: any; base_url: string; api_key: string }) =>
+    mutationFn: (data: { name: string; type: any; base_url: string; api_key: string; git_repo_url?: string; git_branch?: string; git_pat?: string }) =>
       api.createEnvironment(data),
     onSuccess: () => {
       toast.success('Environment created successfully');
@@ -165,7 +172,7 @@ export function EnvironmentsPage() {
 
   const syncMutation = useMutation({
     mutationFn: (environmentId: string) => api.syncEnvironment(environmentId),
-    onSuccess: (result, environmentId) => {
+    onSuccess: (result) => {
       setSyncingEnvId(null);
       const data = result.data;
 
@@ -186,7 +193,7 @@ export function EnvironmentsPage() {
 
       queryClient.invalidateQueries({ queryKey: ['environments'] });
     },
-    onError: (error: any, environmentId) => {
+    onError: (error: any) => {
       setSyncingEnvId(null);
       const message = error.response?.data?.detail || 'Failed to sync environment';
       toast.error(message);
@@ -354,7 +361,11 @@ export function EnvironmentsPage() {
     navigate('/workflows');
   };
 
-  const isPro = user?.subscriptionTier === 'pro' || user?.subscriptionTier === 'enterprise';
+  // Use the new features system for limits
+  const { features, planName } = useFeatures();
+  const environmentCount = environments?.data?.length || 0;
+  const maxEnvironments = features?.max_environments;
+  const atLimit = maxEnvironments !== 'unlimited' && environmentCount >= (maxEnvironments || 1);
 
   return (
     <div className="space-y-6">
@@ -365,20 +376,38 @@ export function EnvironmentsPage() {
             Manage your n8n instances across different environments
           </p>
         </div>
-        {isPro && (
-          <Button onClick={handleAddClick}>
+        <div className="flex items-center gap-4">
+          {/* Environment count indicator */}
+          <div className="text-sm text-muted-foreground">
+            {environmentCount} / {maxEnvironments === 'unlimited' ? 'Unlimited' : maxEnvironments} environments
+          </div>
+          <Button onClick={handleAddClick} disabled={atLimit}>
             <Plus className="h-4 w-4 mr-2" />
             Add Environment
           </Button>
-        )}
+        </div>
       </div>
 
-      {!isPro && (
-        <Card className="border-yellow-200 bg-yellow-50">
+      {/* Limit warning */}
+      {atLimit && (
+        <Card className="border-amber-200 bg-amber-50 dark:border-amber-800 dark:bg-amber-950">
           <CardContent className="pt-6">
-            <p className="text-sm text-yellow-800">
-              <strong>Upgrade to Pro</strong> to add additional environments beyond the free tier.
-            </p>
+            <div className="flex items-start gap-3">
+              <AlertTriangle className="h-5 w-5 text-amber-600 dark:text-amber-400 flex-shrink-0 mt-0.5" />
+              <div className="flex-1">
+                <p className="text-sm text-amber-800 dark:text-amber-200">
+                  <strong>Environment limit reached.</strong> You're using all {maxEnvironments} environment{maxEnvironments !== 1 ? 's' : ''} available on the {planName} plan.
+                </p>
+                <Button
+                  variant="link"
+                  className="p-0 h-auto text-amber-700 dark:text-amber-300"
+                  onClick={() => navigate('/billing')}
+                >
+                  <Sparkles className="h-4 w-4 mr-1" />
+                  Upgrade for more environments
+                </Button>
+              </div>
+            </div>
           </CardContent>
         </Card>
       )}
@@ -451,6 +480,15 @@ export function EnvironmentsPage() {
                         >
                           <Database className="h-3 w-3 mr-1" />
                           Backup
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={() => navigate(`/environments/${env.id}/restore`)}
+                          title="Restore workflows from GitHub"
+                        >
+                          <RotateCcw className="h-3 w-3 mr-1" />
+                          Restore
                         </Button>
                         <Button
                           size="sm"

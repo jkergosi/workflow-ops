@@ -1,4 +1,5 @@
-import { useState, useMemo, useRef, useEffect } from 'react';
+import { useState, useMemo, useEffect } from 'react';
+import { Link } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -24,7 +25,7 @@ import {
 } from '@/components/ui/table';
 import { api } from '@/lib/api';
 import { useAppStore } from '@/store/use-app-store';
-import { Upload, PlayCircle, PauseCircle, Search, ArrowUpDown, ArrowUp, ArrowDown, X, FileJson, FolderOpen, Edit, Trash2, Loader2, RefreshCw } from 'lucide-react';
+import { Upload, PlayCircle, PauseCircle, Search, ArrowUpDown, ArrowUp, ArrowDown, X, Edit, Trash2, Loader2, RefreshCw } from 'lucide-react';
 import { toast } from 'sonner';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import type { Workflow, EnvironmentType } from '@/types';
@@ -47,15 +48,11 @@ export function WorkflowsPage() {
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const [workflowToEdit, setWorkflowToEdit] = useState<Workflow | null>(null);
   const [workflowToDelete, setWorkflowToDelete] = useState<Workflow | null>(null);
-  const [uploadedFiles, setUploadedFiles] = useState<File[]>([]);
   const [currentPage, setCurrentPage] = useState(1);
   const [pageSize, setPageSize] = useState(50);
   const [isBackingUp, setIsBackingUp] = useState(false);
-  const [isDownloading, setIsDownloading] = useState(false);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [workflowsToBackupCount, setWorkflowsToBackupCount] = useState<number | null>(null);
-  const fileInputRef = useRef<HTMLInputElement>(null);
-  const folderInputRef = useRef<HTMLInputElement>(null);
 
   const [editForm, setEditForm] = useState({
     name: '',
@@ -270,35 +267,16 @@ export function WorkflowsPage() {
     setSelectedStatus('');
   };
 
-  const handleFileSelect = (event: React.ChangeEvent<HTMLInputElement>) => {
-    const files = event.target.files;
-    if (files) {
-      const jsonFiles = Array.from(files).filter(
-        (file) => file.name.endsWith('.json') || file.name.endsWith('.zip')
-      );
-      setUploadedFiles(jsonFiles);
-    }
-  };
-
-  const handleFolderSelect = (event: React.ChangeEvent<HTMLInputElement>) => {
-    const files = event.target.files;
-    if (files) {
-      const jsonFiles = Array.from(files).filter((file) => file.name.endsWith('.json'));
-      setUploadedFiles(jsonFiles);
-    }
-  };
-
   const handleUploadClick = async () => {
     setUploadDialogOpen(true);
-    setUploadedFiles([]);
     setWorkflowsToBackupCount(null); // Reset count
 
     // Fetch count of workflows needing backup
     try {
       // Get workflows and environment to calculate count
-      const workflowsData = await apiClient.getWorkflows(selectedEnvironment);
-      const environmentsData = await apiClient.getEnvironments();
-      const currentEnv = environmentsData.data.find(env => env.type === selectedEnvironment);
+      const workflowsData = await api.getWorkflows(selectedEnvironment);
+      const environmentsData = await api.getEnvironments();
+      const currentEnv = environmentsData.data.find((env: { type: string }) => env.type === selectedEnvironment);
 
       if (currentEnv && currentEnv.lastBackup) {
         // Filter workflows updated since last backup
@@ -321,16 +299,12 @@ export function WorkflowsPage() {
     }
   };
 
-  const handleRemoveFile = (index: number) => {
-    setUploadedFiles((prev) => prev.filter((_, i) => i !== index));
-  };
-
   const handleUpload = async () => {
     try {
       setIsBackingUp(true);
       toast.info('Backing up workflows to GitHub...');
 
-      const result = await apiClient.syncWorkflowsToGithub(selectedEnvironment);
+      const result = await api.syncWorkflowsToGithub(selectedEnvironment);
 
       if (result.data.success) {
         const { synced, skipped = 0, failed } = result.data;
@@ -358,7 +332,6 @@ export function WorkflowsPage() {
       }
 
       setUploadDialogOpen(false);
-      setUploadedFiles([]);
     } catch (error: any) {
       console.error('Error syncing to GitHub:', error);
       toast.error(error.response?.data?.detail || 'Failed to backup workflows to GitHub');
@@ -368,19 +341,6 @@ export function WorkflowsPage() {
   };
 
   const hasActiveFilters = searchQuery || selectedTag.length > 0 || selectedStatus;
-
-  // Get N8N URL for opening workflows
-  const getN8nUrl = () => {
-    // In production, this would come from environment config
-    const devUrl = localStorage.getItem('dev_n8n_url') || 'http://localhost:5678';
-    return devUrl;
-  };
-
-  const openWorkflow = (workflowId: string, editMode: boolean = false) => {
-    const n8nUrl = getN8nUrl();
-    const url = editMode ? `${n8nUrl}/workflow/${workflowId}` : `${n8nUrl}/workflow/${workflowId}`;
-    window.open(url, '_blank');
-  };
 
   const handleEditClick = (workflow: Workflow) => {
     setWorkflowToEdit(workflow);
@@ -547,11 +507,6 @@ export function WorkflowsPage() {
               <CardTitle>Workflows in {selectedEnvironment}</CardTitle>
               <CardDescription>
                 View and manage workflows in the selected environment
-                {workflows?.data?.[0]?.lastSyncedAt && (
-                  <span className="ml-2 text-xs">
-                    • Last synced: {new Date(workflows.data[0].lastSyncedAt).toLocaleString()}
-                  </span>
-                )}
               </CardDescription>
             </div>
           </div>
@@ -585,12 +540,12 @@ export function WorkflowsPage() {
                 {paginatedWorkflows.map((workflow) => (
                   <TableRow key={workflow.id}>
                     <TableCell className="font-medium">
-                      <button
-                        onClick={() => openWorkflow(workflow.id)}
-                        className="text-primary hover:underline text-left"
+                      <Link
+                        to={`/workflows/${workflow.id}?environment=${selectedEnvironment}`}
+                        className="text-primary hover:underline"
                       >
                         {workflow.name}
-                      </button>
+                      </Link>
                     </TableCell>
                     <TableCell>
                       {workflow.active ? (

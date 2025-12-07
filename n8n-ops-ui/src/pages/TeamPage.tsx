@@ -22,7 +22,7 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog';
 import { api } from '@/lib/api';
-import { UserPlus, Users, Edit, Trash2, Mail, AlertCircle } from 'lucide-react';
+import { UserPlus, Users, Edit, Trash2, Mail } from 'lucide-react';
 import { toast } from 'sonner';
 import type { TeamMember } from '@/types';
 
@@ -270,7 +270,7 @@ export function TeamPage() {
                       </Badge>
                     </TableCell>
                     <TableCell className="text-sm text-muted-foreground">
-                      {new Date(member.created_at).toLocaleDateString()}
+                      {new Date(member.createdAt).toLocaleDateString()}
                     </TableCell>
                     <TableCell>
                       <div className="flex gap-2">

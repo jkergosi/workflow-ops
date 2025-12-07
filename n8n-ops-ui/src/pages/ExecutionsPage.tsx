@@ -16,7 +16,7 @@ import {
 import { api } from '@/lib/api';
 import { useAppStore } from '@/store/use-app-store';
 import { Search, ArrowUpDown, ArrowUp, ArrowDown, X, ExternalLink, CheckCircle2, XCircle, Clock, Play, Download, RefreshCw } from 'lucide-react';
-import type { Execution, EnvironmentType } from '@/types';
+import type { EnvironmentType } from '@/types';
 import { toast } from 'sonner';
 
 type SortField = 'workflowName' | 'status' | 'startedAt' | 'executionTime';

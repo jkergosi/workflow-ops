@@ -16,7 +16,7 @@ import {
 import { api } from '@/lib/api';
 import { useAppStore } from '@/store/use-app-store';
 import { Search, ArrowUpDown, ArrowUp, ArrowDown, X, Tag as TagIcon, Calendar, Download, RefreshCw } from 'lucide-react';
-import type { Tag, EnvironmentType } from '@/types';
+import type { EnvironmentType } from '@/types';
 import { toast } from 'sonner';
 
 type SortField = 'name' | 'createdAt' | 'updatedAt';

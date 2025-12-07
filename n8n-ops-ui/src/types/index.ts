@@ -30,6 +30,7 @@ export interface Environment {
   apiKey?: string;
   isActive: boolean;
   lastConnected?: string;
+  lastBackup?: string;
   workflowCount?: number;
   gitRepoUrl?: string;
   gitBranch?: string;
@@ -243,6 +244,33 @@ export interface BillingFeatures {
 export interface CheckoutSession {
   sessionId: string;
   url: string;
+}
+
+// Team Member Types
+export interface TeamMember {
+  id: string;
+  tenantId: string;
+  email: string;
+  name: string;
+  role: 'admin' | 'developer' | 'viewer';
+  status: 'active' | 'pending' | 'inactive';
+  createdAt: string;
+  invitedAt?: string;
+  lastActive?: string;
+}
+
+// Subscription Plan Types
+export interface SubscriptionPlan {
+  id: string;
+  name: string;
+  tier: 'free' | 'pro' | 'enterprise';
+  status: 'active' | 'canceled' | 'past_due' | 'trialing';
+  price?: number;
+  billingCycle?: 'monthly' | 'yearly';
+  currentPeriodStart?: string;
+  currentPeriodEnd?: string;
+  cancelAtPeriodEnd?: boolean;
+  features: BillingFeatures;
 }
 
 // API Response Types

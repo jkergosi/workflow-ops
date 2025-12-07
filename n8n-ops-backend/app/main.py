@@ -1,7 +1,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.core.config import settings
-from app.api.endpoints import environments, workflows, executions, tags, billing, teams, n8n_users
+from app.api.endpoints import environments, workflows, executions, tags, billing, teams, n8n_users, tenants, auth, restore, promotions
 
 app = FastAPI(
     title=settings.PROJECT_NAME,
@@ -58,6 +58,30 @@ app.include_router(
     n8n_users.router,
     prefix=f"{settings.API_V1_PREFIX}/n8n-users",
     tags=["n8n-users"]
+)
+
+app.include_router(
+    tenants.router,
+    prefix=f"{settings.API_V1_PREFIX}/tenants",
+    tags=["tenants"]
+)
+
+app.include_router(
+    auth.router,
+    prefix=f"{settings.API_V1_PREFIX}/auth",
+    tags=["auth"]
+)
+
+app.include_router(
+    restore.router,
+    prefix=f"{settings.API_V1_PREFIX}/restore",
+    tags=["restore"]
+)
+
+app.include_router(
+    promotions.router,
+    prefix=f"{settings.API_V1_PREFIX}/promotions",
+    tags=["promotions"]
 )
 
 

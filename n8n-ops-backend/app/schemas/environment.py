@@ -19,6 +19,7 @@ class EnvironmentBase(BaseModel):
     git_repo_url: Optional[str] = Field(None, max_length=500)
     git_branch: Optional[str] = Field(None, max_length=255)
     git_pat: Optional[str] = None
+    n8n_encryption_key: Optional[str] = None
 
 
 class EnvironmentCreate(EnvironmentBase):
@@ -33,6 +34,7 @@ class EnvironmentUpdate(BaseModel):
     git_repo_url: Optional[str] = Field(None, max_length=500)
     git_branch: Optional[str] = Field(None, max_length=255)
     git_pat: Optional[str] = None
+    n8n_encryption_key: Optional[str] = None
 
 
 class EnvironmentResponse(EnvironmentBase):

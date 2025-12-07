@@ -4,7 +4,8 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { api } from '@/lib/api';
-import { CreditCard, Zap, CheckCircle2, Download, Calendar, DollarSign } from 'lucide-react';
+import { CreditCard, Zap, CheckCircle2, Calendar, DollarSign, XCircle, Sparkles, Crown, BarChart3 } from 'lucide-react';
+import { useFeatures } from '@/lib/features';
 import { toast } from 'sonner';
 import {
   Dialog,
@@ -18,6 +19,7 @@ import { Label } from '@/components/ui/label';
 
 export function BillingPage() {
   const queryClient = useQueryClient();
+  const { features, usage } = useFeatures();
   const [upgradeDialogOpen, setUpgradeDialogOpen] = useState(false);
   const [cancelDialogOpen, setCancelDialogOpen] = useState(false);
   const [selectedPlan, setSelectedPlan] = useState<any>(null);
@@ -88,8 +90,6 @@ export function BillingPage() {
   });
 
   const currentPlan = subscription?.data?.plan;
-  const isPro = currentPlan?.name === 'pro';
-  const isEnterprise = currentPlan?.name === 'enterprise';
   const isFree = currentPlan?.name === 'free';
 
   const handleUpgrade = (plan: any) => {
@@ -133,38 +133,117 @@ export function BillingPage() {
   const getFeaturesList = (features: any) => {
     if (!features) return [];
 
+    // Map from new feature structure
+    const maxEnvs = features.max_environments;
+    const maxTeam = features.max_team_members;
+
     return [
       {
-        label: features.environments === 'unlimited' ? 'Unlimited Environments' : `${features.environments} Environment${features.environments > 1 ? 's' : ''}`,
-        enabled: true
+        label: maxEnvs === 'unlimited' ? 'Unlimited Environments' : `${maxEnvs} Environment${maxEnvs > 1 ? 's' : ''}`,
+        enabled: true,
+        category: 'limits'
       },
       {
-        label: features.team_members === 'unlimited' ? 'Unlimited Team Members' : `Up to ${features.team_members} Team Members`,
-        enabled: true
+        label: maxTeam === 'unlimited' ? 'Unlimited Team Members' : `Up to ${maxTeam} Team Member${maxTeam > 1 ? 's' : ''}`,
+        enabled: true,
+        category: 'limits'
       },
       {
-        label: features.workflows === 'unlimited' ? 'Unlimited Workflows' : `Up to ${features.workflows} Workflows`,
-        enabled: true
+        label: features.github_backup === 'scheduled' ? 'Scheduled GitHub Backup' : 'Manual GitHub Backup',
+        enabled: true,
+        category: 'backup'
       },
       {
-        label: 'GitHub Sync',
-        enabled: features.github_sync
-      },
-      {
-        label: 'Workflow Deployments',
-        enabled: features.deployments
+        label: 'GitHub Restore',
+        enabled: features.github_restore,
+        category: 'backup'
       },
       {
         label: 'Scheduled Backups',
-        enabled: features.scheduled_backups
+        enabled: features.scheduled_backup,
+        category: 'backup',
+        requiredPlan: 'pro'
       },
       {
-        label: 'Priority Support',
-        enabled: features.priority_support
+        label: features.environment_promotion === 'automated' ? 'Automated Promotions' :
+               features.environment_promotion === 'manual' ? 'Manual Promotions' : 'Environment Promotion',
+        enabled: !!features.environment_promotion,
+        category: 'deployment',
+        requiredPlan: features.environment_promotion === 'automated' ? 'enterprise' : 'pro'
       },
       {
-        label: 'SSO Integration',
-        enabled: features.sso || false
+        label: 'Credential Remapping',
+        enabled: features.credential_remapping,
+        category: 'deployment',
+        requiredPlan: 'enterprise'
+      },
+      {
+        label: 'Workflow Diff',
+        enabled: features.workflow_diff,
+        category: 'workflow',
+        requiredPlan: 'pro'
+      },
+      {
+        label: 'Workflow Lifecycle Management',
+        enabled: features.workflow_lifecycle,
+        category: 'workflow',
+        requiredPlan: 'pro'
+      },
+      {
+        label: features.execution_metrics === 'advanced' ? 'Advanced Execution Metrics' :
+               features.execution_metrics === 'full' ? 'Full Execution Metrics' : 'Basic Execution Metrics',
+        enabled: true,
+        category: 'observability'
+      },
+      {
+        label: features.alerting === 'advanced' ? 'Advanced Alerting (PagerDuty, Webhooks)' :
+               features.alerting === 'basic' ? 'Basic Alerting (Email, Slack)' : 'Alerting',
+        enabled: !!features.alerting,
+        category: 'observability',
+        requiredPlan: features.alerting === 'advanced' ? 'enterprise' : 'pro'
+      },
+      {
+        label: 'Role-Based Access Control',
+        enabled: features.role_based_access,
+        category: 'security',
+        requiredPlan: 'pro'
+      },
+      {
+        label: features.audit_logs === 'full' ? 'Full Audit Logs + Export' :
+               features.audit_logs === 'limited' ? 'Limited Audit Logs' : 'Audit Logs',
+        enabled: !!features.audit_logs,
+        category: 'security',
+        requiredPlan: features.audit_logs === 'full' ? 'enterprise' : 'pro'
+      },
+      {
+        label: 'Secret Vault Integration',
+        enabled: features.secret_vault,
+        category: 'security',
+        requiredPlan: 'enterprise'
+      },
+      {
+        label: 'SSO / SCIM',
+        enabled: features.sso_scim,
+        category: 'security',
+        requiredPlan: 'enterprise'
+      },
+      {
+        label: 'Compliance Tools',
+        enabled: features.compliance_tools,
+        category: 'security',
+        requiredPlan: 'enterprise'
+      },
+      {
+        label: 'Environment Protection',
+        enabled: features.environment_protection,
+        category: 'security',
+        requiredPlan: 'enterprise'
+      },
+      {
+        label: features.support === 'dedicated' ? 'Dedicated Support + SLA' :
+               features.support === 'priority' ? 'Priority Support' : 'Community Support',
+        enabled: true,
+        category: 'support'
       },
     ];
   };
@@ -266,12 +345,24 @@ export function BillingPage() {
             <div className="space-y-3">
               {getFeaturesList(currentPlan?.features).map((feature, index) => (
                 <div key={index} className="flex items-center gap-2">
-                  <CheckCircle2
-                    className={`h-4 w-4 ${feature.enabled ? 'text-green-500' : 'text-gray-300'}`}
-                  />
-                  <span className={`text-sm ${!feature.enabled && 'text-muted-foreground'}`}>
+                  {feature.enabled ? (
+                    <CheckCircle2 className="h-4 w-4 text-green-500" />
+                  ) : (
+                    <XCircle className="h-4 w-4 text-gray-300" />
+                  )}
+                  <span className={`text-sm flex-1 ${!feature.enabled && 'text-muted-foreground'}`}>
                     {feature.label}
                   </span>
+                  {!feature.enabled && feature.requiredPlan && (
+                    <Badge variant="outline" className="text-xs gap-1">
+                      {feature.requiredPlan === 'enterprise' ? (
+                        <Crown className="h-3 w-3 text-amber-500" />
+                      ) : (
+                        <Sparkles className="h-3 w-3 text-blue-500" />
+                      )}
+                      {feature.requiredPlan === 'enterprise' ? 'Enterprise' : 'Pro'}
+                    </Badge>
+                  )}
                 </div>
               ))}
             </div>
@@ -279,16 +370,111 @@ export function BillingPage() {
         </Card>
       </div>
 
+      {/* Usage Summary */}
+      {usage && (
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2">
+              <BarChart3 className="h-5 w-5" />
+              Usage Summary
+            </CardTitle>
+            <CardDescription>Current usage against your plan limits</CardDescription>
+          </CardHeader>
+          <CardContent>
+            <div className="grid gap-6 md:grid-cols-2">
+              {/* Environments Usage */}
+              <div className="space-y-2">
+                <div className="flex items-center justify-between">
+                  <span className="text-sm font-medium">Environments</span>
+                  <span className="text-sm text-muted-foreground">
+                    {usage.environments?.current || 0} / {features?.max_environments === 'unlimited' ? 'Unlimited' : features?.max_environments || 1}
+                  </span>
+                </div>
+                <div className="h-2 bg-secondary rounded-full overflow-hidden">
+                  <div
+                    className={`h-full transition-all ${
+                      features?.max_environments !== 'unlimited' &&
+                      (usage.environments?.current || 0) >= (features?.max_environments || 1)
+                        ? 'bg-amber-500'
+                        : 'bg-primary'
+                    }`}
+                    style={{
+                      width: features?.max_environments === 'unlimited'
+                        ? '10%'
+                        : `${Math.min(((usage.environments?.current || 0) / (features?.max_environments || 1)) * 100, 100)}%`
+                    }}
+                  />
+                </div>
+                {features?.max_environments !== 'unlimited' &&
+                 (usage.environments?.current || 0) >= (features?.max_environments || 1) && (
+                  <p className="text-xs text-amber-600">
+                    You've reached your environment limit. Upgrade for more.
+                  </p>
+                )}
+              </div>
+
+              {/* Team Members Usage */}
+              <div className="space-y-2">
+                <div className="flex items-center justify-between">
+                  <span className="text-sm font-medium">Team Members</span>
+                  <span className="text-sm text-muted-foreground">
+                    {usage.team_members?.current || 0} / {features?.max_team_members === 'unlimited' ? 'Unlimited' : features?.max_team_members || 1}
+                  </span>
+                </div>
+                <div className="h-2 bg-secondary rounded-full overflow-hidden">
+                  <div
+                    className={`h-full transition-all ${
+                      features?.max_team_members !== 'unlimited' &&
+                      (usage.team_members?.current || 0) >= (features?.max_team_members || 1)
+                        ? 'bg-amber-500'
+                        : 'bg-primary'
+                    }`}
+                    style={{
+                      width: features?.max_team_members === 'unlimited'
+                        ? '10%'
+                        : `${Math.min(((usage.team_members?.current || 0) / (features?.max_team_members || 1)) * 100, 100)}%`
+                    }}
+                  />
+                </div>
+                {features?.max_team_members !== 'unlimited' &&
+                 (usage.team_members?.current || 0) >= (features?.max_team_members || 1) && (
+                  <p className="text-xs text-amber-600">
+                    You've reached your team member limit. Upgrade for more.
+                  </p>
+                )}
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
       {/* Available Plans */}
       <div>
         <h2 className="text-2xl font-bold mb-4">Available Plans</h2>
         <div className="grid gap-6 md:grid-cols-3">
           {plans?.data?.map((plan: any) => (
-            <Card key={plan.id} className={currentPlan?.id === plan.id ? 'border-primary' : ''}>
+            <Card key={plan.id} className={`relative ${currentPlan?.id === plan.id ? 'border-primary border-2' : ''} ${plan.name === 'pro' ? 'shadow-lg' : ''}`}>
+              {plan.name === 'pro' && (
+                <div className="absolute -top-3 left-1/2 transform -translate-x-1/2">
+                  <Badge className="bg-blue-500 text-white gap-1">
+                    <Sparkles className="h-3 w-3" />
+                    Popular
+                  </Badge>
+                </div>
+              )}
               <CardHeader>
                 <CardTitle className="flex items-center justify-between">
-                  {plan.display_name}
-                  {currentPlan?.id === plan.id && <Badge>Current</Badge>}
+                  <div className="flex items-center gap-2">
+                    {plan.name === 'enterprise' ? (
+                      <Crown className="h-5 w-5 text-amber-500" />
+                    ) : plan.name === 'pro' ? (
+                      <Sparkles className="h-5 w-5 text-blue-500" />
+                    ) : (
+                      <Zap className="h-5 w-5 text-gray-500" />
+                    )}
+                    {plan.display_name}
+                  </div>
+                  {currentPlan?.id === plan.id && <Badge variant="secondary">Current</Badge>}
                 </CardTitle>
                 <CardDescription>{plan.description}</CardDescription>
               </CardHeader>
@@ -305,10 +491,10 @@ export function BillingPage() {
                   )}
                 </div>
 
-                <div className="space-y-2">
+                <div className="space-y-2 max-h-64 overflow-y-auto">
                   {getFeaturesList(plan.features).filter(f => f.enabled).map((feature, index) => (
                     <div key={index} className="flex items-center gap-2">
-                      <CheckCircle2 className="h-4 w-4 text-green-500" />
+                      <CheckCircle2 className="h-4 w-4 text-green-500 flex-shrink-0" />
                       <span className="text-sm">{feature.label}</span>
                     </div>
                   ))}
@@ -316,11 +502,27 @@ export function BillingPage() {
 
                 {currentPlan?.id !== plan.id && plan.name !== 'free' && (
                   <Button
-                    className="w-full"
+                    className="w-full gap-2"
                     variant={plan.name === 'pro' ? 'default' : 'outline'}
                     onClick={() => handleUpgrade(plan)}
                   >
-                    {plan.name === 'pro' ? 'Upgrade to Pro' : 'Contact Sales'}
+                    {plan.name === 'pro' ? (
+                      <>
+                        <Sparkles className="h-4 w-4" />
+                        Upgrade to Pro
+                      </>
+                    ) : (
+                      <>
+                        <Crown className="h-4 w-4" />
+                        Contact Sales
+                      </>
+                    )}
+                  </Button>
+                )}
+                {currentPlan?.id === plan.id && (
+                  <Button variant="outline" className="w-full" disabled>
+                    <CheckCircle2 className="h-4 w-4 mr-2" />
+                    Current Plan
                   </Button>
                 )}
               </CardContent>

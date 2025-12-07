@@ -14,8 +14,8 @@ import {
 } from '@/components/ui/table';
 import { api } from '@/lib/api';
 import { useAppStore } from '@/store/use-app-store';
-import { Users, Search, Filter, AlertCircle, CheckCircle2, Clock, RefreshCw, Download } from 'lucide-react';
-import type { N8NUser, EnvironmentType } from '@/types';
+import { Search, AlertCircle, CheckCircle2, Clock, RefreshCw, Download } from 'lucide-react';
+import type { EnvironmentType } from '@/types';
 import { toast } from 'sonner';
 
 export function N8NUsersPage() {

@@ -1,69 +1,93 @@
-import { useState } from 'react';
+import { useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '@/lib/auth';
 import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
-import { Label } from '@/components/ui/label';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import { Loader2, Workflow } from 'lucide-react';
 
 export function LoginPage() {
-  const [email, setEmail] = useState('demo@example.com');
-  const [password, setPassword] = useState('password');
-  const [loading, setLoading] = useState(false);
-  const { login } = useAuth();
+  const { isAuthenticated, isLoading, needsOnboarding, login } = useAuth();
   const navigate = useNavigate();
 
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setLoading(true);
-    try {
-      await login(email, password);
-      navigate('/');
-    } catch (error) {
-      console.error('Login failed:', error);
-    } finally {
-      setLoading(false);
+  // Redirect if already authenticated
+  useEffect(() => {
+    if (!isLoading) {
+      if (needsOnboarding) {
+        navigate('/onboarding');
+      } else if (isAuthenticated) {
+        navigate('/');
+      }
     }
+  }, [isAuthenticated, isLoading, needsOnboarding, navigate]);
+
+  const handleLogin = () => {
+    login();
   };
 
+  if (isLoading) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-gray-50 to-gray-100 dark:from-gray-900 dark:to-gray-800">
+        <div className="text-center">
+          <Loader2 className="h-8 w-8 animate-spin mx-auto text-primary" />
+          <p className="mt-4 text-muted-foreground">Loading...</p>
+        </div>
+      </div>
+    );
+  }
+
   return (
-    <div className="min-h-screen flex items-center justify-center bg-gray-50">
+    <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-gray-50 to-gray-100 dark:from-gray-900 dark:to-gray-800 p-4">
       <Card className="w-full max-w-md">
-        <CardHeader className="space-y-1">
-          <CardTitle className="text-2xl font-bold">N8N Ops</CardTitle>
-          <CardDescription>Sign in to your account</CardDescription>
+        <CardHeader className="space-y-4 text-center">
+          <div className="mx-auto h-12 w-12 rounded-full bg-primary/10 flex items-center justify-center">
+            <Workflow className="h-6 w-6 text-primary" />
+          </div>
+          <div className="space-y-1">
+            <CardTitle className="text-2xl font-bold">N8N Ops</CardTitle>
+            <CardDescription>
+              Manage your N8N workflows across all environments
+            </CardDescription>
+          </div>
         </CardHeader>
-        <CardContent>
-          <form onSubmit={handleSubmit} className="space-y-4">
-            <div className="space-y-2">
-              <Label htmlFor="email">Email</Label>
-              <Input
-                id="email"
-                type="email"
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-                placeholder="demo@example.com"
-                required
-              />
-            </div>
-            <div className="space-y-2">
-              <Label htmlFor="password">Password</Label>
-              <Input
-                id="password"
-                type="password"
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                placeholder="Enter your password"
-                required
-              />
-            </div>
-            <Button type="submit" className="w-full" disabled={loading}>
-              {loading ? 'Signing in...' : 'Sign In'}
+        <CardContent className="space-y-6">
+          <div className="space-y-4">
+            <Button onClick={handleLogin} className="w-full" size="lg">
+              Sign In
             </Button>
             <p className="text-sm text-muted-foreground text-center">
-              Mock auth enabled - any email/password will work
+              Sign in with your account to continue
             </p>
-          </form>
+          </div>
+
+          <div className="relative">
+            <div className="absolute inset-0 flex items-center">
+              <span className="w-full border-t" />
+            </div>
+            <div className="relative flex justify-center text-xs uppercase">
+              <span className="bg-background px-2 text-muted-foreground">
+                Features
+              </span>
+            </div>
+          </div>
+
+          <ul className="text-sm text-muted-foreground space-y-2">
+            <li className="flex items-center gap-2">
+              <div className="h-1.5 w-1.5 rounded-full bg-primary" />
+              Multi-environment workflow management
+            </li>
+            <li className="flex items-center gap-2">
+              <div className="h-1.5 w-1.5 rounded-full bg-primary" />
+              Version control with GitHub integration
+            </li>
+            <li className="flex items-center gap-2">
+              <div className="h-1.5 w-1.5 rounded-full bg-primary" />
+              Execution monitoring and observability
+            </li>
+            <li className="flex items-center gap-2">
+              <div className="h-1.5 w-1.5 rounded-full bg-primary" />
+              Team collaboration and access control
+            </li>
+          </ul>
         </CardContent>
       </Card>
     </div>
