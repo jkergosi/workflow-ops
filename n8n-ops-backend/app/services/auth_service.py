@@ -75,14 +75,27 @@ class Auth0Service:
         """Get or create a user based on Auth0 profile."""
         # Extract user info from Auth0 token
         auth0_id = auth0_user.get("sub")
-        email = auth0_user.get("email") or auth0_user.get(f"https://{self.domain}/email")
-        name = auth0_user.get("name") or auth0_user.get("nickname") or email.split("@")[0]
+
+        # Try multiple possible locations for email claim
+        email = (
+            auth0_user.get("email") or
+            auth0_user.get(f"https://{self.domain}/email") or
+            auth0_user.get("https://api.n8nops.com/email") or
+            auth0_user.get(f"https://{self.domain}/claims/email")
+        )
+
+        # Debug: log what claims we received
+        print(f"[Auth Debug] Token claims: {list(auth0_user.keys())}")
+        print(f"[Auth Debug] sub={auth0_id}, email={email}")
 
         if not auth0_id or not email:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Missing required user information from Auth0"
+                detail=f"Missing required user information from Auth0. Got sub={auth0_id}, email={email}. Available claims: {list(auth0_user.keys())}"
             )
+
+        # Now we can safely extract name (email is guaranteed to exist)
+        name = auth0_user.get("name") or auth0_user.get("nickname") or email.split("@")[0]
 
         # Check if user exists by auth0_id
         existing = db_service.client.table("users").select("*, tenants(*)").eq(

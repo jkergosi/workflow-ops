@@ -63,7 +63,7 @@ async def test_environment_connection(connection: EnvironmentTestConnection):
     """Test connection to an N8N instance"""
     try:
         # Create a temporary N8N client with the provided credentials
-        test_client = N8NClient(base_url=connection.base_url, api_key=connection.api_key)
+        test_client = N8NClient(base_url=connection.n8n_base_url, api_key=connection.n8n_api_key)
         is_connected = await test_client.test_connection()
 
         if is_connected:
@@ -182,19 +182,20 @@ async def create_environment(
     """Create a new environment"""
     try:
         # Check if environment type already exists for this tenant
-        existing = await db_service.get_environment_by_type(MOCK_TENANT_ID, environment.type.value)
+        existing = await db_service.get_environment_by_type(MOCK_TENANT_ID, environment.n8n_type.value)
         if existing:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Environment type '{environment.type.value}' already exists for this tenant"
+                detail=f"Environment type '{environment.n8n_type.value}' already exists for this tenant"
             )
 
         environment_data = {
             "tenant_id": MOCK_TENANT_ID,
-            "name": environment.name,
-            "type": environment.type.value,
-            "base_url": environment.base_url,
-            "api_key": environment.api_key,
+            "n8n_name": environment.n8n_name,
+            "n8n_type": environment.n8n_type.value,
+            "n8n_base_url": environment.n8n_base_url,
+            "n8n_api_key": environment.n8n_api_key,
+            "n8n_encryption_key": environment.n8n_encryption_key,
             "is_active": environment.is_active,
             "git_repo_url": environment.git_repo_url,
             "git_branch": environment.git_branch,
@@ -288,8 +289,8 @@ async def update_connection_status(environment_id: str):
 
         # Test connection
         test_client = N8NClient(
-            base_url=environment.get("base_url"),
-            api_key=environment.get("api_key")
+            base_url=environment.get("n8n_base_url"),
+            api_key=environment.get("n8n_api_key")
         )
         is_connected = await test_client.test_connection()
 
@@ -335,8 +336,8 @@ async def sync_environment(environment_id: str):
 
         # Create N8N client for this environment
         n8n_client = N8NClient(
-            base_url=environment.get("base_url"),
-            api_key=environment.get("api_key")
+            base_url=environment.get("n8n_base_url"),
+            api_key=environment.get("n8n_api_key")
         )
 
         # Test connection first
@@ -466,8 +467,8 @@ async def sync_users_only(environment_id: str):
 
         # Create N8N client for this environment
         n8n_client = N8NClient(
-            base_url=environment.get("base_url"),
-            api_key=environment.get("api_key")
+            base_url=environment.get("n8n_base_url"),
+            api_key=environment.get("n8n_api_key")
         )
 
         # Test connection first
@@ -524,8 +525,8 @@ async def sync_executions_only(environment_id: str):
 
         # Create N8N client for this environment
         n8n_client = N8NClient(
-            base_url=environment.get("base_url"),
-            api_key=environment.get("api_key")
+            base_url=environment.get("n8n_base_url"),
+            api_key=environment.get("n8n_api_key")
         )
 
         # Test connection first
@@ -582,8 +583,8 @@ async def sync_tags_only(environment_id: str):
 
         # Create N8N client for this environment
         n8n_client = N8NClient(
-            base_url=environment.get("base_url"),
-            api_key=environment.get("api_key")
+            base_url=environment.get("n8n_base_url"),
+            api_key=environment.get("n8n_api_key")
         )
 
         # Test connection first

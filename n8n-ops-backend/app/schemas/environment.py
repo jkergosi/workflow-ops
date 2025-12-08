@@ -11,15 +11,15 @@ class EnvironmentType(str, Enum):
 
 
 class EnvironmentBase(BaseModel):
-    name: str = Field(..., min_length=1, max_length=255)
-    type: EnvironmentType
-    base_url: str = Field(..., min_length=1, max_length=500)
-    api_key: Optional[str] = None
+    n8n_name: str = Field(..., min_length=1, max_length=255)
+    n8n_type: EnvironmentType
+    n8n_base_url: str = Field(..., min_length=1, max_length=500)
+    n8n_api_key: Optional[str] = None
+    n8n_encryption_key: Optional[str] = None
     is_active: bool = True
     git_repo_url: Optional[str] = Field(None, max_length=500)
     git_branch: Optional[str] = Field(None, max_length=255)
     git_pat: Optional[str] = None
-    n8n_encryption_key: Optional[str] = None
 
 
 class EnvironmentCreate(EnvironmentBase):
@@ -27,14 +27,14 @@ class EnvironmentCreate(EnvironmentBase):
 
 
 class EnvironmentUpdate(BaseModel):
-    name: Optional[str] = Field(None, min_length=1, max_length=255)
-    base_url: Optional[str] = Field(None, min_length=1, max_length=500)
-    api_key: Optional[str] = None
+    n8n_name: Optional[str] = Field(None, min_length=1, max_length=255)
+    n8n_base_url: Optional[str] = Field(None, min_length=1, max_length=500)
+    n8n_api_key: Optional[str] = None
+    n8n_encryption_key: Optional[str] = None
     is_active: Optional[bool] = None
     git_repo_url: Optional[str] = Field(None, max_length=500)
     git_branch: Optional[str] = Field(None, max_length=255)
     git_pat: Optional[str] = None
-    n8n_encryption_key: Optional[str] = None
 
 
 class EnvironmentResponse(EnvironmentBase):
@@ -51,8 +51,8 @@ class EnvironmentResponse(EnvironmentBase):
 
 
 class EnvironmentTestConnection(BaseModel):
-    base_url: str
-    api_key: str
+    n8n_base_url: str
+    n8n_api_key: str
 
 
 class GitTestConnection(BaseModel):

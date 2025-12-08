@@ -11,6 +11,7 @@ from app.schemas.workflow import WorkflowResponse, WorkflowUpload, WorkflowTagsU
 from app.services.n8n_client import N8NClient
 from app.services.database import db_service
 from app.services.github_service import GitHubService
+from app.services.diff_service import compare_workflows
 
 router = APIRouter()
 
@@ -906,4 +907,142 @@ async def delete_workflow(workflow_id: str, environment: str = "dev"):
         )
 
 
+@router.get("/{workflow_id}/drift", response_model=Dict[str, Any])
+async def get_workflow_drift(workflow_id: str, environment: str = "dev"):
+    """
+    Compare a workflow between N8N runtime and GitHub repository.
+
+    Returns drift detection results including:
+    - Whether drift exists
+    - Last commit info
+    - List of differences
+    - Summary of changes (nodes added/removed/modified)
+    """
+    try:
+        # Get environment configuration
+        env_config = await db_service.get_environment_by_type(MOCK_TENANT_ID, environment)
+
+        if not env_config:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Environment '{environment}' not configured"
+            )
+
+        # Create N8N client
+        n8n_client = N8NClient(
+            base_url=env_config.get("base_url"),
+            api_key=env_config.get("api_key")
+        )
+
+        # Fetch workflow from N8N (runtime version)
+        try:
+            runtime_workflow = await n8n_client.get_workflow(workflow_id)
+        except Exception as e:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Workflow not found in N8N: {str(e)}"
+            )
+
+        workflow_name = runtime_workflow.get("name", "")
+
+        # Check if GitHub is configured for this environment
+        if not env_config.get("git_repo_url") or not env_config.get("git_pat"):
+            # GitHub not configured - return no drift info
+            return {
+                "hasDrift": False,
+                "gitVersion": None,
+                "runtimeVersion": runtime_workflow,
+                "lastCommitSha": None,
+                "lastCommitDate": None,
+                "differences": [],
+                "summary": {
+                    "nodesAdded": 0,
+                    "nodesRemoved": 0,
+                    "nodesModified": 0,
+                    "connectionsChanged": False,
+                    "settingsChanged": False
+                },
+                "gitConfigured": False,
+                "message": "GitHub is not configured for this environment"
+            }
+
+        # Create GitHub service from environment configuration
+        repo_url = env_config.get("git_repo_url", "").rstrip('/').replace('.git', '')
+        repo_parts = repo_url.split("/")
+        github_service = GitHubService(
+            token=env_config.get("git_pat"),
+            repo_owner=repo_parts[-2] if len(repo_parts) >= 2 else "",
+            repo_name=repo_parts[-1] if len(repo_parts) >= 1 else "",
+            branch=env_config.get("git_branch", "main")
+        )
+
+        # Check if GitHub is properly configured
+        if not github_service.is_configured():
+            return {
+                "hasDrift": False,
+                "gitVersion": None,
+                "runtimeVersion": runtime_workflow,
+                "lastCommitSha": None,
+                "lastCommitDate": None,
+                "differences": [],
+                "summary": {
+                    "nodesAdded": 0,
+                    "nodesRemoved": 0,
+                    "nodesModified": 0,
+                    "connectionsChanged": False,
+                    "settingsChanged": False
+                },
+                "gitConfigured": False,
+                "message": "GitHub is not properly configured"
+            }
+
+        # Fetch workflow from GitHub by name
+        git_result = await github_service.get_workflow_by_name(workflow_name)
+
+        if git_result is None:
+            # Workflow not found in GitHub
+            return {
+                "hasDrift": False,
+                "gitVersion": None,
+                "runtimeVersion": runtime_workflow,
+                "lastCommitSha": None,
+                "lastCommitDate": None,
+                "differences": [],
+                "summary": {
+                    "nodesAdded": 0,
+                    "nodesRemoved": 0,
+                    "nodesModified": 0,
+                    "connectionsChanged": False,
+                    "settingsChanged": False
+                },
+                "gitConfigured": True,
+                "notInGit": True,
+                "message": f"Workflow '{workflow_name}' not found in GitHub repository"
+            }
+
+        # Compare workflows
+        git_workflow = git_result.get("workflow")
+        last_commit_sha = git_result.get("commit_sha")
+        last_commit_date = git_result.get("commit_date")
+
+        drift_result = compare_workflows(
+            git_workflow=git_workflow,
+            runtime_workflow=runtime_workflow,
+            last_commit_sha=last_commit_sha,
+            last_commit_date=last_commit_date
+        )
+
+        # Return the drift result
+        result = drift_result.to_dict()
+        result["gitConfigured"] = True
+        result["notInGit"] = False
+        return result
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to check workflow drift: {str(e)}"
+        )
 

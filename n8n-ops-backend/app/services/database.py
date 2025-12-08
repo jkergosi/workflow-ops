@@ -25,7 +25,7 @@ class DatabaseService:
 
     async def get_environment_by_type(self, tenant_id: str, env_type: str) -> Optional[Dict[str, Any]]:
         """Get environment by type for a tenant"""
-        response = self.client.table("environments").select("*").eq("tenant_id", tenant_id).eq("type", env_type).execute()
+        response = self.client.table("environments").select("*").eq("tenant_id", tenant_id).eq("n8n_type", env_type).execute()
         return response.data[0] if response.data else None
 
     async def create_environment(self, environment_data: Dict[str, Any]) -> Dict[str, Any]:

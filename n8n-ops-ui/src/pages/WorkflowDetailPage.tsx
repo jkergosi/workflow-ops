@@ -1,5 +1,5 @@
 import { useParams, useSearchParams, Link } from 'react-router-dom';
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useMemo, useState } from 'react';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -14,12 +14,14 @@ import {
   TableRow,
 } from '@/components/ui/table';
 import { api } from '@/lib/api';
+import { apiClient } from '@/lib/api-client';
 import { analyzeWorkflow, type WorkflowAnalysis } from '@/lib/workflow-analysis';
+import { WorkflowHeroSection } from '@/components/workflow/WorkflowHeroSection';
+import { toast } from 'sonner';
 import {
   ArrowLeft,
   PlayCircle,
   PauseCircle,
-  ExternalLink,
   Calendar,
   Clock,
   Activity,
@@ -47,8 +49,9 @@ import {
   HardDrive,
   Server,
   Workflow as WorkflowIcon,
+  RefreshCw,
 } from 'lucide-react';
-import type { EnvironmentType, Workflow, WorkflowNode } from '@/types';
+import type { EnvironmentType, Workflow, WorkflowNode, ExecutionMetricsSummary, Execution } from '@/types';
 
 // Score badge component
 function ScoreBadge({ score, level }: { score: number; level: string }) {
@@ -121,12 +124,61 @@ function DependencyIcon({ type }: { type: string }) {
   return iconMap[type] || <Box className="h-4 w-4" />;
 }
 
+// Helper to calculate execution metrics from executions
+function calculateExecutionMetrics(executions: Execution[]): ExecutionMetricsSummary {
+  if (!executions || executions.length === 0) {
+    return {
+      totalExecutions: 0,
+      successCount: 0,
+      failureCount: 0,
+      successRate: 0,
+      avgDurationMs: 0,
+      p95DurationMs: 0,
+      lastExecutedAt: null,
+      recentExecutions: [],
+    };
+  }
+
+  const successCount = executions.filter(e => e.status === 'success').length;
+  const failureCount = executions.filter(e => e.status === 'error').length;
+  const successRate = executions.length > 0 ? (successCount / executions.length) * 100 : 0;
+
+  const durations = executions
+    .filter(e => e.executionTime && e.executionTime > 0)
+    .map(e => e.executionTime as number)
+    .sort((a, b) => a - b);
+
+  const avgDurationMs = durations.length > 0
+    ? durations.reduce((a, b) => a + b, 0) / durations.length
+    : 0;
+
+  const p95Index = Math.floor(durations.length * 0.95);
+  const p95DurationMs = durations.length > 0 ? durations[p95Index] || durations[durations.length - 1] : 0;
+
+  const sortedByDate = [...executions].sort((a, b) =>
+    new Date(b.startedAt).getTime() - new Date(a.startedAt).getTime()
+  );
+
+  return {
+    totalExecutions: executions.length,
+    successCount,
+    failureCount,
+    successRate,
+    avgDurationMs,
+    p95DurationMs,
+    lastExecutedAt: sortedByDate[0]?.startedAt || null,
+    recentExecutions: sortedByDate.slice(0, 5),
+  };
+}
+
 export function WorkflowDetailPage() {
   const { id } = useParams<{ id: string }>();
   const [searchParams] = useSearchParams();
+  const queryClient = useQueryClient();
   const environment = (searchParams.get('environment') || 'dev') as EnvironmentType;
   const [activeTab, setActiveTab] = useState('overview');
 
+  // Workflow query
   const { data: workflowResponse, isLoading, error } = useQuery({
     queryKey: ['workflow', id, environment],
     queryFn: async () => {
@@ -142,11 +194,59 @@ export function WorkflowDetailPage() {
 
   const workflow = workflowResponse;
 
+  // Drift detection query
+  const { data: driftData, isLoading: isLoadingDrift } = useQuery({
+    queryKey: ['workflow-drift', id, environment],
+    queryFn: async () => {
+      const response = await apiClient.getWorkflowDrift(id!, environment);
+      return response.data;
+    },
+    enabled: !!id && !!workflow,
+    staleTime: 5 * 60 * 1000, // Cache for 5 minutes
+  });
+
+  // Executions query for metrics
+  const { data: executionsData } = useQuery({
+    queryKey: ['workflow-executions', id, environment],
+    queryFn: async () => {
+      // We need the environment ID, not type - for now use a workaround
+      const response = await apiClient.getExecutions(undefined, id);
+      return response.data;
+    },
+    enabled: !!id && !!workflow,
+    staleTime: 2 * 60 * 1000, // Cache for 2 minutes
+  });
+
   // Perform analysis
   const analysis: WorkflowAnalysis | null = useMemo(() => {
     if (!workflow) return null;
-    return analyzeWorkflow(workflow);
+    // Cast to workflow-analysis Workflow type (compatible structure)
+    return analyzeWorkflow(workflow as Parameters<typeof analyzeWorkflow>[0]);
   }, [workflow]);
+
+  // Calculate execution metrics
+  const executionMetrics: ExecutionMetricsSummary | null = useMemo(() => {
+    if (!executionsData) return null;
+    return calculateExecutionMetrics(executionsData as Execution[]);
+  }, [executionsData]);
+
+  // Activate/Deactivate mutation
+  const toggleActiveMutation = useMutation({
+    mutationFn: async () => {
+      if (workflow?.active) {
+        return apiClient.deactivateWorkflow(id!, environment);
+      } else {
+        return apiClient.activateWorkflow(id!, environment);
+      }
+    },
+    onSuccess: () => {
+      toast.success(workflow?.active ? 'Workflow disabled' : 'Workflow enabled');
+      queryClient.invalidateQueries({ queryKey: ['workflow', id, environment] });
+    },
+    onError: (error: any) => {
+      toast.error(error.response?.data?.detail || 'Failed to toggle workflow state');
+    },
+  });
 
   // Get N8N URL for opening workflows
   const getN8nUrl = () => {
@@ -158,6 +258,24 @@ export function WorkflowDetailPage() {
     if (!workflow) return;
     const n8nUrl = getN8nUrl();
     window.open(`${n8nUrl}/workflow/${workflow.id}`, '_blank');
+  };
+
+  const handleDisable = () => {
+    toggleActiveMutation.mutate();
+  };
+
+  const handleClone = () => {
+    toast.info('Clone feature coming soon');
+    // Future: navigate(`/workflows/new?clone=${id}&environment=${environment}`);
+  };
+
+  const handleViewDiff = () => {
+    setActiveTab('drift');
+  };
+
+  const handlePromote = () => {
+    toast.info('Promotion feature coming soon');
+    // Future: Open promotion dialog
   };
 
   if (isLoading) {
@@ -200,31 +318,22 @@ export function WorkflowDetailPage() {
 
   return (
     <div className="space-y-6">
-      {/* Header */}
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-4">
-          <Link to="/workflows">
-            <Button variant="ghost" size="sm">
-              <ArrowLeft className="h-4 w-4 mr-2" />
-              Back
-            </Button>
-          </Link>
-          <div>
-            <h1 className="text-3xl font-bold">{workflow.name}</h1>
-            <p className="text-muted-foreground">
-              Workflow analysis for {environment} environment
-            </p>
-          </div>
-        </div>
-        <div className="flex gap-2">
-          <Button variant="outline" onClick={openInN8N}>
-            <ExternalLink className="h-4 w-4 mr-2" />
-            Open in N8N
-          </Button>
-        </div>
-      </div>
+      {/* Hero Section - 10-Second Insights */}
+      <WorkflowHeroSection
+        workflow={workflow}
+        analysis={analysis}
+        executionMetrics={executionMetrics}
+        driftStatus={driftData || null}
+        environment={environment}
+        isLoadingDrift={isLoadingDrift}
+        onOpenInN8N={openInN8N}
+        onDisable={handleDisable}
+        onClone={handleClone}
+        onViewDiff={handleViewDiff}
+        onPromote={handlePromote}
+      />
 
-      {/* Quick Stats */}
+      {/* Quick Stats - Keep existing cards but simplified */}
       <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-5">
         <Card>
           <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
@@ -448,9 +557,9 @@ export function WorkflowDetailPage() {
                   <TableHeader>
                     <TableRow>
                       <TableHead>Type</TableHead>
-                      <TableHead>Node</TableHead>
-                      <TableHead>Details</TableHead>
-                      <TableHead>URL/Reference</TableHead>
+                      <TableHead>Name</TableHead>
+                      <TableHead>Node Count</TableHead>
+                      <TableHead>Nodes</TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
@@ -462,10 +571,10 @@ export function WorkflowDetailPage() {
                             <Badge variant="outline" className="capitalize">{dep.type}</Badge>
                           </div>
                         </TableCell>
-                        <TableCell className="font-medium">{dep.nodeName}</TableCell>
-                        <TableCell className="text-muted-foreground">{dep.details}</TableCell>
+                        <TableCell className="font-medium">{dep.name}</TableCell>
+                        <TableCell className="text-muted-foreground">{dep.nodeCount}</TableCell>
                         <TableCell className="font-mono text-xs max-w-[200px] truncate">
-                          {dep.url || '-'}
+                          {dep.nodes.join(', ') || '-'}
                         </TableCell>
                       </TableRow>
                     ))}
@@ -493,7 +602,6 @@ export function WorkflowDetailPage() {
                     <TableHead>Type</TableHead>
                     <TableHead>Category</TableHead>
                     <TableHead>Credentials</TableHead>
-                    <TableHead>Position</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
@@ -514,17 +622,14 @@ export function WorkflowDetailPage() {
                         {node.category}
                       </TableCell>
                       <TableCell>
-                        {node.hasCredentials ? (
+                        {node.isCredentialed ? (
                           <div className="flex items-center gap-1">
                             <Lock className="h-3 w-3 text-yellow-500" />
-                            <span className="text-xs">{node.credentialTypes.join(', ')}</span>
+                            <span className="text-xs">Yes</span>
                           </div>
                         ) : (
                           <span className="text-muted-foreground text-xs">None</span>
                         )}
-                      </TableCell>
-                      <TableCell className="text-muted-foreground font-mono text-xs">
-                        [{node.position[0]}, {node.position[1]}]
                       </TableCell>
                     </TableRow>
                   ))}
@@ -1020,27 +1125,170 @@ export function WorkflowDetailPage() {
           </Card>
         </TabsContent>
 
-        {/* Drift Tab */}
+        {/* Drift Tab - Now with Real API Data */}
         <TabsContent value="drift" className="space-y-6">
           <Card>
             <CardHeader>
-              <CardTitle>Drift & Consistency Assessment</CardTitle>
-              <CardDescription>Git vs runtime mismatch and environment divergence</CardDescription>
+              <div className="flex items-center justify-between">
+                <div>
+                  <CardTitle>Drift & Consistency Assessment</CardTitle>
+                  <CardDescription>Git vs runtime comparison and sync status</CardDescription>
+                </div>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => queryClient.invalidateQueries({ queryKey: ['workflow-drift', id, environment] })}
+                  disabled={isLoadingDrift}
+                >
+                  <RefreshCw className={`h-4 w-4 mr-2 ${isLoadingDrift ? 'animate-spin' : ''}`} />
+                  Refresh
+                </Button>
+              </div>
             </CardHeader>
             <CardContent className="space-y-6">
-              <div className="p-4 rounded-lg bg-muted">
-                <div className="flex items-center gap-2">
-                  {analysis.drift.hasGitMismatch ? (
-                    <AlertCircle className="h-5 w-5 text-yellow-500" />
-                  ) : (
-                    <CheckCircle2 className="h-5 w-5 text-green-500" />
-                  )}
-                  <span className="font-medium">
-                    Git Sync: {analysis.drift.hasGitMismatch ? 'Mismatch Detected' : 'In Sync'}
-                  </span>
+              {isLoadingDrift ? (
+                <div className="flex items-center justify-center py-8">
+                  <div className="text-center">
+                    <div className="inline-block h-6 w-6 animate-spin rounded-full border-2 border-solid border-primary border-r-transparent"></div>
+                    <p className="mt-2 text-sm text-muted-foreground">Checking Git sync status...</p>
+                  </div>
                 </div>
-              </div>
+              ) : !driftData?.gitConfigured ? (
+                <div className="p-4 rounded-lg bg-muted">
+                  <div className="flex items-center gap-2">
+                    <Info className="h-5 w-5 text-blue-500" />
+                    <span className="font-medium">Git Not Configured</span>
+                  </div>
+                  <p className="text-sm text-muted-foreground mt-2">
+                    {driftData?.message || 'Configure GitHub integration in the environment settings to enable drift detection.'}
+                  </p>
+                </div>
+              ) : driftData?.notInGit ? (
+                <div className="p-4 rounded-lg bg-muted">
+                  <div className="flex items-center gap-2">
+                    <AlertCircle className="h-5 w-5 text-yellow-500" />
+                    <span className="font-medium">Not Tracked in Git</span>
+                  </div>
+                  <p className="text-sm text-muted-foreground mt-2">
+                    This workflow has not been synced to GitHub yet. Use "Backup to GitHub" to add it.
+                  </p>
+                </div>
+              ) : (
+                <>
+                  {/* Sync Status */}
+                  <div className="p-4 rounded-lg bg-muted">
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-2">
+                        {driftData?.hasDrift ? (
+                          <AlertCircle className="h-5 w-5 text-yellow-500" />
+                        ) : (
+                          <CheckCircle2 className="h-5 w-5 text-green-500" />
+                        )}
+                        <span className="font-medium">
+                          {driftData?.hasDrift ? 'Drift Detected' : 'In Sync with Git'}
+                        </span>
+                      </div>
+                      {driftData?.lastCommitSha && (
+                        <div className="text-sm text-muted-foreground">
+                          Last commit: <code className="bg-muted-foreground/20 px-1 rounded">{driftData.lastCommitSha.substring(0, 7)}</code>
+                          {driftData.lastCommitDate && (
+                            <span className="ml-2">
+                              {new Date(driftData.lastCommitDate).toLocaleDateString()}
+                            </span>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  </div>
 
+                  {/* Drift Summary */}
+                  {driftData?.hasDrift && driftData.summary && (
+                    <div className="grid gap-4 md:grid-cols-3">
+                      <div className="p-4 rounded-lg border">
+                        <div className="text-2xl font-bold text-green-600">+{driftData.summary.nodesAdded}</div>
+                        <div className="text-sm text-muted-foreground">Nodes Added</div>
+                      </div>
+                      <div className="p-4 rounded-lg border">
+                        <div className="text-2xl font-bold text-red-600">-{driftData.summary.nodesRemoved}</div>
+                        <div className="text-sm text-muted-foreground">Nodes Removed</div>
+                      </div>
+                      <div className="p-4 rounded-lg border">
+                        <div className="text-2xl font-bold text-yellow-600">{driftData.summary.nodesModified}</div>
+                        <div className="text-sm text-muted-foreground">Nodes Modified</div>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Differences List */}
+                  {driftData?.hasDrift && driftData.differences && driftData.differences.length > 0 && (
+                    <div className="space-y-2">
+                      <h4 className="font-medium">Changes Detected</h4>
+                      <div className="max-h-[300px] overflow-y-auto border rounded-lg">
+                        <Table>
+                          <TableHeader>
+                            <TableRow>
+                              <TableHead>Path</TableHead>
+                              <TableHead>Type</TableHead>
+                              <TableHead>Git Value</TableHead>
+                              <TableHead>Runtime Value</TableHead>
+                            </TableRow>
+                          </TableHeader>
+                          <TableBody>
+                            {driftData.differences.slice(0, 20).map((diff, i) => (
+                              <TableRow key={i}>
+                                <TableCell className="font-mono text-xs">{diff.path}</TableCell>
+                                <TableCell>
+                                  <Badge
+                                    variant={
+                                      diff.type === 'added' ? 'success' :
+                                      diff.type === 'removed' ? 'destructive' : 'warning'
+                                    }
+                                  >
+                                    {diff.type}
+                                  </Badge>
+                                </TableCell>
+                                <TableCell className="text-xs max-w-[150px] truncate">
+                                  {diff.gitValue !== null ? String(diff.gitValue) : '-'}
+                                </TableCell>
+                                <TableCell className="text-xs max-w-[150px] truncate">
+                                  {diff.runtimeValue !== null ? String(diff.runtimeValue) : '-'}
+                                </TableCell>
+                              </TableRow>
+                            ))}
+                          </TableBody>
+                        </Table>
+                        {driftData.differences.length > 20 && (
+                          <div className="p-2 text-center text-sm text-muted-foreground border-t">
+                            +{driftData.differences.length - 20} more changes
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Connection Changed */}
+                  {driftData?.summary?.connectionsChanged && (
+                    <div className="p-3 rounded-lg border border-yellow-200 bg-yellow-50 dark:bg-yellow-950/20">
+                      <div className="flex items-center gap-2">
+                        <AlertCircle className="h-4 w-4 text-yellow-600" />
+                        <span className="text-sm font-medium">Node connections have changed</span>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Settings Changed */}
+                  {driftData?.summary?.settingsChanged && (
+                    <div className="p-3 rounded-lg border border-yellow-200 bg-yellow-50 dark:bg-yellow-950/20">
+                      <div className="flex items-center gap-2">
+                        <AlertCircle className="h-4 w-4 text-yellow-600" />
+                        <span className="text-sm font-medium">Workflow settings have changed</span>
+                      </div>
+                    </div>
+                  )}
+                </>
+              )}
+
+              {/* Static analysis (kept for additional context) */}
               {analysis.drift.environmentDivergence.length > 0 && (
                 <div className="space-y-2">
                   <h4 className="font-medium text-yellow-600">Environment Divergence</h4>
@@ -1052,13 +1300,6 @@ export function WorkflowDetailPage() {
                 <div className="space-y-2">
                   <h4 className="font-medium">Potential Duplicates</h4>
                   <IssueList issues={analysis.drift.duplicateSuspects} type="info" />
-                </div>
-              )}
-
-              {analysis.drift.partialCopies.length > 0 && (
-                <div className="space-y-2">
-                  <h4 className="font-medium">Partial Copies / Forks</h4>
-                  <IssueList issues={analysis.drift.partialCopies} type="info" />
                 </div>
               )}
 
@@ -1081,8 +1322,8 @@ export function WorkflowDetailPage() {
                     <div
                       key={i}
                       className={`p-4 rounded-lg border ${
-                        opt.priority === 'high' ? 'border-red-200 bg-red-50 dark:bg-red-950/20' :
-                        opt.priority === 'medium' ? 'border-yellow-200 bg-yellow-50 dark:bg-yellow-950/20' :
+                        opt.impact === 'high' ? 'border-red-200 bg-red-50 dark:bg-red-950/20' :
+                        opt.impact === 'medium' ? 'border-yellow-200 bg-yellow-50 dark:bg-yellow-950/20' :
                         'border-gray-200 bg-gray-50 dark:bg-gray-800/20'
                       }`}
                     >
@@ -1090,15 +1331,15 @@ export function WorkflowDetailPage() {
                         <div className="flex items-center gap-2">
                           <Badge
                             variant={
-                              opt.priority === 'high' ? 'destructive' :
-                              opt.priority === 'medium' ? 'warning' : 'secondary'
+                              opt.impact === 'high' ? 'destructive' :
+                              opt.impact === 'medium' ? 'warning' : 'secondary'
                             }
                           >
-                            {opt.priority.toUpperCase()}
+                            {opt.impact.toUpperCase()}
                           </Badge>
                           <h4 className="font-medium">{opt.title}</h4>
                         </div>
-                        <Badge variant="outline" className="capitalize">{opt.type.replace('-', ' ')}</Badge>
+                        <Badge variant="outline" className="capitalize">{opt.category.replace('-', ' ')}</Badge>
                       </div>
                       <p className="text-sm text-muted-foreground mt-2">{opt.description}</p>
                       <div className="flex gap-4 mt-3 text-xs">

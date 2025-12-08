@@ -141,6 +141,99 @@ class GitHubService:
         except GithubException:
             return []
 
+    async def get_workflow_by_name(self, workflow_name: str) -> Optional[Dict[str, Any]]:
+        """
+        Get a workflow from GitHub by its name.
+
+        Args:
+            workflow_name: The workflow name (will be sanitized to match filename)
+
+        Returns:
+            Workflow data dict with commit info, or None if not found
+        """
+        if not self.is_configured() or not self.repo:
+            return None
+
+        try:
+            sanitized_name = self._sanitize_filename(workflow_name)
+            file_path = f"workflows/{sanitized_name}.json"
+
+            file_content = self.repo.get_contents(file_path, ref=self.branch)
+
+            # Decode base64 content
+            content = base64.b64decode(file_content.content).decode('utf-8')
+            workflow_data = json.loads(content)
+
+            # Get commit info for this file
+            commits = self.repo.get_commits(path=file_path, sha=self.branch)
+            latest_commit = None
+            try:
+                latest_commit = commits[0] if commits.totalCount > 0 else None
+            except Exception:
+                pass
+
+            # Add metadata
+            result = {
+                "workflow": workflow_data,
+                "commit_sha": latest_commit.sha if latest_commit else None,
+                "commit_date": latest_commit.commit.author.date.isoformat() if latest_commit else None,
+                "commit_message": latest_commit.commit.message if latest_commit else None,
+                "file_path": file_path
+            }
+
+            return result
+
+        except GithubException as e:
+            if e.status == 404:
+                return None
+            raise
+
+    async def get_workflow_commit_info(self, workflow_name: str) -> Optional[Dict[str, Any]]:
+        """
+        Get just the commit info for a workflow without fetching content.
+
+        Args:
+            workflow_name: The workflow name
+
+        Returns:
+            Dict with commit info or None
+        """
+        if not self.is_configured() or not self.repo:
+            return None
+
+        try:
+            sanitized_name = self._sanitize_filename(workflow_name)
+            file_path = f"workflows/{sanitized_name}.json"
+
+            # Check if file exists
+            try:
+                self.repo.get_contents(file_path, ref=self.branch)
+            except GithubException as e:
+                if e.status == 404:
+                    return None
+                raise
+
+            # Get commit info
+            commits = self.repo.get_commits(path=file_path, sha=self.branch)
+            latest_commit = None
+            try:
+                latest_commit = commits[0] if commits.totalCount > 0 else None
+            except Exception:
+                pass
+
+            if latest_commit:
+                return {
+                    "sha": latest_commit.sha,
+                    "date": latest_commit.commit.author.date.isoformat(),
+                    "message": latest_commit.commit.message,
+                    "author": latest_commit.commit.author.name
+                }
+
+            return None
+
+        except Exception:
+            return None
+
     async def delete_workflow_from_github(
         self,
         workflow_id: str,

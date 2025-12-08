@@ -66,7 +66,7 @@ function ProtectedRoute({ children }: { children: React.ReactNode }) {
     );
   }
 
-  // Check if user is authenticated (Auth0 login or mock login completed)
+  // Check if user is authenticated (login completed)
   // isAuthenticated is true when user is logged in AND has completed onboarding
   if (!isAuthenticated && !needsOnboarding) {
     return <Navigate to="/login" replace />;

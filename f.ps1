@@ -1,6 +1,6 @@
-$RepoPath = "F:\web\AllThings\_projects\n8n-ops.git"
+$RepoPath  = "F:\web\AllThings\_projects\n8n-ops.git"
 $TreesPath = "F:\web\AllThings\_projects\n8n-ops-trees"
-$MainPath = "F:\web\AllThings\_projects\n8n-ops-trees\main"
+$MainPath  = "F:\web\AllThings\_projects\n8n-ops-trees\main"
 
 # Port mapping
 $PortMap = @{
@@ -25,15 +25,16 @@ function Show-Menu {
     Write-Host ""
     Write-Host "  FEATURE     START    FINISH   DESTROY" -ForegroundColor White
     Write-Host "  -------     -----    ------   -------" -ForegroundColor Gray
-    Write-Host "  f1          1        F1       D1       (localhost:3001/4001)"
-    Write-Host "  f2          2        F2       D2       (localhost:3002/4002)"
-    Write-Host "  f3          3        F3       D3       (localhost:3003/4003)"
-    Write-Host "  f4          4        F4       D4       (localhost:3004/4004)"
+    Write-Host "  f1          1        f1       d1       (localhost:3001/4001)"
+    Write-Host "  f2          2        f2       d2       (localhost:3002/4002)"
+    Write-Host "  f3          3        f3       d3       (localhost:3003/4003)"
+    Write-Host "  f4          4        f4       d4       (localhost:3004/4004)"
     Write-Host ""
     Write-Host "  OTHER" -ForegroundColor Magenta
-    Write-Host "    M   Open main (localhost:3000/4000)"
+    Write-Host "    M   main - Open (localhost:3000/4000)"
+    Write-Host "    C   main - Push"
     Write-Host "    L   List worktrees"
-    Write-Host "    Q   Quit"
+    Write-Host "    Q   Quit"    
     Write-Host ""
 }
 
@@ -42,7 +43,7 @@ function Copy-EnvFiles {
     
     foreach ($envFile in $EnvFiles) {
         $sourcePath = Join-Path $MainPath $envFile
-        $destPath = Join-Path $FeaturePath $envFile
+        $destPath   = Join-Path $FeaturePath $envFile
         
         if (Test-Path $sourcePath) {
             $destDir = Split-Path $destPath -Parent
@@ -84,9 +85,9 @@ function Install-Dependencies {
 function Start-Feature {
     param([string]$FeatureName)
     
-    $FeaturePath = "$TreesPath\$FeatureName"
+    $FeaturePath  = "$TreesPath\$FeatureName"
     $FrontendPort = $PortMap[$FeatureName].Frontend
-    $BackendPort = $PortMap[$FeatureName].Backend
+    $BackendPort  = $PortMap[$FeatureName].Backend
 
     $StartupMessage = @"
 Write-Host ''
@@ -201,6 +202,55 @@ function Finish-Feature {
     Write-Host "Feature '$FeatureName' merged and cleaned up." -ForegroundColor Green
 }
 
+function Commit-Main {
+    if (-not (Test-Path $MainPath)) {
+        Write-Host "Main worktree not found at $MainPath" -ForegroundColor Red
+        return
+    }
+
+    Write-Host ""
+    Write-Host "[1/3] Checking main status..." -ForegroundColor Cyan
+    Push-Location $MainPath
+    $status = git status --porcelain
+
+    if (-not $status) {
+        Write-Host "No changes to commit on main." -ForegroundColor Gray
+        Pop-Location
+        return
+    }
+
+    git status
+
+    Write-Host ""
+    Write-Host "Enter commit message (or press Enter for default): " -NoNewline -ForegroundColor White
+    $CommitMessage = Read-Host
+    if ([string]::IsNullOrWhiteSpace($CommitMessage)) {
+        $CommitMessage = "Update main"
+    }
+
+    Write-Host "`n[2/3] Committing changes..." -ForegroundColor Cyan
+    git add .
+    git commit -m $CommitMessage
+
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "Commit failed. Check git output above." -ForegroundColor Red
+        Pop-Location
+        return
+    }
+
+    Write-Host "`n[3/3] Pushing main..." -ForegroundColor Cyan
+    git push
+
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "Push failed. Check git output above." -ForegroundColor Red
+        Pop-Location
+        return
+    }
+
+    Pop-Location
+    Write-Host "`nMain branch committed and pushed." -ForegroundColor Green
+}
+
 function Destroy-Feature {
     param([string]$FeatureName)
     
@@ -261,23 +311,24 @@ do {
 
     switch ($choice.ToUpper()) {
         # Start
-        "1"  { Start-Feature "f1"; pause }
-        "2"  { Start-Feature "f2"; pause }
-        "3"  { Start-Feature "f3"; pause }
-        "4"  { Start-Feature "f4"; pause }
+        "1"  { Start-Feature "f1";   pause }
+        "2"  { Start-Feature "f2";   pause }
+        "3"  { Start-Feature "f3";   pause }
+        "4"  { Start-Feature "f4";   pause }
         # Finish
-        "F1" { Finish-Feature "f1"; pause }
-        "F2" { Finish-Feature "f2"; pause }
-        "F3" { Finish-Feature "f3"; pause }
-        "F4" { Finish-Feature "f4"; pause }
+        "F1" { Finish-Feature "f1";  pause }
+        "F2" { Finish-Feature "f2";  pause }
+        "F3" { Finish-Feature "f3";  pause }
+        "F4" { Finish-Feature "f4";  pause }
         # Destroy
         "D1" { Destroy-Feature "f1"; pause }
         "D2" { Destroy-Feature "f2"; pause }
         "D3" { Destroy-Feature "f3"; pause }
         "D4" { Destroy-Feature "f4"; pause }
         # Other
-        "M"  { Start-Feature "main"; pause }
-        "L"  { List-Worktrees; pause }
+        "M"  { Start-Feature  "main"; pause }
+        "C"  { Commit-Main;           pause }
+        "L"  { List-Worktrees;        pause }
         "Q"  { exit }
         default { Write-Host "Invalid choice" -ForegroundColor Red; Start-Sleep -Seconds 1 }
     }

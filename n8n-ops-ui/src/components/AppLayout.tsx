@@ -4,6 +4,13 @@ import { useAppStore } from '@/store/use-app-store';
 import { useFeatures, type PlanFeatures } from '@/lib/features';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
 import { ThemeToggle } from '@/components/ThemeToggle';
 import { PlanBadge } from '@/components/FeatureGate';
 import {
@@ -29,6 +36,7 @@ import {
   Bell,
   Sparkles,
   Crown,
+  UserCircle,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
@@ -80,9 +88,15 @@ const navigationSections: NavSection[] = [
 export function AppLayout() {
   const location = useLocation();
   const navigate = useNavigate();
-  const { user, logout } = useAuth();
+  const { user, logout, availableUsers, loginAs } = useAuth();
   const { sidebarOpen, toggleSidebar } = useAppStore();
   const { canUseFeature, planName } = useFeatures();
+
+  const handleUserSwitch = async (userId: string) => {
+    await loginAs(userId);
+    // Refresh the page to reload data for new user
+    window.location.reload();
+  };
 
   // Check if a nav item is accessible based on plan
   const isFeatureAvailable = (item: NavItem): boolean => {
@@ -209,6 +223,24 @@ export function AppLayout() {
             </Button>
 
             <div className="flex items-center gap-4">
+              {/* Dev User Switcher */}
+              {availableUsers.length > 0 && (
+                <div className="flex items-center gap-2">
+                  <UserCircle className="h-4 w-4 text-muted-foreground" />
+                  <Select value={user?.id} onValueChange={handleUserSwitch}>
+                    <SelectTrigger className="w-[200px]">
+                      <SelectValue placeholder="Select user" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {availableUsers.map((u) => (
+                        <SelectItem key={u.id} value={u.id}>
+                          {u.name} ({u.email})
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+              )}
               <Badge variant="outline">
                 Environment: <span className="ml-1 font-semibold">dev</span>
               </Badge>
