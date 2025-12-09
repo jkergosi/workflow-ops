@@ -20,6 +20,7 @@ import { ObservabilityPage } from '@/pages/ObservabilityPage';
 import { TeamPage } from '@/pages/TeamPage';
 import { BillingPage } from '@/pages/BillingPage';
 import { N8NUsersPage } from '@/pages/N8NUsersPage';
+import { CredentialsPage } from '@/pages/CredentialsPage';
 import { EnvironmentSetupPage } from '@/pages/EnvironmentSetupPage';
 import { RestorePage } from '@/pages/RestorePage';
 import {
@@ -112,6 +113,7 @@ function App() {
                 <Route path="/deployments" element={<DeploymentsPage />} />
                 <Route path="/observability" element={<ObservabilityPage />} />
                 <Route path="/n8n-users" element={<N8NUsersPage />} />
+                <Route path="/credentials" element={<CredentialsPage />} />
                 <Route path="/team" element={<TeamPage />} />
                 <Route path="/billing" element={<BillingPage />} />
                 {/* Admin Routes */}

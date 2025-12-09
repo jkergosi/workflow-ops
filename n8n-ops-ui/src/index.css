@@ -32,11 +32,11 @@
   }
 
   .dark {
-    --background: 222.2 84% 4.9%;
+    --background: 0 0% 2%;
     --foreground: 210 40% 98%;
-    --card: 222.2 84% 4.9%;
+    --card: 0 0% 4%;
     --card-foreground: 210 40% 98%;
-    --popover: 222.2 84% 4.9%;
+    --popover: 0 0% 4%;
     --popover-foreground: 210 40% 98%;
     --primary: 217.2 91.2% 59.8%;
     --primary-foreground: 222.2 47.4% 11.2%;
@@ -75,4 +75,25 @@
   to {
     transform: rotate(360deg);
   }
+}
+
+/* JSON Syntax Highlighting */
+.json-key {
+  @apply text-sky-600 dark:text-sky-400;
+}
+
+.json-string {
+  @apply text-green-600 dark:text-green-400;
+}
+
+.json-number {
+  @apply text-purple-600 dark:text-purple-400;
+}
+
+.json-bool {
+  @apply text-orange-600 dark:text-orange-400;
+}
+
+.json-null {
+  @apply text-gray-500 dark:text-gray-400;
 }

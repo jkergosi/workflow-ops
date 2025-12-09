@@ -1,5 +1,5 @@
 import { useState, useMemo, useEffect } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useSearchParams } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -37,8 +37,20 @@ export function WorkflowsPage() {
   const queryClient = useQueryClient();
   const selectedEnvironment = useAppStore((state) => state.selectedEnvironment);
   const setSelectedEnvironment = useAppStore((state) => state.setSelectedEnvironment);
+  const [searchParams, setSearchParams] = useSearchParams();
 
-  const [searchQuery, setSearchQuery] = useState('');
+  // Initialize searchQuery from URL params
+  const [searchQuery, setSearchQuery] = useState(() => searchParams.get('search') || '');
+
+  // Update URL when search changes (clear it when search is empty)
+  useEffect(() => {
+    if (searchQuery) {
+      searchParams.set('search', searchQuery);
+    } else {
+      searchParams.delete('search');
+    }
+    setSearchParams(searchParams, { replace: true });
+  }, [searchQuery, searchParams, setSearchParams]);
   const [selectedTag, setSelectedTag] = useState<string[]>([]);
   const [selectedStatus, setSelectedStatus] = useState<string>('');
   const [sortField, setSortField] = useState<SortField>('name');

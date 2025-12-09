@@ -37,6 +37,7 @@ import {
   Sparkles,
   Crown,
   UserCircle,
+  Key,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
@@ -67,6 +68,7 @@ const navigationSections: NavSection[] = [
       { name: 'Deployments', href: '/deployments', icon: Rocket, requiredPlan: 'pro', feature: 'environment_promotion' },
       { name: 'Observability', href: '/observability', icon: Activity, requiredPlan: 'pro', feature: 'execution_metrics' },
       { name: 'N8N Users', href: '/n8n-users', icon: UserCog },
+      { name: 'Credentials', href: '/credentials', icon: Key },
       { name: 'Team', href: '/team', icon: Users, requiredPlan: 'pro', feature: 'role_based_access' },
       { name: 'Billing', href: '/billing', icon: CreditCard },
     ],

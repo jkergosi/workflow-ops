@@ -389,15 +389,31 @@ class DatabaseService:
     async def upsert_credential(self, tenant_id: str, environment_id: str, credential_data: Dict[str, Any]) -> Dict[str, Any]:
         """Insert or update a credential in the cache"""
         from datetime import datetime
+        import json
 
-        # Extract fields from N8N credential data
+        # Extract fields from credential data (either from N8N API or extracted from workflows)
+        # Generate a unique key for credentials extracted from workflows
+        cred_id = credential_data.get("id")
+        cred_type = credential_data.get("type", "")
+        cred_name = credential_data.get("name", "")
+
+        # If no ID provided, generate one from type:name
+        if not cred_id or ":" in str(cred_id):
+            cred_id = f"{cred_type}:{cred_name}"
+
+        # Store used_by_workflows in credential_data since table might not have the column
+        credential_data_with_workflows = {
+            **credential_data,
+            "used_by_workflows": credential_data.get("used_by_workflows", [])
+        }
+
         credential_record = {
             "tenant_id": tenant_id,
             "environment_id": environment_id,
-            "n8n_credential_id": credential_data.get("id"),
-            "name": credential_data.get("name"),
-            "type": credential_data.get("type"),
-            "credential_data": credential_data,  # Store complete credential JSON (no sensitive data)
+            "n8n_credential_id": cred_id,
+            "name": cred_name,
+            "type": cred_type,
+            "credential_data": credential_data_with_workflows,  # Store complete credential JSON including used_by_workflows
             "created_at": credential_data.get("createdAt"),
             "updated_at": credential_data.get("updatedAt"),
             "last_synced_at": datetime.utcnow().isoformat(),
@@ -408,22 +424,32 @@ class DatabaseService:
         return response.data[0] if response.data else None
 
     async def sync_credentials_from_n8n(self, tenant_id: str, environment_id: str, n8n_credentials: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        """Sync credentials from N8N API to database cache"""
+        """Sync credentials extracted from N8N workflows to database cache"""
         from datetime import datetime
 
-        # Get current credential IDs from N8N
-        n8n_credential_ids = {credential.get("id") for credential in n8n_credentials}
+        # Build set of credential keys (type:name) from incoming data
+        n8n_credential_keys = set()
+        for credential in n8n_credentials:
+            cred_id = credential.get("id")
+            cred_type = credential.get("type", "")
+            cred_name = credential.get("name", "")
+            # Use the same key format as upsert_credential
+            if not cred_id or ":" in str(cred_id):
+                key = f"{cred_type}:{cred_name}"
+            else:
+                key = cred_id
+            n8n_credential_keys.add(key)
 
-        # Mark credentials as deleted if they no longer exist in N8N
+        # Mark credentials as deleted if they no longer exist in N8N workflows
         existing_credentials = await self.get_credentials(tenant_id, environment_id)
         for existing in existing_credentials:
-            if existing["n8n_credential_id"] not in n8n_credential_ids:
+            if existing["n8n_credential_id"] not in n8n_credential_keys:
                 self.client.table("credentials").update({
                     "is_deleted": True,
                     "last_synced_at": datetime.utcnow().isoformat()
                 }).eq("id", existing["id"]).execute()
 
-        # Upsert all credentials from N8N
+        # Upsert all credentials from N8N workflows
         results = []
         for credential_data in n8n_credentials:
             result = await self.upsert_credential(tenant_id, environment_id, credential_data)

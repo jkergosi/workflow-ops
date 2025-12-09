@@ -48,6 +48,12 @@ export function ExecutionsPage() {
     return env?.id;
   }, [environments, selectedEnvironment]);
 
+  // Get the current environment's base URL
+  const currentEnvironment = useMemo(() => {
+    if (!environments?.data) return undefined;
+    return environments.data.find((env) => env.type === selectedEnvironment);
+  }, [environments, selectedEnvironment]);
+
   // Fetch executions from database
   const { data: executions, isLoading, refetch } = useQuery({
     queryKey: ['executions', currentEnvironmentId],
@@ -200,16 +206,13 @@ export function ExecutionsPage() {
 
   const hasActiveFilters = searchQuery || selectedStatus;
 
-  // Get N8N URL for opening executions
-  const getN8nUrl = () => {
-    const devUrl = localStorage.getItem('dev_n8n_url') || 'http://localhost:5678';
-    return devUrl;
-  };
-
   const openExecution = (executionId: string, workflowId: string) => {
-    const n8nUrl = getN8nUrl();
-    const url = `${n8nUrl}/workflow/${workflowId}/executions/${executionId}`;
-    window.open(url, '_blank');
+    if (currentEnvironment?.baseUrl) {
+      const url = `${currentEnvironment.baseUrl}/workflow/${workflowId}/executions/${executionId}`;
+      window.open(url, '_blank');
+    } else {
+      toast.error('N8N URL not configured for this environment');
+    }
   };
 
   const getStatusBadge = (status: string) => {
@@ -439,7 +442,7 @@ export function ExecutionsPage() {
                           title="View execution in N8N"
                         >
                           <ExternalLink className="h-3 w-3 mr-1" />
-                          View
+                          N8N
                         </Button>
                       </TableCell>
                     </TableRow>

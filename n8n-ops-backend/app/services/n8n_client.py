@@ -166,16 +166,55 @@ class N8NClient:
             return data.get("data", []) if isinstance(data, dict) else data
 
     async def get_credentials(self) -> List[Dict[str, Any]]:
-        """Fetch all credentials from N8N (metadata only, no sensitive data)"""
-        async with httpx.AsyncClient() as client:
-            response = await client.get(
-                f"{self.base_url}/api/v1/credentials",
-                headers=self.headers,
-                timeout=30.0
-            )
-            response.raise_for_status()
-            data = response.json()
-            return data.get("data", []) if isinstance(data, dict) else data
+        """Extract credentials referenced in workflows.
+
+        Note: N8N's public API does not support GET /credentials to list all credentials.
+        Instead, we extract credential references from workflow nodes.
+        Each node that uses credentials has a 'credentials' property with the credential name and type.
+        """
+        credentials_map = {}  # Use dict to dedupe by name+type
+
+        try:
+            workflows = await self.get_workflows()
+
+            for workflow in workflows:
+                nodes = workflow.get("nodes", [])
+                for node in nodes:
+                    node_credentials = node.get("credentials", {})
+                    for cred_type, cred_info in node_credentials.items():
+                        if isinstance(cred_info, dict):
+                            cred_id = cred_info.get("id")
+                            cred_name = cred_info.get("name", "Unknown")
+                        else:
+                            # Sometimes it's just the credential name as a string
+                            cred_id = None
+                            cred_name = str(cred_info) if cred_info else "Unknown"
+
+                        # Create unique key for deduplication
+                        key = f"{cred_type}:{cred_name}"
+                        if key not in credentials_map:
+                            credentials_map[key] = {
+                                "id": cred_id or key,  # Use key as fallback ID
+                                "name": cred_name,
+                                "type": cred_type,
+                                "used_by_workflows": []
+                            }
+
+                        # Track which workflows use this credential
+                        workflow_ref = {
+                            "id": workflow.get("id"),
+                            "name": workflow.get("name")
+                        }
+                        if workflow_ref not in credentials_map[key]["used_by_workflows"]:
+                            credentials_map[key]["used_by_workflows"].append(workflow_ref)
+
+            return list(credentials_map.values())
+
+        except Exception as e:
+            # If we can't get workflows, return empty list
+            import logging
+            logging.warning(f"Failed to extract credentials from workflows: {str(e)}")
+            return []
 
     async def get_users(self) -> List[Dict[str, Any]]:
         """Fetch all users from N8N instance"""

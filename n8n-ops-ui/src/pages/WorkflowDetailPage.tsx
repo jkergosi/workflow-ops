@@ -57,6 +57,10 @@ import {
   Layers,
   Share2,
   ExternalLink,
+  Code,
+  Copy,
+  Check,
+  Download,
 } from 'lucide-react';
 import type { EnvironmentType, Workflow, WorkflowNode, ExecutionMetricsSummary, Execution } from '@/types';
 
@@ -148,6 +152,358 @@ function getPortabilityExplanation(score: number): string | null {
 function getProdSafeExplanation(isSafe: boolean, piiRisks: string[]): string | null {
   if (isSafe) return null;
   return `${piiRisks.length} node(s) may handle PII data (email, phone, SSN). Review data handling and ensure compliance before promoting to production.`;
+}
+
+// JSON Tree Node Component
+function JsonTreeNode({
+  keyName,
+  value,
+  depth = 0,
+  defaultExpanded = true,
+  isLast = true,
+}: {
+  keyName?: string;
+  value: unknown;
+  depth?: number;
+  defaultExpanded?: boolean;
+  isLast?: boolean;
+}) {
+  const [expanded, setExpanded] = useState(defaultExpanded);
+  const indent = depth * 16;
+
+  const isObject = value !== null && typeof value === 'object' && !Array.isArray(value);
+  const isArray = Array.isArray(value);
+  const isExpandable = isObject || isArray;
+
+  const renderValue = () => {
+    if (value === null) return <span className="json-null">null</span>;
+    if (typeof value === 'boolean') return <span className="json-bool">{value.toString()}</span>;
+    if (typeof value === 'number') return <span className="json-number">{value}</span>;
+    if (typeof value === 'string') {
+      // Truncate very long strings
+      const displayStr = value.length > 100 ? value.slice(0, 100) + '...' : value;
+      return <span className="json-string">"{displayStr}"</span>;
+    }
+    return null;
+  };
+
+  const comma = !isLast ? ',' : '';
+
+  if (!isExpandable) {
+    return (
+      <div style={{ paddingLeft: indent }} className="leading-6">
+        {keyName !== undefined && (
+          <>
+            <span className="json-key">"{keyName}"</span>
+            <span className="text-foreground">: </span>
+          </>
+        )}
+        {renderValue()}
+        <span className="text-foreground">{comma}</span>
+      </div>
+    );
+  }
+
+  const entries = isArray ? value : Object.entries(value as Record<string, unknown>);
+  const itemCount = isArray ? value.length : Object.keys(value as Record<string, unknown>).length;
+  const openBracket = isArray ? '[' : '{';
+  const closeBracket = isArray ? ']' : '}';
+
+  return (
+    <div>
+      <div
+        style={{ paddingLeft: indent }}
+        className="leading-6 flex items-center cursor-pointer hover:bg-gray-200/50 dark:hover:bg-zinc-700/50 -mx-2 px-2 rounded"
+        onClick={() => setExpanded(!expanded)}
+      >
+        <span className="w-4 h-4 flex items-center justify-center mr-1 text-muted-foreground select-none text-xs font-bold">
+          {expanded ? '−' : '+'}
+        </span>
+        {keyName !== undefined && (
+          <>
+            <span className="json-key">"{keyName}"</span>
+            <span className="text-foreground">: </span>
+          </>
+        )}
+        <span className="text-foreground">{openBracket}</span>
+        {!expanded && (
+          <>
+            <span className="text-muted-foreground ml-1">
+              {isArray ? `${itemCount} items` : `${itemCount} keys`}
+            </span>
+            <span className="text-foreground">{closeBracket}{comma}</span>
+          </>
+        )}
+      </div>
+      {expanded && (
+        <>
+          {isArray ? (
+            (value as unknown[]).map((item, idx) => (
+              <JsonTreeNode
+                key={idx}
+                value={item}
+                depth={depth + 1}
+                defaultExpanded={depth < 1}
+                isLast={idx === (value as unknown[]).length - 1}
+              />
+            ))
+          ) : (
+            Object.entries(value as Record<string, unknown>).map(([k, v], idx, arr) => (
+              <JsonTreeNode
+                key={k}
+                keyName={k}
+                value={v}
+                depth={depth + 1}
+                defaultExpanded={depth < 1}
+                isLast={idx === arr.length - 1}
+              />
+            ))
+          )}
+          <div style={{ paddingLeft: indent }} className="leading-6">
+            <span className="w-4 h-4 inline-block mr-1"></span>
+            <span className="text-foreground">{closeBracket}{comma}</span>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+// JSON Viewer Tab Component
+function JsonViewerTab({ workflow }: { workflow: Workflow }) {
+  const [copied, setCopied] = useState(false);
+  const [allExpanded, setAllExpanded] = useState(true);
+  const [viewMode, setViewMode] = useState<'tree' | 'raw'>('tree');
+  const [treeKey, setTreeKey] = useState(0); // Force re-render for expand/collapse all
+
+  // Prepare workflow JSON for export (n8n compatible format)
+  const exportableJson = useMemo(() => {
+    return {
+      name: workflow.name,
+      nodes: workflow.nodes,
+      connections: workflow.connections,
+      active: workflow.active,
+      settings: workflow.settings || {},
+      staticData: workflow.staticData || null,
+      tags: workflow.tags?.map(tag => typeof tag === 'string' ? tag : tag?.name) || [],
+      ...(workflow.pinData && { pinData: workflow.pinData }),
+    };
+  }, [workflow]);
+
+  // Full JSON for copy/download
+  const fullJsonString = useMemo(() => {
+    return JSON.stringify(exportableJson, null, 2);
+  }, [exportableJson]);
+
+  const handleCopy = useCallback(async () => {
+    try {
+      await navigator.clipboard.writeText(fullJsonString);
+      setCopied(true);
+      toast.success('JSON copied to clipboard');
+      setTimeout(() => setCopied(false), 2000);
+    } catch {
+      toast.error('Failed to copy to clipboard');
+    }
+  }, [fullJsonString]);
+
+  const handleDownload = useCallback(() => {
+    const blob = new Blob([fullJsonString], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `${workflow.name.replace(/[^a-z0-9]/gi, '_').toLowerCase()}.json`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+    toast.success('JSON file downloaded');
+  }, [fullJsonString, workflow.name]);
+
+  const toggleExpandAll = useCallback(() => {
+    setAllExpanded(prev => !prev);
+    setTreeKey(prev => prev + 1); // Force tree to re-render with new default
+  }, []);
+
+  // Syntax highlighting for raw JSON
+  const highlightJson = useCallback((json: string) => {
+    const escaped = json
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;');
+
+    const result: string[] = [];
+    let i = 0;
+
+    while (i < escaped.length) {
+      if (escaped[i] === '"') {
+        let end = i + 1;
+        while (end < escaped.length && escaped[end] !== '"') {
+          if (escaped[end] === '\\') end++;
+          end++;
+        }
+        end++;
+
+        const str = escaped.slice(i, end);
+        let afterStr = end;
+        while (afterStr < escaped.length && /\s/.test(escaped[afterStr])) afterStr++;
+
+        if (escaped[afterStr] === ':') {
+          result.push(`<span class="json-key">${str}</span>`);
+        } else {
+          result.push(`<span class="json-string">${str}</span>`);
+        }
+        i = end;
+      }
+      else if (escaped.slice(i, i + 4) === 'true') {
+        result.push('<span class="json-bool">true</span>');
+        i += 4;
+      }
+      else if (escaped.slice(i, i + 5) === 'false') {
+        result.push('<span class="json-bool">false</span>');
+        i += 5;
+      }
+      else if (escaped.slice(i, i + 4) === 'null') {
+        result.push('<span class="json-null">null</span>');
+        i += 4;
+      }
+      else if (/[-\d]/.test(escaped[i]) && (i === 0 || /[\s\[\{:,]/.test(escaped[i - 1]))) {
+        let end = i;
+        if (escaped[end] === '-') end++;
+        while (end < escaped.length && /[\d.]/.test(escaped[end])) end++;
+        if (escaped[end] === 'e' || escaped[end] === 'E') {
+          end++;
+          if (escaped[end] === '+' || escaped[end] === '-') end++;
+          while (end < escaped.length && /\d/.test(escaped[end])) end++;
+        }
+        result.push(`<span class="json-number">${escaped.slice(i, end)}</span>`);
+        i = end;
+      }
+      else {
+        result.push(escaped[i]);
+        i++;
+      }
+    }
+
+    return result.join('');
+  }, []);
+
+  return (
+    <Card>
+      <CardHeader>
+        <div className="flex items-center justify-between">
+          <div>
+            <CardTitle className="flex items-center gap-2">
+              <Code className="h-5 w-5" />
+              Workflow JSON
+            </CardTitle>
+            <CardDescription>
+              View and export the workflow definition in n8n-compatible JSON format
+            </CardDescription>
+          </div>
+          <div className="flex items-center gap-2">
+            <div className="flex items-center border rounded-md">
+              <Button
+                variant={viewMode === 'tree' ? 'secondary' : 'ghost'}
+                size="sm"
+                onClick={() => setViewMode('tree')}
+                className="rounded-r-none"
+              >
+                Tree
+              </Button>
+              <Button
+                variant={viewMode === 'raw' ? 'secondary' : 'ghost'}
+                size="sm"
+                onClick={() => setViewMode('raw')}
+                className="rounded-l-none"
+              >
+                Raw
+              </Button>
+            </div>
+            {viewMode === 'tree' && (
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={toggleExpandAll}
+              >
+                {allExpanded ? 'Collapse All' : 'Expand All'}
+              </Button>
+            )}
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={handleCopy}
+              className="flex items-center gap-1"
+            >
+              {copied ? (
+                <>
+                  <Check className="h-4 w-4" />
+                  Copied
+                </>
+              ) : (
+                <>
+                  <Copy className="h-4 w-4" />
+                  Copy
+                </>
+              )}
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={handleDownload}
+              className="flex items-center gap-1"
+            >
+              <Download className="h-4 w-4" />
+              Download
+            </Button>
+          </div>
+        </div>
+      </CardHeader>
+      <CardContent>
+        {/* JSON Stats */}
+        <div className="mb-4 flex flex-wrap gap-4 text-sm text-muted-foreground">
+          <span>
+            <strong>{workflow.nodes?.length || 0}</strong> nodes
+          </span>
+          <span>
+            <strong>{Object.keys(workflow.connections || {}).length}</strong> connection groups
+          </span>
+          <span>
+            <strong>{(fullJsonString.length / 1024).toFixed(1)}</strong> KB
+          </span>
+          <span>
+            <strong>{fullJsonString.split('\n').length}</strong> lines
+          </span>
+        </div>
+
+        {/* JSON Viewer */}
+        <div className="relative">
+          {viewMode === 'tree' ? (
+            <div
+              className="p-4 rounded-lg bg-gray-100 dark:bg-zinc-800 overflow-auto max-h-[600px] text-sm font-mono border border-gray-200 dark:border-zinc-700"
+            >
+              <JsonTreeNode
+                key={treeKey}
+                value={exportableJson}
+                defaultExpanded={allExpanded}
+              />
+            </div>
+          ) : (
+            <pre
+              className="p-4 rounded-lg bg-gray-100 dark:bg-zinc-800 overflow-auto max-h-[600px] text-sm font-mono leading-relaxed border border-gray-200 dark:border-zinc-700"
+              style={{ tabSize: 2 }}
+            >
+              <code
+                dangerouslySetInnerHTML={{
+                  __html: highlightJson(fullJsonString),
+                }}
+              />
+            </pre>
+          )}
+        </div>
+
+      </CardContent>
+    </Card>
+  );
 }
 
 // Helper to calculate execution metrics from executions
@@ -807,6 +1163,10 @@ export function WorkflowDetailPage() {
           <TabsTrigger value="optimize" className="flex items-center gap-1">
             <Lightbulb className="h-4 w-4" />
             Optimize
+          </TabsTrigger>
+          <TabsTrigger value="json" className="flex items-center gap-1">
+            <Code className="h-4 w-4" />
+            JSON
           </TabsTrigger>
         </TabsList>
 
@@ -2062,6 +2422,11 @@ export function WorkflowDetailPage() {
               </div>
             </CardContent>
           </Card>
+        </TabsContent>
+
+        {/* JSON Tab */}
+        <TabsContent value="json" className="space-y-6">
+          <JsonViewerTab workflow={workflow} />
         </TabsContent>
       </Tabs>
 
