@@ -389,7 +389,7 @@ def analyze_security(nodes: List[Dict[str, Any]]) -> Dict[str, Any]:
     return {
         'score': score,
         'level': level,
-        'credentialCount': len(credentialized_nodes),
+        'credentialCount': len(credentialed_nodes),
         'credentialTypes': list(credential_types),
         'hardcodedSecretSignals': hardcoded_secret_signals,
         'overPrivilegedRisks': [],

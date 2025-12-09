@@ -1,6 +1,7 @@
 import { useParams, useSearchParams, Link } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { useMemo, useState } from 'react';
+import { useMemo, useState, useCallback } from 'react';
+import { ArrowUpDown, Filter } from 'lucide-react';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -17,6 +18,8 @@ import { api } from '@/lib/api';
 import { apiClient } from '@/lib/api-client';
 import { analyzeWorkflow, formatNodeType, type WorkflowAnalysis, type NodeAnalysis } from '@/lib/workflow-analysis';
 import { WorkflowHeroSection } from '@/components/workflow/WorkflowHeroSection';
+import { WorkflowGraphTab } from '@/components/workflow/WorkflowGraphTab';
+import { NodeDetailsPanel } from '@/components/workflow/NodeDetailsPanel';
 import { toast } from 'sonner';
 import {
   ArrowLeft,
@@ -50,6 +53,10 @@ import {
   Server,
   Workflow as WorkflowIcon,
   RefreshCw,
+  History,
+  Layers,
+  Share2,
+  ExternalLink,
 } from 'lucide-react';
 import type { EnvironmentType, Workflow, WorkflowNode, ExecutionMetricsSummary, Execution } from '@/types';
 
@@ -196,6 +203,9 @@ export function WorkflowDetailPage() {
   const queryClient = useQueryClient();
   const environment = (searchParams.get('environment') || 'dev') as EnvironmentType;
   const [activeTab, setActiveTab] = useState('overview');
+  const [selectedNode, setSelectedNode] = useState<WorkflowNode | null>(null);
+  const [recommendationFilter, setRecommendationFilter] = useState<string>('all');
+  const [recommendationSort, setRecommendationSort] = useState<{ field: string; direction: 'asc' | 'desc' }>({ field: 'category', direction: 'asc' });
 
   // Workflow query
   const { data: workflowResponse, isLoading, error } = useQuery({
@@ -252,6 +262,308 @@ export function WorkflowDetailPage() {
     if (!executionsData) return null;
     return calculateExecutionMetrics(executionsData as Execution[]);
   }, [executionsData]);
+
+  // Calculate node metrics with I/O samples
+  interface NodeMetrics {
+    nodeId: string;
+    avgDuration: number;
+    failureRate: number;
+    lastStatus: 'success' | 'error' | 'running';
+    executionCount: number;
+    lastError?: string;
+    sampleInput?: any;
+    sampleOutput?: any;
+  }
+
+  const nodeMetrics = useMemo(() => {
+    if (!workflow || !executionsData || !Array.isArray(executionsData)) {
+      return new Map<string, NodeMetrics>();
+    }
+    
+    const metrics = new Map<string, NodeMetrics>();
+    
+    workflow.nodes.forEach(node => {
+      const nodeExecutions = executionsData.filter((exec: Execution) => {
+        const execData = exec.data?.data?.resultData?.runData;
+        return execData && execData[node.name];
+      });
+      
+      if (nodeExecutions.length === 0) {
+        metrics.set(node.id, {
+          nodeId: node.id,
+          avgDuration: 0,
+          failureRate: 0,
+          lastStatus: 'success',
+          executionCount: 0,
+        });
+        return;
+      }
+      
+      const durations: number[] = [];
+      let errorCount = 0;
+      let lastStatus: 'success' | 'error' | 'running' = 'success';
+      let lastError: string | undefined;
+      let sampleInput: any;
+      let sampleOutput: any;
+      
+      // Process most recent execution first
+      const sortedExecutions = [...nodeExecutions].sort((a: Execution, b: Execution) => 
+        new Date(b.startedAt).getTime() - new Date(a.startedAt).getTime()
+      );
+      
+      sortedExecutions.forEach((exec: Execution) => {
+        const nodeData = exec.data?.data?.resultData?.runData?.[node.name];
+        if (nodeData && Array.isArray(nodeData)) {
+          const latestRun = nodeData[nodeData.length - 1];
+          
+          if (latestRun.executionTime) durations.push(latestRun.executionTime);
+          if (latestRun.error) {
+            errorCount++;
+            if (!lastError) {
+              lastError = latestRun.error.message || JSON.stringify(latestRun.error);
+            }
+          }
+          
+          // Extract I/O samples from first successful execution
+          if (!sampleInput && latestRun.data?.main?.[0]) {
+            sampleInput = latestRun.data.main[0];
+          }
+          if (!sampleOutput && latestRun.data?.main?.[0] && !latestRun.error) {
+            sampleOutput = latestRun.data.main[0];
+          }
+        }
+        
+        if (exec.status === 'error') {
+          lastStatus = 'error';
+        } else if (exec.status === 'running') {
+          lastStatus = 'running';
+        }
+      });
+      
+      const avgDuration = durations.length > 0
+        ? durations.reduce((a, b) => a + b, 0) / durations.length
+        : 0;
+      
+      const failureRate = nodeExecutions.length > 0
+        ? errorCount / nodeExecutions.length
+        : 0;
+      
+      metrics.set(node.id, {
+        nodeId: node.id,
+        avgDuration,
+        failureRate,
+        lastStatus,
+        executionCount: nodeExecutions.length,
+        lastError,
+        sampleInput,
+        sampleOutput,
+      });
+    });
+    
+    return metrics;
+  }, [workflow, executionsData]);
+
+  // Collect all recommendations from all advisory tabs
+  interface UnifiedRecommendation {
+    id: string;
+    text: string;
+    description: string;
+    category: string;
+    impact?: 'low' | 'medium' | 'high';
+    effort?: 'low' | 'medium' | 'high';
+    source: 'reliability' | 'performance' | 'cost' | 'security' | 'maintainability' | 'governance' | 'drift' | 'optimization';
+  }
+
+  // Helper to check if recommendation is actionable
+  const isActionable = (text: string): boolean => {
+    if (!text || text.trim().length < 10) return false;
+    
+    const lowerText = text.toLowerCase();
+    
+    // Filter out informational messages
+    const nonActionablePatterns = [
+      'no issues',
+      'no problems',
+      'no recommendations',
+      'looks good',
+      'well configured',
+      'properly configured',
+      'no action needed',
+      'no changes required',
+      'analysis failed',
+      'could not generate',
+    ];
+    
+    if (nonActionablePatterns.some(pattern => lowerText.includes(pattern))) {
+      return false;
+    }
+    
+    // Check for actionable verbs
+    const actionableVerbs = [
+      'add', 'enable', 'configure', 'set', 'update', 'remove', 'delete',
+      'implement', 'create', 'install', 'fix', 'resolve', 'improve',
+      'optimize', 'reduce', 'increase', 'decrease', 'change', 'modify',
+      'review', 'audit', 'validate', 'test', 'monitor', 'document',
+      'refactor', 'restructure', 'consolidate', 'separate', 'split',
+    ];
+    
+    return actionableVerbs.some(verb => lowerText.includes(verb));
+  };
+
+  // Helper to generate description from recommendation text
+  const generateDescription = (text: string, category: string, source: string): string => {
+    const lowerText = text.toLowerCase();
+    
+    // Extract key information and create clear description
+    if (lowerText.includes('error handling') || lowerText.includes('error handler')) {
+      return 'Add error handling nodes to catch and manage failures gracefully, preventing workflow crashes and improving reliability.';
+    }
+    
+    if (lowerText.includes('retry') || lowerText.includes('retry on fail')) {
+      return 'Enable retry logic on nodes that may fail due to transient issues (network, API rate limits). This improves workflow success rates.';
+    }
+    
+    if (lowerText.includes('credential') || lowerText.includes('authentication')) {
+      return 'Configure proper credentials for nodes that require authentication. Missing or invalid credentials will cause workflow failures.';
+    }
+    
+    if (lowerText.includes('parallel') || lowerText.includes('concurrent')) {
+      return 'Restructure workflow to execute independent operations in parallel, reducing total execution time and improving performance.';
+    }
+    
+    if (lowerText.includes('cost') || lowerText.includes('expensive') || lowerText.includes('api call')) {
+      return 'Optimize API usage and reduce unnecessary calls to lower operational costs. Consider caching, batching, or reducing frequency.';
+    }
+    
+    if (lowerText.includes('security') || lowerText.includes('secret') || lowerText.includes('credential')) {
+      return 'Review and secure sensitive data handling. Ensure credentials are properly managed and secrets are not hardcoded.';
+    }
+    
+    if (lowerText.includes('name') || lowerText.includes('naming')) {
+      return 'Use descriptive node names that clearly indicate their purpose. This improves workflow readability and maintainability.';
+    }
+    
+    if (lowerText.includes('environment') || lowerText.includes('env variable')) {
+      return 'Use environment variables instead of hardcoded values for configuration. This enables safe promotion between environments.';
+    }
+    
+    if (lowerText.includes('drift') || lowerText.includes('git') || lowerText.includes('version')) {
+      return 'Sync workflow changes with version control to prevent configuration drift and maintain consistency across environments.';
+    }
+    
+    if (lowerText.includes('complex') || lowerText.includes('simplify')) {
+      return 'Break down complex workflows into smaller, more manageable components. This improves maintainability and reduces errors.';
+    }
+    
+    // For optimizations, use the title as description context
+    if (source === 'optimization') {
+      return `Optimization opportunity: ${text}`;
+    }
+    
+    // Default: expand on the recommendation
+    return `Action required: ${text}. This improvement will enhance ${category} and overall workflow quality.`;
+  };
+
+  const allRecommendations = useMemo(() => {
+    if (!analysis) return [];
+    
+    const recommendations: UnifiedRecommendation[] = [];
+    let idCounter = 0;
+
+    // Add recommendations from each category
+    const categories = [
+      { source: 'reliability' as const, items: analysis.reliability.recommendations },
+      { source: 'performance' as const, items: analysis.performance.recommendations },
+      { source: 'cost' as const, items: analysis.cost.recommendations },
+      { source: 'security' as const, items: analysis.security.recommendations },
+      { source: 'maintainability' as const, items: analysis.maintainability.recommendations },
+      { source: 'governance' as const, items: analysis.governance.recommendations },
+      { source: 'drift' as const, items: analysis.drift.recommendations },
+    ];
+
+    categories.forEach(({ source, items }) => {
+      items.forEach((text) => {
+        // Only include actionable recommendations
+        if (isActionable(text)) {
+          recommendations.push({
+            id: `rec-${idCounter++}`,
+            text,
+            description: generateDescription(text, source, source),
+            category: source,
+            source,
+          });
+        }
+      });
+    });
+
+    // Add optimizations (they are always actionable)
+    analysis.optimizations.forEach((opt) => {
+      recommendations.push({
+        id: `opt-${idCounter++}`,
+        text: opt.description,
+        description: generateDescription(opt.description, opt.category, 'optimization'),
+        category: opt.category,
+        impact: opt.impact,
+        effort: opt.effort,
+        source: 'optimization',
+      });
+    });
+
+    return recommendations;
+  }, [analysis]);
+
+  // Filter and sort recommendations
+  const filteredAndSortedRecommendations = useMemo(() => {
+    let filtered = allRecommendations;
+
+    // Apply category filter
+    if (recommendationFilter !== 'all') {
+      filtered = filtered.filter(rec => rec.category === recommendationFilter || rec.source === recommendationFilter);
+    }
+
+    // Apply sorting
+    const sorted = [...filtered].sort((a, b) => {
+      let aValue: any;
+      let bValue: any;
+
+      switch (recommendationSort.field) {
+        case 'category':
+          aValue = a.category;
+          bValue = b.category;
+          break;
+        case 'source':
+          aValue = a.source;
+          bValue = b.source;
+          break;
+        case 'impact':
+          const impactOrder = { high: 3, medium: 2, low: 1, undefined: 0 };
+          aValue = impactOrder[a.impact || 'undefined'];
+          bValue = impactOrder[b.impact || 'undefined'];
+          break;
+        case 'effort':
+          const effortOrder = { low: 1, medium: 2, high: 3, undefined: 0 };
+          aValue = effortOrder[a.effort || 'undefined'];
+          bValue = effortOrder[b.effort || 'undefined'];
+          break;
+        default:
+          aValue = a.text;
+          bValue = b.text;
+      }
+
+      if (aValue < bValue) return recommendationSort.direction === 'asc' ? -1 : 1;
+      if (aValue > bValue) return recommendationSort.direction === 'asc' ? 1 : -1;
+      return 0;
+    });
+
+    return sorted;
+  }, [allRecommendations, recommendationFilter, recommendationSort]);
+
+  const handleSort = useCallback((field: string) => {
+    setRecommendationSort(prev => ({
+      field,
+      direction: prev.field === field && prev.direction === 'asc' ? 'desc' : 'asc',
+    }));
+  }, []);
 
   // Activate/Deactivate mutation
   const toggleActiveMutation = useMutation({
@@ -444,6 +756,18 @@ export function WorkflowDetailPage() {
             <FileText className="h-4 w-4" />
             Overview
           </TabsTrigger>
+          <TabsTrigger value="recommendations" className="flex items-center gap-1">
+            <Lightbulb className="h-4 w-4" />
+            Recommendations
+          </TabsTrigger>
+          <TabsTrigger value="graph" className="flex items-center gap-1">
+            <Share2 className="h-4 w-4" />
+            Graph
+          </TabsTrigger>
+          <TabsTrigger value="nodes" className="flex items-center gap-1">
+            <Layers className="h-4 w-4" />
+            Nodes
+          </TabsTrigger>
           <TabsTrigger value="structure" className="flex items-center gap-1">
             <Network className="h-4 w-4" />
             Structure
@@ -475,6 +799,10 @@ export function WorkflowDetailPage() {
           <TabsTrigger value="drift" className="flex items-center gap-1">
             <GitCompare className="h-4 w-4" />
             Drift
+          </TabsTrigger>
+          <TabsTrigger value="versions" className="flex items-center gap-1">
+            <History className="h-4 w-4" />
+            Versions
           </TabsTrigger>
           <TabsTrigger value="optimize" className="flex items-center gap-1">
             <Lightbulb className="h-4 w-4" />
@@ -612,8 +940,183 @@ export function WorkflowDetailPage() {
               )}
             </CardContent>
           </Card>
+        </TabsContent>
 
-          {/* Nodes Used */}
+        {/* Recommendations Tab */}
+        <TabsContent value="recommendations" className="space-y-6">
+          <Card>
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2">
+                <Lightbulb className="h-5 w-5" />
+                Actionable Recommendations ({filteredAndSortedRecommendations.length})
+              </CardTitle>
+              <CardDescription>
+                Actionable improvements from all advisory tabs - filtered to show only items requiring action
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              {/* Filters */}
+              <div className="mb-4 flex flex-wrap items-center gap-2">
+                <div className="flex items-center gap-2">
+                  <Filter className="h-4 w-4 text-muted-foreground" />
+                  <span className="text-sm font-medium">Filter by Category:</span>
+                </div>
+                <select
+                  value={recommendationFilter}
+                  onChange={(e) => setRecommendationFilter(e.target.value)}
+                  className="px-3 py-1.5 text-sm border rounded-md bg-background"
+                >
+                  <option value="all">All Categories</option>
+                  <option value="reliability">Reliability</option>
+                  <option value="performance">Performance</option>
+                  <option value="cost">Cost</option>
+                  <option value="security">Security</option>
+                  <option value="maintainability">Maintainability</option>
+                  <option value="governance">Governance</option>
+                  <option value="drift">Drift</option>
+                  <option value="optimization">Optimization</option>
+                </select>
+              </div>
+
+              {/* Recommendations Table */}
+              {filteredAndSortedRecommendations.length > 0 ? (
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead className="w-[30%]">
+                        <button
+                          onClick={() => handleSort('text')}
+                          className="flex items-center gap-1 hover:text-foreground"
+                        >
+                          Recommendation
+                          <ArrowUpDown className="h-3 w-3" />
+                        </button>
+                      </TableHead>
+                      <TableHead className="w-[40%]">
+                        Description
+                      </TableHead>
+                      <TableHead>
+                        <button
+                          onClick={() => handleSort('category')}
+                          className="flex items-center gap-1 hover:text-foreground"
+                        >
+                          Category
+                          <ArrowUpDown className="h-3 w-3" />
+                        </button>
+                      </TableHead>
+                      <TableHead>
+                        <button
+                          onClick={() => handleSort('impact')}
+                          className="flex items-center gap-1 hover:text-foreground"
+                        >
+                          Impact
+                          <ArrowUpDown className="h-3 w-3" />
+                        </button>
+                      </TableHead>
+                      <TableHead>
+                        <button
+                          onClick={() => handleSort('effort')}
+                          className="flex items-center gap-1 hover:text-foreground"
+                        >
+                          Effort
+                          <ArrowUpDown className="h-3 w-3" />
+                        </button>
+                      </TableHead>
+                      <TableHead className="w-[100px]">Actions</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {filteredAndSortedRecommendations.map((rec) => {
+                      // Map source to tab name
+                      const tabMap: Record<string, string> = {
+                        'reliability': 'reliability',
+                        'performance': 'performance',
+                        'cost': 'cost',
+                        'security': 'security',
+                        'maintainability': 'maintainability',
+                        'governance': 'governance',
+                        'drift': 'drift',
+                        'optimization': 'optimize',
+                      };
+                      
+                      const targetTab = tabMap[rec.source] || rec.source;
+                      
+                      return (
+                        <TableRow key={rec.id}>
+                          <TableCell className="font-medium">{rec.text}</TableCell>
+                          <TableCell className="text-sm text-muted-foreground">
+                            {rec.description}
+                          </TableCell>
+                          <TableCell>
+                            <Badge variant="outline" className="capitalize">
+                              {rec.category}
+                            </Badge>
+                          </TableCell>
+                          <TableCell>
+                            {rec.impact ? (
+                              <Badge
+                                variant={
+                                  rec.impact === 'high' ? 'destructive' :
+                                  rec.impact === 'medium' ? 'warning' :
+                                  'secondary'
+                                }
+                                className="capitalize"
+                              >
+                                {rec.impact}
+                              </Badge>
+                            ) : (
+                              <span className="text-muted-foreground text-sm">-</span>
+                            )}
+                          </TableCell>
+                          <TableCell>
+                            {rec.effort ? (
+                              <Badge
+                                variant={
+                                  rec.effort === 'high' ? 'destructive' :
+                                  rec.effort === 'medium' ? 'warning' :
+                                  'secondary'
+                                }
+                                className="capitalize"
+                              >
+                                {rec.effort}
+                              </Badge>
+                            ) : (
+                              <span className="text-muted-foreground text-sm">-</span>
+                            )}
+                          </TableCell>
+                          <TableCell>
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              onClick={() => setActiveTab(targetTab)}
+                              className="flex items-center gap-1 text-xs"
+                            >
+                              <ExternalLink className="h-3 w-3" />
+                              View Details
+                            </Button>
+                          </TableCell>
+                        </TableRow>
+                      );
+                    })}
+                  </TableBody>
+                </Table>
+              ) : (
+                <div className="text-center py-8 text-muted-foreground">
+                  <CheckCircle2 className="h-12 w-12 mx-auto mb-4 text-green-500" />
+                  <p>No actionable recommendations found for the selected filter.</p>
+                </div>
+              )}
+            </CardContent>
+          </Card>
+        </TabsContent>
+
+        {/* Graph Tab - DAG Visualization */}
+        <TabsContent value="graph" className="space-y-6">
+          <WorkflowGraphTab workflow={workflow} />
+        </TabsContent>
+
+        {/* Nodes Tab */}
+        <TabsContent value="nodes" className="space-y-6">
           <Card>
             <CardHeader>
               <CardTitle>Nodes Used ({analysis.nodes.length})</CardTitle>
@@ -630,36 +1133,69 @@ export function WorkflowDetailPage() {
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {analysis.nodes.map((node) => (
-                    <TableRow key={node.id}>
-                      <TableCell className="font-medium">
-                        {node.isTrigger && (
-                          <Badge variant="success" className="mr-2 text-xs">Trigger</Badge>
-                        )}
-                        {node.name}
-                      </TableCell>
-                      <TableCell>
-                        <Badge variant="secondary" className="text-xs">
-                          {formatNodeType(node.type)}
-                        </Badge>
-                      </TableCell>
-                      <TableCell className="capitalize text-muted-foreground">
-                        {node.category}
-                      </TableCell>
-                      <TableCell>
-                        {node.isCredentialed ? (
-                          <div className="flex items-center gap-1">
-                            <Lock className="h-3 w-3 text-yellow-500" />
-                            <span className="text-xs">Yes</span>
-                          </div>
-                        ) : (
-                          <span className="text-muted-foreground text-xs">None</span>
-                        )}
-                      </TableCell>
-                    </TableRow>
-                  ))}
+                  {analysis.nodes.map((nodeAnalysis) => {
+                    // Find the full workflow node
+                    const workflowNode = workflow?.nodes.find(n => n.id === nodeAnalysis.id);
+                    if (!workflowNode) return null;
+                    
+                    return (
+                      <TableRow 
+                        key={nodeAnalysis.id}
+                        className="cursor-pointer hover:bg-muted/50"
+                        onClick={() => setSelectedNode(workflowNode)}
+                      >
+                        <TableCell className="font-medium">
+                          {nodeAnalysis.isTrigger && (
+                            <Badge variant="success" className="mr-2 text-xs">Trigger</Badge>
+                          )}
+                          {nodeAnalysis.name}
+                        </TableCell>
+                        <TableCell>
+                          <Badge variant="secondary" className="text-xs">
+                            {formatNodeType(nodeAnalysis.type)}
+                          </Badge>
+                        </TableCell>
+                        <TableCell className="capitalize text-muted-foreground">
+                          {nodeAnalysis.category}
+                        </TableCell>
+                        <TableCell>
+                          {nodeAnalysis.isCredentialed ? (
+                            <div className="flex items-center gap-1">
+                              <Lock className="h-3 w-3 text-yellow-500" />
+                              <span className="text-xs">Yes</span>
+                            </div>
+                          ) : (
+                            <span className="text-muted-foreground text-xs">None</span>
+                          )}
+                        </TableCell>
+                      </TableRow>
+                    );
+                  })}
                 </TableBody>
               </Table>
+            </CardContent>
+          </Card>
+
+          {/* Node Categories Summary */}
+          <Card>
+            <CardHeader>
+              <CardTitle>Node Categories</CardTitle>
+              <CardDescription>Distribution of node types in this workflow</CardDescription>
+            </CardHeader>
+            <CardContent>
+              <div className="grid gap-4 md:grid-cols-3 lg:grid-cols-6">
+                {Object.entries(
+                  analysis.nodes.reduce((acc: Record<string, number>, node) => {
+                    acc[node.category] = (acc[node.category] || 0) + 1;
+                    return acc;
+                  }, {})
+                ).map(([category, count]) => (
+                  <div key={category} className="p-3 rounded-lg bg-muted text-center">
+                    <div className="text-2xl font-bold">{count}</div>
+                    <div className="text-xs text-muted-foreground capitalize">{category}</div>
+                  </div>
+                ))}
+              </div>
             </CardContent>
           </Card>
 
@@ -1402,7 +1938,142 @@ export function WorkflowDetailPage() {
             </CardContent>
           </Card>
         </TabsContent>
+
+        {/* Versions Tab */}
+        <TabsContent value="versions" className="space-y-6">
+          <Card>
+            <CardHeader>
+              <CardTitle>Version History</CardTitle>
+              <CardDescription>Track changes and workflow versions over time</CardDescription>
+            </CardHeader>
+            <CardContent>
+              <div className="space-y-6">
+                {/* Current Version Info */}
+                <div className="p-4 rounded-lg bg-muted">
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <h4 className="font-medium">Current Version</h4>
+                      <p className="text-sm text-muted-foreground mt-1">
+                        Last updated: {new Date(workflow.updatedAt).toLocaleString()}
+                      </p>
+                    </div>
+                    <Badge variant="success">Active</Badge>
+                  </div>
+                </div>
+
+                {/* Git Sync Status */}
+                {driftData?.gitConfigured ? (
+                  <div className="space-y-4">
+                    <h4 className="font-medium flex items-center gap-2">
+                      <GitCompare className="h-4 w-4" />
+                      GitHub Commits
+                    </h4>
+                    {driftData?.lastCommitSha ? (
+                      <div className="border rounded-lg divide-y">
+                        <div className="p-4 flex items-center justify-between">
+                          <div>
+                            <div className="flex items-center gap-2">
+                              <code className="text-sm bg-muted px-2 py-0.5 rounded">
+                                {driftData.lastCommitSha.substring(0, 7)}
+                              </code>
+                              <span className="text-sm text-muted-foreground">
+                                Latest commit
+                              </span>
+                            </div>
+                            {driftData.lastCommitDate && (
+                              <p className="text-xs text-muted-foreground mt-1">
+                                {new Date(driftData.lastCommitDate).toLocaleString()}
+                              </p>
+                            )}
+                          </div>
+                          {driftData.hasDrift ? (
+                            <Badge variant="warning">Has Changes</Badge>
+                          ) : (
+                            <Badge variant="success">In Sync</Badge>
+                          )}
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="text-center py-8 text-muted-foreground border rounded-lg">
+                        <History className="h-8 w-8 mx-auto mb-2 opacity-50" />
+                        <p>No Git history available</p>
+                        <p className="text-xs mt-1">Sync to GitHub to start tracking versions</p>
+                      </div>
+                    )}
+                  </div>
+                ) : (
+                  <div className="p-4 rounded-lg border border-dashed">
+                    <div className="text-center text-muted-foreground">
+                      <GitCompare className="h-8 w-8 mx-auto mb-2 opacity-50" />
+                      <p>GitHub not configured</p>
+                      <p className="text-xs mt-1">Configure GitHub integration in environment settings to enable version tracking</p>
+                    </div>
+                  </div>
+                )}
+
+                {/* Workflow Snapshots */}
+                <div className="space-y-4">
+                  <h4 className="font-medium flex items-center gap-2">
+                    <History className="h-4 w-4" />
+                    Workflow Snapshots
+                  </h4>
+                  <div className="text-center py-8 text-muted-foreground border rounded-lg">
+                    <Layers className="h-8 w-8 mx-auto mb-2 opacity-50" />
+                    <p>Snapshot history coming soon</p>
+                    <p className="text-xs mt-1">Snapshots are created before deployments and major changes</p>
+                  </div>
+                </div>
+
+                {/* Workflow Metadata */}
+                <div className="space-y-4">
+                  <h4 className="font-medium">Workflow Timeline</h4>
+                  <div className="border rounded-lg divide-y">
+                    <div className="p-4 flex items-center gap-4">
+                      <div className="w-2 h-2 rounded-full bg-green-500"></div>
+                      <div>
+                        <p className="text-sm font-medium">Created</p>
+                        <p className="text-xs text-muted-foreground">
+                          {new Date(workflow.createdAt).toLocaleString()}
+                        </p>
+                      </div>
+                    </div>
+                    <div className="p-4 flex items-center gap-4">
+                      <div className="w-2 h-2 rounded-full bg-blue-500"></div>
+                      <div>
+                        <p className="text-sm font-medium">Last Modified</p>
+                        <p className="text-xs text-muted-foreground">
+                          {new Date(workflow.updatedAt).toLocaleString()}
+                        </p>
+                      </div>
+                    </div>
+                    {workflow.lastSyncedAt && (
+                      <div className="p-4 flex items-center gap-4">
+                        <div className="w-2 h-2 rounded-full bg-purple-500"></div>
+                        <div>
+                          <p className="text-sm font-medium">Last Synced</p>
+                          <p className="text-xs text-muted-foreground">
+                            {new Date(workflow.lastSyncedAt).toLocaleString()}
+                          </p>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+        </TabsContent>
       </Tabs>
+
+      {/* Node Details Panel */}
+      {selectedNode && (
+        <NodeDetailsPanel
+          node={selectedNode}
+          metrics={nodeMetrics.get(selectedNode.id)}
+          executions={executionsData as Execution[] || []}
+          onClose={() => setSelectedNode(null)}
+        />
+      )}
     </div>
   );
 }

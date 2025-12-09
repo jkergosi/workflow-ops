@@ -21,12 +21,25 @@ export interface Environment {
 }
 
 // Workflow types
+export interface WorkflowNode {
+  id: string;
+  name: string;
+  type: string;
+  typeVersion?: number;
+  position: [number, number] | { x: number; y: number };
+  parameters?: Record<string, any>;
+  credentials?: Record<string, any>;
+  notes?: string;
+  notesInFlow?: boolean;
+  disabled?: boolean;
+}
+
 export interface Workflow {
   id: string;
   name: string;
   description?: string;
   active: boolean;
-  nodes: any[];
+  nodes: WorkflowNode[];
   connections: Record<string, any>;
   settings: Record<string, any>;
   tags: string[];
@@ -34,6 +47,8 @@ export interface Workflow {
   updatedAt: string;
   environment: EnvironmentType;
   analysis?: import('@/lib/workflow-analysis').WorkflowAnalysis;
+  lastSyncedAt?: string;
+  isArchived?: boolean;
 }
 
 // Snapshot types
