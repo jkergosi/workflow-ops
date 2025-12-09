@@ -359,10 +359,25 @@ async def sync_environment(environment_id: str):
         # Sync workflows
         try:
             workflows = await n8n_client.get_workflows()
+            
+            # Compute analysis for each workflow
+            from app.services.workflow_analysis_service import analyze_workflow
+            workflows_with_analysis = {}
+            for workflow in workflows:
+                try:
+                    analysis = analyze_workflow(workflow)
+                    workflows_with_analysis[workflow.get("id")] = analysis
+                except Exception as e:
+                    # Log error but continue sync - analysis is optional
+                    import logging
+                    logging.warning(f"Failed to analyze workflow {workflow.get('id', 'unknown')}: {str(e)}")
+                    # Continue without analysis for this workflow
+            
             synced_workflows = await db_service.sync_workflows_from_n8n(
                 MOCK_TENANT_ID,
                 environment_id,
-                workflows
+                workflows,
+                workflows_with_analysis=workflows_with_analysis if workflows_with_analysis else None
             )
             sync_results["workflows"]["synced"] = len(synced_workflows)
 

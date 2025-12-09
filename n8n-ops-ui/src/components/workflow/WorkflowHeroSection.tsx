@@ -21,7 +21,7 @@ import {
   Zap,
 } from 'lucide-react';
 import type { Workflow, EnvironmentType, DriftAnalysisResult, ExecutionMetricsSummary } from '@/types';
-import type { WorkflowAnalysis } from '@/lib/workflow-analysis';
+import { formatNodeType, type WorkflowAnalysis } from '@/lib/workflow-analysis';
 
 interface WorkflowHeroSectionProps {
   workflow: Workflow;
@@ -166,7 +166,7 @@ export function WorkflowHeroSection({
               <div className="flex flex-wrap gap-1">
                 {analysis.summary.triggerTypes.slice(0, 2).map((trigger, i) => (
                   <Badge key={i} variant="secondary" className="text-xs">
-                    {trigger.replace('n8n-nodes-base.', '')}
+                    {formatNodeType(trigger)}
                   </Badge>
                 ))}
               </div>

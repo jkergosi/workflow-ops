@@ -239,7 +239,7 @@ class DatabaseService:
         response = self.client.table("workflows").select("*").eq("tenant_id", tenant_id).eq("environment_id", environment_id).eq("n8n_workflow_id", n8n_workflow_id).eq("is_deleted", False).single().execute()
         return response.data if response.data else None
 
-    async def upsert_workflow(self, tenant_id: str, environment_id: str, workflow_data: Dict[str, Any]) -> Dict[str, Any]:
+    async def upsert_workflow(self, tenant_id: str, environment_id: str, workflow_data: Dict[str, Any], analysis: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """Insert or update a workflow in the cache"""
         from datetime import datetime
         import json
@@ -278,11 +278,15 @@ class DatabaseService:
             "last_synced_at": datetime.utcnow().isoformat(),
             "is_deleted": False
         }
+        
+        # Add analysis if provided
+        if analysis is not None:
+            workflow_record["analysis"] = analysis
 
         response = self.client.table("workflows").upsert(workflow_record, on_conflict="tenant_id,environment_id,n8n_workflow_id").execute()
         return response.data[0] if response.data else None
 
-    async def sync_workflows_from_n8n(self, tenant_id: str, environment_id: str, n8n_workflows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    async def sync_workflows_from_n8n(self, tenant_id: str, environment_id: str, n8n_workflows: List[Dict[str, Any]], workflows_with_analysis: Optional[Dict[str, Dict[str, Any]]] = None) -> List[Dict[str, Any]]:
         """Sync workflows from N8N API to database cache (batch operation)"""
         from datetime import datetime
 
@@ -301,7 +305,12 @@ class DatabaseService:
         # Upsert all workflows from N8N
         results = []
         for workflow_data in n8n_workflows:
-            result = await self.upsert_workflow(tenant_id, environment_id, workflow_data)
+            workflow_id = workflow_data.get("id")
+            analysis = None
+            if workflows_with_analysis and workflow_id in workflows_with_analysis:
+                analysis = workflows_with_analysis[workflow_id]
+            
+            result = await self.upsert_workflow(tenant_id, environment_id, workflow_data, analysis=analysis)
             if result:
                 results.append(result)
 

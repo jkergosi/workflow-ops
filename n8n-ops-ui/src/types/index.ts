@@ -33,6 +33,7 @@ export interface Workflow {
   createdAt: string;
   updatedAt: string;
   environment: EnvironmentType;
+  analysis?: import('@/lib/workflow-analysis').WorkflowAnalysis;
 }
 
 // Snapshot types

@@ -15,7 +15,7 @@ import {
 } from '@/components/ui/table';
 import { api } from '@/lib/api';
 import { apiClient } from '@/lib/api-client';
-import { analyzeWorkflow, type WorkflowAnalysis } from '@/lib/workflow-analysis';
+import { analyzeWorkflow, formatNodeType, type WorkflowAnalysis, type NodeAnalysis } from '@/lib/workflow-analysis';
 import { WorkflowHeroSection } from '@/components/workflow/WorkflowHeroSection';
 import { toast } from 'sonner';
 import {
@@ -124,6 +124,25 @@ function DependencyIcon({ type }: { type: string }) {
   return iconMap[type] || <Box className="h-4 w-4" />;
 }
 
+// Governance explanation helpers
+function getAuditabilityExplanation(score: number, nodes: NodeAnalysis[]): string | null {
+  if (score >= 100) return null;
+  if (score >= 90) return "All nodes have meaningful names for audit trail tracking.";
+  const poorlyNamed = nodes.filter(n => !n.name || n.name.length <= 3).length;
+  return `${poorlyNamed} node(s) have default or short names. Rename nodes to describe their purpose for better audit trails.`;
+}
+
+function getPortabilityExplanation(score: number): string | null {
+  if (score >= 100) return null;
+  if (score >= 80) return "Workflow uses environment variables for configuration.";
+  return "No environment variables detected. Hardcoded values may cause issues when promoting between environments. Use $env references for URLs and environment-specific settings.";
+}
+
+function getProdSafeExplanation(isSafe: boolean, piiRisks: string[]): string | null {
+  if (isSafe) return null;
+  return `${piiRisks.length} node(s) may handle PII data (email, phone, SSN). Review data handling and ensure compliance before promoting to production.`;
+}
+
 // Helper to calculate execution metrics from executions
 function calculateExecutionMetrics(executions: Execution[]): ExecutionMetricsSummary {
   if (!executions || executions.length === 0) {
@@ -217,10 +236,14 @@ export function WorkflowDetailPage() {
     staleTime: 2 * 60 * 1000, // Cache for 2 minutes
   });
 
-  // Perform analysis
+  // Perform analysis - use stored analysis if available, otherwise compute client-side
   const analysis: WorkflowAnalysis | null = useMemo(() => {
     if (!workflow) return null;
-    // Cast to workflow-analysis Workflow type (compatible structure)
+    // Use stored analysis from database if available
+    if (workflow.analysis) {
+      return workflow.analysis as WorkflowAnalysis;
+    }
+    // Fallback to client-side computation for backward compatibility
     return analyzeWorkflow(workflow as Parameters<typeof analyzeWorkflow>[0]);
   }, [workflow]);
 
@@ -466,7 +489,6 @@ export function WorkflowDetailPage() {
             <Card>
               <CardHeader>
                 <CardTitle>Summary</CardTitle>
-                <CardDescription>Plain-English workflow purpose</CardDescription>
               </CardHeader>
               <CardContent className="space-y-4">
                 <div>
@@ -502,7 +524,6 @@ export function WorkflowDetailPage() {
             <Card>
               <CardHeader>
                 <CardTitle>Basic Information</CardTitle>
-                <CardDescription>Workflow metadata</CardDescription>
               </CardHeader>
               <CardContent className="space-y-4">
                 <div>
@@ -533,11 +554,15 @@ export function WorkflowDetailPage() {
                   <div>
                     <label className="text-sm font-medium text-muted-foreground">Tags</label>
                     <div className="flex flex-wrap gap-1 mt-1">
-                      {workflow.tags.map((tag) => (
-                        <Badge key={tag} variant="secondary" className="text-xs">
-                          {tag}
-                        </Badge>
-                      ))}
+                      {workflow.tags.map((tag: any, index: number) => {
+                        const tagName = typeof tag === 'string' ? tag : tag?.name || '';
+                        const tagKey = typeof tag === 'string' ? tag : tag?.id || index;
+                        return (
+                          <Badge key={tagKey} variant="secondary" className="text-xs">
+                            {tagName}
+                          </Badge>
+                        );
+                      })}
                     </div>
                   </div>
                 )}
@@ -614,8 +639,8 @@ export function WorkflowDetailPage() {
                         {node.name}
                       </TableCell>
                       <TableCell>
-                        <Badge variant="secondary" className="text-xs font-mono">
-                          {node.type}
+                        <Badge variant="secondary" className="text-xs">
+                          {formatNodeType(node.type)}
                         </Badge>
                       </TableCell>
                       <TableCell className="capitalize text-muted-foreground">
@@ -653,7 +678,7 @@ export function WorkflowDetailPage() {
                   {triggerNodes.map((node) => (
                     <div key={node.id} className="flex items-center gap-2 p-2 rounded-md bg-muted">
                       <Badge variant="outline" className="text-xs">
-                        {node.type.replace('n8n-nodes-base.', '')}
+                        {formatNodeType(node.type)}
                       </Badge>
                       <span className="text-sm">{node.name}</span>
                     </div>
@@ -1086,10 +1111,20 @@ export function WorkflowDetailPage() {
                 <div className="p-4 rounded-lg bg-muted">
                   <div className="text-2xl font-bold">{analysis.governance.auditability}%</div>
                   <div className="text-sm text-muted-foreground">Auditability</div>
+                  {analysis.governance.auditability < 100 && (
+                    <p className="text-xs text-yellow-600 dark:text-yellow-500 mt-2">
+                      {getAuditabilityExplanation(analysis.governance.auditability, analysis.nodes)}
+                    </p>
+                  )}
                 </div>
                 <div className="p-4 rounded-lg bg-muted">
                   <div className="text-2xl font-bold">{analysis.governance.environmentPortability}%</div>
                   <div className="text-sm text-muted-foreground">Environment Portability</div>
+                  {analysis.governance.environmentPortability < 100 && (
+                    <p className="text-xs text-yellow-600 dark:text-yellow-500 mt-2">
+                      {getPortabilityExplanation(analysis.governance.environmentPortability)}
+                    </p>
+                  )}
                 </div>
                 <div className="p-4 rounded-lg bg-muted">
                   <div className="flex items-center gap-2">
@@ -1103,6 +1138,11 @@ export function WorkflowDetailPage() {
                     </span>
                   </div>
                   <div className="text-sm text-muted-foreground">Promotion Safety</div>
+                  {!analysis.governance.promotionSafety && (
+                    <p className="text-xs text-red-600 dark:text-red-500 mt-2">
+                      {getProdSafeExplanation(analysis.governance.promotionSafety, analysis.governance.piiExposureRisks)}
+                    </p>
+                  )}
                 </div>
               </div>
 

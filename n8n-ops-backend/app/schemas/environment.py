@@ -1,5 +1,5 @@
-from pydantic import BaseModel, Field
-from typing import Optional
+from pydantic import BaseModel, Field, model_validator
+from typing import Optional, Any
 from datetime import datetime
 from enum import Enum
 
@@ -37,17 +37,26 @@ class EnvironmentUpdate(BaseModel):
     git_pat: Optional[str] = None
 
 
-class EnvironmentResponse(EnvironmentBase):
+class EnvironmentResponse(BaseModel):
+    """Response model for environments with n8n_ prefixed field names"""
     id: str
     tenant_id: str
+    n8n_name: str
+    n8n_type: EnvironmentType
+    n8n_base_url: str
+    n8n_api_key: Optional[str] = None
+    n8n_encryption_key: Optional[str] = None
+    is_active: bool = True
+    git_repo_url: Optional[str] = None
+    git_branch: Optional[str] = None
+    git_pat: Optional[str] = None
     last_connected: Optional[datetime] = None
     last_backup: Optional[datetime] = None
     workflow_count: int = 0
     created_at: datetime
     updated_at: datetime
 
-    class Config:
-        from_attributes = True
+    model_config = {"from_attributes": True}
 
 
 class EnvironmentTestConnection(BaseModel):

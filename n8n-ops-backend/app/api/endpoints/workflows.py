@@ -50,7 +50,7 @@ async def get_workflows(environment: str = "dev", force_refresh: bool = False):
                     # Extract data from workflow_data JSONB field
                     workflow_data = cached.get("workflow_data", {})
 
-                    transformed_workflows.append({
+                    workflow_obj = {
                         "id": cached.get("n8n_workflow_id"),
                         "name": cached.get("name"),
                         "description": "",
@@ -62,7 +62,11 @@ async def get_workflows(environment: str = "dev", force_refresh: bool = False):
                         "connections": workflow_data.get("connections", {}),
                         "settings": workflow_data.get("settings", {}),
                         "lastSyncedAt": cached.get("last_synced_at")  # Extra field for frontend to show cache status
-                    })
+                    }
+                    # Include analysis if available
+                    if cached.get("analysis"):
+                        workflow_obj["analysis"] = cached.get("analysis")
+                    transformed_workflows.append(workflow_obj)
 
                 return transformed_workflows
 
@@ -76,8 +80,26 @@ async def get_workflows(environment: str = "dev", force_refresh: bool = False):
         # Fetch workflows from N8N
         workflows = await n8n_client.get_workflows()
 
-        # Sync workflows to database cache
-        await db_service.sync_workflows_from_n8n(MOCK_TENANT_ID, env_id, workflows)
+        # Compute analysis for each workflow
+        from app.services.workflow_analysis_service import analyze_workflow
+        workflows_with_analysis = {}
+        for workflow in workflows:
+            try:
+                analysis = analyze_workflow(workflow)
+                workflows_with_analysis[workflow.get("id")] = analysis
+            except Exception as e:
+                # Log error but continue - analysis is optional
+                import logging
+                logging.warning(f"Failed to analyze workflow {workflow.get('id', 'unknown')}: {str(e)}")
+                # Continue without analysis for this workflow
+
+        # Sync workflows to database cache with analysis
+        await db_service.sync_workflows_from_n8n(
+            MOCK_TENANT_ID, 
+            env_id, 
+            workflows,
+            workflows_with_analysis=workflows_with_analysis if workflows_with_analysis else None
+        )
 
         # Transform the response to match our frontend expectations
         transformed_workflows = []
@@ -92,7 +114,7 @@ async def get_workflows(environment: str = "dev", force_refresh: bool = False):
                     elif isinstance(tag, str):
                         tag_strings.append(tag)
 
-            transformed_workflows.append({
+            workflow_obj = {
                 "id": workflow.get("id"),
                 "name": workflow.get("name"),
                 "description": "",  # N8N doesn't have description field
@@ -103,7 +125,12 @@ async def get_workflows(environment: str = "dev", force_refresh: bool = False):
                 "nodes": workflow.get("nodes", []),
                 "connections": workflow.get("connections", {}),
                 "settings": workflow.get("settings", {})
-            })
+            }
+            # Include analysis if available
+            workflow_id = workflow.get("id")
+            if workflow_id in workflows_with_analysis:
+                workflow_obj["analysis"] = workflows_with_analysis[workflow_id]
+            transformed_workflows.append(workflow_obj)
 
         # Update the workflow count in the environment record
         try:
@@ -456,6 +483,11 @@ async def get_workflow(workflow_id: str, environment: str = "dev"):
                 detail=f"Environment '{environment}' not configured"
             )
 
+        env_id = env_config.get("id")
+
+        # Try to get workflow from database first (to get analysis)
+        cached_workflow = await db_service.get_workflow(MOCK_TENANT_ID, env_id, workflow_id)
+        
         # Create N8N client
         n8n_client = N8NClient(
             base_url=env_config.get("base_url"),
@@ -464,6 +496,11 @@ async def get_workflow(workflow_id: str, environment: str = "dev"):
 
         # Fetch workflow from N8N
         workflow = await n8n_client.get_workflow(workflow_id)
+        
+        # Merge analysis from database if available
+        if cached_workflow and cached_workflow.get("analysis"):
+            workflow["analysis"] = cached_workflow.get("analysis")
+        
         return workflow
 
     except HTTPException:

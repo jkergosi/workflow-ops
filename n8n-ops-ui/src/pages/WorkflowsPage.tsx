@@ -25,7 +25,7 @@ import {
 } from '@/components/ui/table';
 import { api } from '@/lib/api';
 import { useAppStore } from '@/store/use-app-store';
-import { Upload, PlayCircle, PauseCircle, Search, ArrowUpDown, ArrowUp, ArrowDown, X, Edit, Trash2, Loader2, RefreshCw } from 'lucide-react';
+import { Upload, PlayCircle, PauseCircle, Search, ArrowUpDown, ArrowUp, ArrowDown, X, Edit, Trash2, Loader2, RefreshCw, ExternalLink } from 'lucide-react';
 import { toast } from 'sonner';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import type { Workflow, EnvironmentType } from '@/types';
@@ -64,6 +64,25 @@ export function WorkflowsPage() {
     queryKey: ['workflows', selectedEnvironment],
     queryFn: () => api.getWorkflows(selectedEnvironment),
   });
+
+  // Fetch environments to get the n8n base URL for opening workflows
+  const { data: environments } = useQuery({
+    queryKey: ['environments'],
+    queryFn: () => api.getEnvironments(),
+  });
+
+  // Get the current environment's base URL
+  const currentEnvironment = environments?.data?.find(
+    (env) => env.type === selectedEnvironment
+  );
+
+  const openInN8N = (workflowId: string) => {
+    if (currentEnvironment?.baseUrl) {
+      window.open(`${currentEnvironment.baseUrl}/workflow/${workflowId}`, '_blank');
+    } else {
+      toast.error('N8N URL not configured for this environment');
+    }
+  };
 
   const updateMutation = useMutation({
     mutationFn: async ({ workflowId }: { workflowId: string }) => {
@@ -583,6 +602,15 @@ export function WorkflowsPage() {
                     </TableCell>
                     <TableCell>
                       <div className="flex gap-2">
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={() => openInN8N(workflow.id)}
+                          title="Open in N8N"
+                        >
+                          <ExternalLink className="h-3 w-3 mr-1" />
+                          n8n
+                        </Button>
                         <Button
                           size="sm"
                           variant="outline"
