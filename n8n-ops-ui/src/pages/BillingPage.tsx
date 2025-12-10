@@ -4,7 +4,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { api } from '@/lib/api';
-import { CreditCard, Zap, CheckCircle2, Calendar, DollarSign, XCircle, Sparkles, Crown, BarChart3 } from 'lucide-react';
+import { CreditCard, Zap, CheckCircle2, Calendar, DollarSign, XCircle, Sparkles, Crown } from 'lucide-react';
 import { useFeatures } from '@/lib/features';
 import { toast } from 'sonner';
 import {
@@ -19,7 +19,7 @@ import { Label } from '@/components/ui/label';
 
 export function BillingPage() {
   const queryClient = useQueryClient();
-  const { features, usage } = useFeatures();
+  const { features } = useFeatures();
   const [upgradeDialogOpen, setUpgradeDialogOpen] = useState(false);
   const [cancelDialogOpen, setCancelDialogOpen] = useState(false);
   const [selectedPlan, setSelectedPlan] = useState<any>(null);
@@ -335,118 +335,7 @@ export function BillingPage() {
             </div>
           </CardContent>
         </Card>
-
-        <Card>
-          <CardHeader>
-            <CardTitle>Current Features</CardTitle>
-            <CardDescription>What's included in your plan</CardDescription>
-          </CardHeader>
-          <CardContent>
-            <div className="space-y-3">
-              {getFeaturesList(currentPlan?.features).map((feature, index) => (
-                <div key={index} className="flex items-center gap-2">
-                  {feature.enabled ? (
-                    <CheckCircle2 className="h-4 w-4 text-green-500" />
-                  ) : (
-                    <XCircle className="h-4 w-4 text-gray-300" />
-                  )}
-                  <span className={`text-sm flex-1 ${!feature.enabled && 'text-muted-foreground'}`}>
-                    {feature.label}
-                  </span>
-                  {!feature.enabled && feature.requiredPlan && (
-                    <Badge variant="outline" className="text-xs gap-1">
-                      {feature.requiredPlan === 'enterprise' ? (
-                        <Crown className="h-3 w-3 text-amber-500" />
-                      ) : (
-                        <Sparkles className="h-3 w-3 text-blue-500" />
-                      )}
-                      {feature.requiredPlan === 'enterprise' ? 'Enterprise' : 'Pro'}
-                    </Badge>
-                  )}
-                </div>
-              ))}
-            </div>
-          </CardContent>
-        </Card>
       </div>
-
-      {/* Usage Summary */}
-      {usage && (
-        <Card>
-          <CardHeader>
-            <CardTitle className="flex items-center gap-2">
-              <BarChart3 className="h-5 w-5" />
-              Usage Summary
-            </CardTitle>
-            <CardDescription>Current usage against your plan limits</CardDescription>
-          </CardHeader>
-          <CardContent>
-            <div className="grid gap-6 md:grid-cols-2">
-              {/* Environments Usage */}
-              <div className="space-y-2">
-                <div className="flex items-center justify-between">
-                  <span className="text-sm font-medium">Environments</span>
-                  <span className="text-sm text-muted-foreground">
-                    {usage.environments?.current || 0} / {features?.max_environments === 'unlimited' ? 'Unlimited' : features?.max_environments || 1}
-                  </span>
-                </div>
-                <div className="h-2 bg-secondary rounded-full overflow-hidden">
-                  <div
-                    className={`h-full transition-all ${
-                      features?.max_environments !== 'unlimited' &&
-                      (usage.environments?.current || 0) >= (features?.max_environments || 1)
-                        ? 'bg-amber-500'
-                        : 'bg-primary'
-                    }`}
-                    style={{
-                      width: features?.max_environments === 'unlimited'
-                        ? '10%'
-                        : `${Math.min(((usage.environments?.current || 0) / (features?.max_environments || 1)) * 100, 100)}%`
-                    }}
-                  />
-                </div>
-                {features?.max_environments !== 'unlimited' &&
-                 (usage.environments?.current || 0) >= (features?.max_environments || 1) && (
-                  <p className="text-xs text-amber-600">
-                    You've reached your environment limit. Upgrade for more.
-                  </p>
-                )}
-              </div>
-
-              {/* Team Members Usage */}
-              <div className="space-y-2">
-                <div className="flex items-center justify-between">
-                  <span className="text-sm font-medium">Team Members</span>
-                  <span className="text-sm text-muted-foreground">
-                    {usage.team_members?.current || 0} / {features?.max_team_members === 'unlimited' ? 'Unlimited' : features?.max_team_members || 1}
-                  </span>
-                </div>
-                <div className="h-2 bg-secondary rounded-full overflow-hidden">
-                  <div
-                    className={`h-full transition-all ${
-                      features?.max_team_members !== 'unlimited' &&
-                      (usage.team_members?.current || 0) >= (features?.max_team_members || 1)
-                        ? 'bg-amber-500'
-                        : 'bg-primary'
-                    }`}
-                    style={{
-                      width: features?.max_team_members === 'unlimited'
-                        ? '10%'
-                        : `${Math.min(((usage.team_members?.current || 0) / (features?.max_team_members || 1)) * 100, 100)}%`
-                    }}
-                  />
-                </div>
-                {features?.max_team_members !== 'unlimited' &&
-                 (usage.team_members?.current || 0) >= (features?.max_team_members || 1) && (
-                  <p className="text-xs text-amber-600">
-                    You've reached your team member limit. Upgrade for more.
-                  </p>
-                )}
-              </div>
-            </div>
-          </CardContent>
-        </Card>
-      )}
 
       {/* Available Plans */}
       <div>

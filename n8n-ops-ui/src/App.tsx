@@ -23,6 +23,7 @@ import { N8NUsersPage } from '@/pages/N8NUsersPage';
 import { CredentialsPage } from '@/pages/CredentialsPage';
 import { EnvironmentSetupPage } from '@/pages/EnvironmentSetupPage';
 import { RestorePage } from '@/pages/RestorePage';
+import { ProfilePage } from '@/pages/ProfilePage';
 import {
   TenantsPage,
   SystemBillingPage,
@@ -116,6 +117,7 @@ function App() {
                 <Route path="/credentials" element={<CredentialsPage />} />
                 <Route path="/team" element={<TeamPage />} />
                 <Route path="/billing" element={<BillingPage />} />
+                <Route path="/profile" element={<ProfilePage />} />
                 {/* Admin Routes */}
                 <Route path="/admin/tenants" element={<TenantsPage />} />
                 <Route path="/admin/billing" element={<SystemBillingPage />} />

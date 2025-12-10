@@ -1,9 +1,7 @@
-import { Link } from 'react-router-dom';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import {
-  ArrowLeft,
   ExternalLink,
   PlayCircle,
   PauseCircle,
@@ -107,32 +105,24 @@ export function WorkflowHeroSection({
     <div className="space-y-4">
       {/* Header Bar */}
       <div className="flex items-center justify-between">
-        <div className="flex items-center gap-4">
-          <Link to="/workflows">
-            <Button variant="ghost" size="sm">
-              <ArrowLeft className="h-4 w-4 mr-2" />
-              Back
-            </Button>
-          </Link>
-          <div>
-            <div className="flex items-center gap-3">
-              <h1 className="text-2xl font-bold">{workflow.name}</h1>
-              {workflow.active ? (
-                <Badge variant="success" className="flex items-center gap-1">
-                  <PlayCircle className="h-3 w-3" />
-                  Active
-                </Badge>
-              ) : (
-                <Badge variant="outline" className="flex items-center gap-1">
-                  <PauseCircle className="h-3 w-3" />
-                  Inactive
-                </Badge>
-              )}
-            </div>
-            <p className="text-sm text-muted-foreground">
-              {analysis.graph.nodeCount} nodes | Last modified {formatTimeAgo(workflow.updatedAt)} | {environment}
-            </p>
+        <div>
+          <div className="flex items-center gap-3">
+            <h3 className="text-2xl font-bold">{workflow.name}</h3>
+            {workflow.active ? (
+              <Badge variant="success" className="flex items-center gap-1">
+                <PlayCircle className="h-3 w-3" />
+                Active
+              </Badge>
+            ) : (
+              <Badge variant="outline" className="flex items-center gap-1">
+                <PauseCircle className="h-3 w-3" />
+                Inactive
+              </Badge>
+            )}
           </div>
+          <p className="text-muted-foreground">
+            {analysis.graph.nodeCount} nodes | Last modified {formatTimeAgo(workflow.updatedAt)} | {environment}
+          </p>
         </div>
         <div className="flex gap-2">
           <Button variant="outline" size="sm" onClick={onOpenInN8N}>

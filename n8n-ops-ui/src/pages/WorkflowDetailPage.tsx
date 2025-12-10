@@ -1,6 +1,6 @@
-import { useParams, useSearchParams, Link } from 'react-router-dom';
+import { useParams, useSearchParams } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { useMemo, useState, useCallback } from 'react';
+import { useMemo, useState, useCallback, useEffect } from 'react';
 import { ArrowUpDown, Filter } from 'lucide-react';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -22,7 +22,6 @@ import { WorkflowGraphTab } from '@/components/workflow/WorkflowGraphTab';
 import { NodeDetailsPanel } from '@/components/workflow/NodeDetailsPanel';
 import { toast } from 'sonner';
 import {
-  ArrowLeft,
   PlayCircle,
   PauseCircle,
   Calendar,
@@ -61,6 +60,8 @@ import {
   Copy,
   Check,
   Download,
+  Maximize2,
+  Minimize2,
 } from 'lucide-react';
 import type { EnvironmentType, Workflow, WorkflowNode, ExecutionMetricsSummary, Execution } from '@/types';
 
@@ -243,7 +244,7 @@ function JsonTreeNode({
                 key={idx}
                 value={item}
                 depth={depth + 1}
-                defaultExpanded={depth < 1}
+                defaultExpanded={defaultExpanded}
                 isLast={idx === (value as unknown[]).length - 1}
               />
             ))
@@ -254,7 +255,7 @@ function JsonTreeNode({
                 keyName={k}
                 value={v}
                 depth={depth + 1}
-                defaultExpanded={depth < 1}
+                defaultExpanded={defaultExpanded}
                 isLast={idx === arr.length - 1}
               />
             ))
@@ -275,6 +276,7 @@ function JsonViewerTab({ workflow }: { workflow: Workflow }) {
   const [allExpanded, setAllExpanded] = useState(true);
   const [viewMode, setViewMode] = useState<'tree' | 'raw'>('tree');
   const [treeKey, setTreeKey] = useState(0); // Force re-render for expand/collapse all
+  const [isViewerExpanded, setIsViewerExpanded] = useState(false);
 
   // Prepare workflow JSON for export (n8n compatible format)
   const exportableJson = useMemo(() => {
@@ -476,10 +478,22 @@ function JsonViewerTab({ workflow }: { workflow: Workflow }) {
         </div>
 
         {/* JSON Viewer */}
-        <div className="relative">
+        <div className="relative px-5">
+          <div className="absolute top-2 right-7 z-10">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setIsViewerExpanded(!isViewerExpanded)}
+              title={isViewerExpanded ? 'Collapse viewer' : 'Expand viewer'}
+              className="bg-white/80 dark:bg-zinc-900/80 backdrop-blur-sm"
+            >
+              {isViewerExpanded ? <Minimize2 className="h-4 w-4" /> : <Maximize2 className="h-4 w-4" />}
+            </Button>
+          </div>
           {viewMode === 'tree' ? (
             <div
-              className="p-4 rounded-lg bg-gray-100 dark:bg-zinc-800 overflow-auto max-h-[600px] text-sm font-mono border border-gray-200 dark:border-zinc-700"
+              className="p-4 rounded-lg bg-gray-100 dark:bg-zinc-800 overflow-auto text-sm font-mono border border-gray-200 dark:border-zinc-700 transition-all duration-300"
+              style={{ height: isViewerExpanded ? 'calc(100vh - 300px)' : '500px', minHeight: isViewerExpanded ? '500px' : undefined }}
             >
               <JsonTreeNode
                 key={treeKey}
@@ -489,8 +503,8 @@ function JsonViewerTab({ workflow }: { workflow: Workflow }) {
             </div>
           ) : (
             <pre
-              className="p-4 rounded-lg bg-gray-100 dark:bg-zinc-800 overflow-auto max-h-[600px] text-sm font-mono leading-relaxed border border-gray-200 dark:border-zinc-700"
-              style={{ tabSize: 2 }}
+              className="p-4 rounded-lg bg-gray-100 dark:bg-zinc-800 overflow-auto text-sm font-mono leading-relaxed border border-gray-200 dark:border-zinc-700 transition-all duration-300"
+              style={{ height: isViewerExpanded ? 'calc(100vh - 300px)' : '500px', minHeight: isViewerExpanded ? '500px' : undefined, tabSize: 2 }}
             >
               <code
                 dangerouslySetInnerHTML={{
@@ -561,7 +575,7 @@ export function WorkflowDetailPage() {
   const [activeTab, setActiveTab] = useState('overview');
   const [selectedNode, setSelectedNode] = useState<WorkflowNode | null>(null);
   const [recommendationFilter, setRecommendationFilter] = useState<string>('all');
-  const [recommendationSort, setRecommendationSort] = useState<{ field: string; direction: 'asc' | 'desc' }>({ field: 'category', direction: 'asc' });
+  const [recommendationSort, setRecommendationSort] = useState<{ field: string; direction: 'asc' | 'desc' }>({ field: 'impact', direction: 'desc' });
 
   // Workflow query
   const { data: workflowResponse, isLoading, error } = useQuery({
@@ -578,6 +592,16 @@ export function WorkflowDetailPage() {
   });
 
   const workflow = workflowResponse;
+
+  // Update document title
+  useEffect(() => {
+    if (workflow?.name) {
+      document.title = `Workflow: ${workflow.name}`;
+    }
+    return () => {
+      document.title = 'n8n Ops';
+    };
+  }, [workflow?.name]);
 
   // Drift detection query
   const { data: driftData, isLoading: isLoadingDrift } = useQuery({
@@ -983,13 +1007,13 @@ export function WorkflowDetailPage() {
   if (error || !workflow || !analysis) {
     return (
       <div className="space-y-6">
-        <div className="flex items-center gap-4">
-          <Link to="/workflows">
-            <Button variant="ghost" size="sm">
-              <ArrowLeft className="h-4 w-4 mr-2" />
-              Back to Workflows
-            </Button>
-          </Link>
+        <div className="flex items-center justify-between">
+          <div>
+            <h1 className="text-3xl font-bold">Workflow Details</h1>
+            <p className="text-muted-foreground">
+              View and manage workflow details
+            </p>
+          </div>
         </div>
         <Card>
           <CardContent className="py-8">
@@ -1009,6 +1033,13 @@ export function WorkflowDetailPage() {
 
   return (
     <div className="space-y-6">
+      {/* Header */}
+      <div className="flex items-center justify-between">
+        <div>
+          <h1 className="text-3xl font-bold">Workflow</h1>
+        </div>
+      </div>
+
       {/* Hero Section - 10-Second Insights */}
       <WorkflowHeroSection
         workflow={workflow}

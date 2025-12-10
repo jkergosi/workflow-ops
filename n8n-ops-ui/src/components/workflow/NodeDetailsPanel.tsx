@@ -1,6 +1,8 @@
-import { 
-  X, Key, AlertTriangle, RefreshCw, Settings, 
-  CheckCircle2, XCircle, Clock, Play, Database
+import { useState } from 'react';
+import {
+  X, Key, AlertTriangle, RefreshCw, Settings,
+  CheckCircle2, XCircle, Clock, Play, Database,
+  Maximize2, Minimize2
 } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
@@ -27,24 +29,26 @@ interface NodeDetailsPanelProps {
   onClose: () => void;
 }
 
-export function NodeDetailsPanel({ 
-  node, 
-  metrics, 
+export function NodeDetailsPanel({
+  node,
+  metrics,
   executions = [],
-  onClose 
+  onClose
 }: NodeDetailsPanelProps) {
+  const [isExpanded, setIsExpanded] = useState(false);
+
   if (!node) return null;
-  
+
   // Extract sample I/O from executions
   const sampleInput = metrics?.sampleInput;
   const sampleOutput = metrics?.sampleOutput;
-  
+
   // Get credential info
   const credentials = node.credentials || {};
   const credentialEntries = Object.entries(credentials);
-  
+
   return (
-    <div className="fixed right-0 top-0 h-full w-96 bg-white dark:bg-slate-900 shadow-xl z-50 overflow-y-auto border-l border-slate-200 dark:border-slate-800">
+    <div className={`fixed right-0 top-0 h-full bg-white dark:bg-slate-900 shadow-xl z-50 overflow-y-auto border-l border-slate-200 dark:border-slate-800 transition-all duration-300 ${isExpanded ? 'w-[700px]' : 'w-96'}`}>
       <Card className="border-0 rounded-none h-full shadow-none">
         <CardHeader className="border-b sticky top-0 bg-white dark:bg-slate-900 z-10">
           <div className="flex items-center justify-between">
@@ -54,9 +58,19 @@ export function NodeDetailsPanel({
                 {node.type.replace('n8n-nodes-base.', '').replace('@n8n/', '')}
               </div>
             </div>
-            <Button variant="ghost" size="icon" onClick={onClose}>
-              <X className="h-4 w-4" />
-            </Button>
+            <div className="flex items-center gap-1">
+              <Button
+                variant="ghost"
+                size="icon"
+                onClick={() => setIsExpanded(!isExpanded)}
+                title={isExpanded ? 'Collapse panel' : 'Expand panel'}
+              >
+                {isExpanded ? <Minimize2 className="h-4 w-4" /> : <Maximize2 className="h-4 w-4" />}
+              </Button>
+              <Button variant="ghost" size="icon" onClick={onClose}>
+                <X className="h-4 w-4" />
+              </Button>
+            </div>
           </div>
         </CardHeader>
         

@@ -30,7 +30,7 @@ import { toast } from 'sonner';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import type { Workflow, EnvironmentType } from '@/types';
 
-type SortField = 'name' | 'description' | 'active' | 'updatedAt';
+type SortField = 'name' | 'description' | 'active' | 'executions' | 'updatedAt';
 type SortDirection = 'asc' | 'desc';
 
 export function WorkflowsPage() {
@@ -42,16 +42,26 @@ export function WorkflowsPage() {
   // Initialize searchQuery from URL params
   const [searchQuery, setSearchQuery] = useState(() => searchParams.get('search') || '');
 
-  // Update URL when search changes (clear it when search is empty)
+  // Initialize selectedTag from URL params
+  const [selectedTag, setSelectedTag] = useState<string[]>(() => {
+    const tagParam = searchParams.get('tag');
+    return tagParam ? [tagParam] : [];
+  });
+
+  // Update URL when search or tag changes
   useEffect(() => {
     if (searchQuery) {
       searchParams.set('search', searchQuery);
     } else {
       searchParams.delete('search');
     }
+    if (selectedTag.length > 0) {
+      searchParams.set('tag', selectedTag[0]);
+    } else {
+      searchParams.delete('tag');
+    }
     setSearchParams(searchParams, { replace: true });
-  }, [searchQuery, searchParams, setSearchParams]);
-  const [selectedTag, setSelectedTag] = useState<string[]>([]);
+  }, [searchQuery, selectedTag, searchParams, setSearchParams]);
   const [selectedStatus, setSelectedStatus] = useState<string>('');
   const [sortField, setSortField] = useState<SortField>('name');
   const [sortDirection, setSortDirection] = useState<SortDirection>('asc');
@@ -83,10 +93,28 @@ export function WorkflowsPage() {
     queryFn: () => api.getEnvironments(),
   });
 
-  // Get the current environment's base URL
+  // Get the current environment's base URL and ID
   const currentEnvironment = environments?.data?.find(
     (env) => env.type === selectedEnvironment
   );
+
+  // Fetch executions for the current environment to get execution counts per workflow
+  const { data: executions } = useQuery({
+    queryKey: ['executions', currentEnvironment?.id],
+    queryFn: () => currentEnvironment?.id ? api.getExecutions(currentEnvironment.id) : Promise.resolve({ data: [] }),
+    enabled: !!currentEnvironment?.id,
+  });
+
+  // Compute execution counts per workflow
+  const executionCountsByWorkflow = useMemo(() => {
+    if (!executions?.data) return {};
+    const counts: Record<string, number> = {};
+    executions.data.forEach((execution: any) => {
+      const workflowId = execution.workflowId;
+      counts[workflowId] = (counts[workflowId] || 0) + 1;
+    });
+    return counts;
+  }, [executions]);
 
   const openInN8N = (workflowId: string) => {
     if (currentEnvironment?.baseUrl) {
@@ -229,6 +257,10 @@ export function WorkflowsPage() {
           aValue = a.active ? 1 : 0;
           bValue = b.active ? 1 : 0;
           break;
+        case 'executions':
+          aValue = executionCountsByWorkflow[a.id] || 0;
+          bValue = executionCountsByWorkflow[b.id] || 0;
+          break;
         case 'updatedAt':
           aValue = new Date(a.updatedAt).getTime();
           bValue = new Date(b.updatedAt).getTime();
@@ -243,7 +275,7 @@ export function WorkflowsPage() {
     });
 
     return result;
-  }, [workflows, searchQuery, selectedTag, selectedStatus, sortField, sortDirection]);
+  }, [workflows, searchQuery, selectedTag, selectedStatus, sortField, sortDirection, executionCountsByWorkflow]);
 
   // Pagination calculations
   const { paginatedWorkflows, totalPages, totalWorkflows } = useMemo(() => {
@@ -561,6 +593,9 @@ export function WorkflowsPage() {
                     Status {getSortIcon('active')}
                   </TableHead>
                   <TableHead>Tags</TableHead>
+                  <TableHead className="cursor-pointer hover:bg-muted/50" onClick={() => handleSort('executions')}>
+                    Executions {getSortIcon('executions')}
+                  </TableHead>
                   <TableHead className="cursor-pointer hover:bg-muted/50" onClick={() => handleSort('updatedAt')}>
                     Last Updated {getSortIcon('updatedAt')}
                   </TableHead>
@@ -608,6 +643,14 @@ export function WorkflowsPage() {
                           </Badge>
                         ))}
                       </div>
+                    </TableCell>
+                    <TableCell>
+                      <Link
+                        to={`/executions?workflow=${workflow.id}`}
+                        className="text-primary hover:underline"
+                      >
+                        {executionCountsByWorkflow[workflow.id] || 0}
+                      </Link>
                     </TableCell>
                     <TableCell className="text-sm text-muted-foreground">
                       {new Date(workflow.updatedAt).toLocaleDateString()}

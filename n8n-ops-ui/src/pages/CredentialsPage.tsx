@@ -14,7 +14,7 @@ import {
 } from '@/components/ui/table';
 import { api } from '@/lib/api';
 import { useAppStore } from '@/store/use-app-store';
-import { Search, AlertCircle, RefreshCw, Key, Download, Workflow, ArrowUpDown, ArrowUp, ArrowDown, ExternalLink } from 'lucide-react';
+import { Search, AlertCircle, RefreshCw, Key, Download, ArrowUpDown, ArrowUp, ArrowDown, ExternalLink } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import type { EnvironmentType } from '@/types';
 import { toast } from 'sonner';
@@ -319,7 +319,7 @@ export function CredentialsPage() {
                     </div>
                   </TableHead>
                   <TableHead
-                    className="cursor-pointer hover:bg-muted/50"
+                    className="cursor-pointer hover:bg-muted/50 max-w-[50%] w-[50%]"
                     onClick={() => handleSort('workflows')}
                   >
                     <div className="flex items-center">
@@ -352,20 +352,19 @@ export function CredentialsPage() {
                         'N/A'
                       )}
                     </TableCell>
-                    <TableCell>
+                    <TableCell className="max-w-[50%]">
                       {cred.used_by_workflows && cred.used_by_workflows.length > 0 ? (
-                        <div className="flex flex-wrap gap-1">
-                          {cred.used_by_workflows.map((wf: any) => (
-                            <Link
-                              key={wf.id}
-                              to={`/workflows?search=${encodeURIComponent(wf.name)}`}
-                              className="no-underline"
-                            >
-                              <Badge variant="secondary" className="text-xs cursor-pointer hover:bg-secondary/80 transition-colors">
-                                <Workflow className="h-3 w-3 mr-1" />
+                        <div className="flex flex-wrap gap-x-3 gap-y-1">
+                          {cred.used_by_workflows.map((wf: any, index: number) => (
+                            <span key={wf.id}>
+                              <Link
+                                to={`/workflows/${wf.n8n_workflow_id || wf.id}?environment=${cred.environment?.type || 'dev'}`}
+                                className="text-sm text-primary hover:underline"
+                              >
                                 {wf.name}
-                              </Badge>
-                            </Link>
+                              </Link>
+                              {index < cred.used_by_workflows.length - 1 && <span className="text-muted-foreground">,</span>}
+                            </span>
                           ))}
                         </div>
                       ) : (

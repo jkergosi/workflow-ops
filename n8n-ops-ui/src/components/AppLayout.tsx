@@ -11,8 +11,21 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+  DropdownMenuGroup,
+  DropdownMenuSub,
+  DropdownMenuSubContent,
+  DropdownMenuSubTrigger,
+} from '@/components/ui/dropdown-menu';
 import { ThemeToggle } from '@/components/ThemeToggle';
 import { PlanBadge } from '@/components/FeatureGate';
+import { useTheme } from '@/components/ThemeProvider';
 import {
   LayoutDashboard,
   Server,
@@ -38,6 +51,11 @@ import {
   Crown,
   UserCircle,
   Key,
+  HelpCircle,
+  Book,
+  Bug,
+  Palette,
+  ChevronRight,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
@@ -69,8 +87,6 @@ const navigationSections: NavSection[] = [
       { name: 'Observability', href: '/observability', icon: Activity, requiredPlan: 'pro', feature: 'execution_metrics' },
       { name: 'N8N Users', href: '/n8n-users', icon: UserCog },
       { name: 'Credentials', href: '/credentials', icon: Key },
-      { name: 'Team', href: '/team', icon: Users, requiredPlan: 'pro', feature: 'role_based_access' },
-      { name: 'Billing', href: '/billing', icon: CreditCard },
     ],
   },
   {
@@ -93,6 +109,7 @@ export function AppLayout() {
   const { user, logout, availableUsers, loginAs } = useAuth();
   const { sidebarOpen, toggleSidebar } = useAppStore();
   const { canUseFeature, planName } = useFeatures();
+  const { theme, setTheme } = useTheme();
 
   const handleUserSwitch = async (userId: string) => {
     await loginAs(userId);
@@ -182,26 +199,119 @@ export function AppLayout() {
             ))}
           </nav>
 
-          {/* User Info & Logout */}
+          {/* User Info & Menu */}
           <div className="p-4 border-t">
-            <div className="flex items-center justify-between mb-3">
-              <div className="flex-1 min-w-0">
-                <p className="text-sm font-medium truncate">{user?.name}</p>
-                <p className="text-xs text-muted-foreground truncate">{user?.email}</p>
-              </div>
-            </div>
-            <div className="flex items-center gap-2 mb-3">
-              <PlanBadge plan={planName} />
-            </div>
-            <Button
-              variant="outline"
-              size="sm"
-              className="w-full"
-              onClick={handleLogout}
-            >
-              <LogOut className="h-4 w-4 mr-2" />
-              Logout
-            </Button>
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <button className="w-full flex items-center gap-3 px-3 py-2 rounded-lg hover:bg-accent transition-colors text-left">
+                  <div className="w-8 h-8 rounded-full bg-primary flex items-center justify-center text-primary-foreground text-sm font-semibold">
+                    {user?.name?.charAt(0).toUpperCase() || 'U'}
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <p className="text-sm font-medium truncate">{user?.name}</p>
+                    <p className="text-xs text-muted-foreground truncate">{user?.email}</p>
+                  </div>
+                  <ChevronRight className="h-4 w-4 text-muted-foreground" />
+                </button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" className="w-56" side="right" sideOffset={8}>
+                {/* Account Section */}
+                <DropdownMenuGroup>
+                  <DropdownMenuLabel>Account</DropdownMenuLabel>
+                  <DropdownMenuItem asChild>
+                    <Link to="/profile" className="cursor-pointer">
+                      <UserCircle className="mr-2 h-4 w-4" />
+                      Profile
+                    </Link>
+                  </DropdownMenuItem>
+                  <DropdownMenuItem asChild>
+                    <Link to="/billing" className="cursor-pointer">
+                      <CreditCard className="mr-2 h-4 w-4" />
+                      Subscription
+                    </Link>
+                  </DropdownMenuItem>
+                  <DropdownMenuItem asChild>
+                    <Link to="/team" className="cursor-pointer">
+                      <Users className="mr-2 h-4 w-4" />
+                      Team
+                    </Link>
+                  </DropdownMenuItem>
+                  <DropdownMenuItem asChild>
+                    <Link to="/profile/api-keys" className="cursor-pointer">
+                      <Key className="mr-2 h-4 w-4" />
+                      API Keys
+                    </Link>
+                  </DropdownMenuItem>
+                </DropdownMenuGroup>
+                
+                <DropdownMenuSeparator />
+                
+                {/* Preferences Section */}
+                <DropdownMenuGroup>
+                  <DropdownMenuLabel>Preferences</DropdownMenuLabel>
+                  <DropdownMenuSub>
+                    <DropdownMenuSubTrigger>
+                      <Palette className="mr-2 h-4 w-4" />
+                      Appearance
+                    </DropdownMenuSubTrigger>
+                    <DropdownMenuSubContent>
+                      <DropdownMenuItem onClick={() => setTheme('light')}>
+                        Light
+                      </DropdownMenuItem>
+                      <DropdownMenuItem onClick={() => setTheme('dark')}>
+                        Dark
+                      </DropdownMenuItem>
+                      <DropdownMenuItem onClick={() => setTheme('system')}>
+                        System
+                      </DropdownMenuItem>
+                    </DropdownMenuSubContent>
+                  </DropdownMenuSub>
+                </DropdownMenuGroup>
+                
+                <DropdownMenuSeparator />
+                
+                {/* Help Section */}
+                <DropdownMenuSub>
+                  <DropdownMenuSubTrigger>
+                    <HelpCircle className="mr-2 h-4 w-4" />
+                    Help
+                  </DropdownMenuSubTrigger>
+                  <DropdownMenuSubContent>
+                    <DropdownMenuItem asChild>
+                      <Link to="/help" className="cursor-pointer">
+                        Help Center
+                      </Link>
+                    </DropdownMenuItem>
+                    <DropdownMenuItem asChild>
+                      <a href="https://docs.n8n-ops.com" target="_blank" rel="noopener noreferrer" className="cursor-pointer">
+                        Documentation
+                      </a>
+                    </DropdownMenuItem>
+                    <DropdownMenuItem asChild>
+                      <Link to="/report-bug" className="cursor-pointer">
+                        Report Bug
+                      </Link>
+                    </DropdownMenuItem>
+                  </DropdownMenuSubContent>
+                </DropdownMenuSub>
+                
+                <DropdownMenuSeparator />
+                
+                {/* Account Actions */}
+                {planName !== 'enterprise' && (
+                  <DropdownMenuItem asChild>
+                    <Link to="/billing" className="cursor-pointer">
+                      <Sparkles className="mr-2 h-4 w-4" />
+                      Upgrade Plan
+                    </Link>
+                  </DropdownMenuItem>
+                )}
+                <DropdownMenuItem onClick={handleLogout} className="text-destructive focus:text-destructive">
+                  <LogOut className="mr-2 h-4 w-4" />
+                  Logout
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
           </div>
         </div>
       </div>

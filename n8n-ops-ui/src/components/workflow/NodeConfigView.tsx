@@ -49,7 +49,7 @@ export function NodeConfigView({ node }: NodeConfigViewProps) {
             {params.headers && Object.keys(params.headers).length > 0 && (
               <div>
                 <div className="text-xs text-slate-500 mb-2">Headers</div>
-                <div className="space-y-1 max-h-32 overflow-y-auto">
+                <div className="space-y-1 max-h-48 overflow-y-auto">
                   {Object.entries(params.headers).map(([key, value]) => (
                     <div key={key} className="flex justify-between text-xs font-mono bg-slate-50 dark:bg-slate-800 p-1.5 rounded">
                       <span className="text-slate-600 dark:text-slate-400">{key}:</span>
@@ -63,7 +63,7 @@ export function NodeConfigView({ node }: NodeConfigViewProps) {
             {params.body && (
               <div>
                 <div className="text-xs text-slate-500 mb-1">Body</div>
-                <pre className="text-xs bg-slate-50 dark:bg-slate-800 p-2 rounded border overflow-x-auto max-h-32 overflow-y-auto">
+                <pre className="text-xs bg-slate-50 dark:bg-slate-800 p-2 rounded border overflow-x-auto max-h-64 overflow-y-auto">
                   {typeof params.body === 'string' ? params.body : JSON.stringify(params.body, null, 2)}
                 </pre>
               </div>
@@ -95,7 +95,7 @@ export function NodeConfigView({ node }: NodeConfigViewProps) {
             {params.query && (
               <div>
                 <div className="text-xs text-slate-500 mb-1">Query</div>
-                <pre className="text-xs bg-slate-50 dark:bg-slate-800 p-2 rounded border font-mono overflow-x-auto max-h-48 overflow-y-auto">
+                <pre className="text-xs bg-slate-50 dark:bg-slate-800 p-2 rounded border font-mono overflow-x-auto max-h-80 overflow-y-auto">
                   {params.query}
                 </pre>
               </div>
@@ -151,7 +151,7 @@ export function NodeConfigView({ node }: NodeConfigViewProps) {
             {nodeType.includes('switch') && params.rules && Array.isArray(params.rules) && (
               <div>
                 <div className="text-xs text-slate-500 mb-2">Cases</div>
-                <div className="space-y-2 max-h-64 overflow-y-auto">
+                <div className="space-y-2 max-h-96 overflow-y-auto">
                   {params.rules.map((rule: any, index: number) => (
                     <div key={index} className="border border-slate-200 dark:border-slate-700 rounded p-2">
                       <div className="flex items-center justify-between mb-1">
@@ -198,7 +198,7 @@ export function NodeConfigView({ node }: NodeConfigViewProps) {
             {params.jsCode && (
               <div>
                 <div className="text-xs text-slate-500 mb-1">JavaScript Code</div>
-                <pre className="text-xs bg-slate-900 text-slate-100 p-3 rounded border overflow-x-auto max-h-64 overflow-y-auto font-mono">
+                <pre className="text-xs bg-slate-900 text-slate-100 p-3 rounded border overflow-x-auto max-h-96 overflow-y-auto font-mono">
                   {params.jsCode}
                 </pre>
               </div>
@@ -214,7 +214,7 @@ export function NodeConfigView({ node }: NodeConfigViewProps) {
             {params.functionCode && (
               <div>
                 <div className="text-xs text-slate-500 mb-1">Function Code</div>
-                <pre className="text-xs bg-slate-900 text-slate-100 p-3 rounded border overflow-x-auto max-h-64 overflow-y-auto font-mono">
+                <pre className="text-xs bg-slate-900 text-slate-100 p-3 rounded border overflow-x-auto max-h-96 overflow-y-auto font-mono">
                   {params.functionCode}
                 </pre>
               </div>
@@ -238,7 +238,7 @@ export function NodeConfigView({ node }: NodeConfigViewProps) {
           </CardHeader>
           <CardContent className="space-y-3 text-sm">
             {params.assignments && Array.isArray(params.assignments) && (
-              <div className="space-y-2 max-h-64 overflow-y-auto">
+              <div className="space-y-2 max-h-96 overflow-y-auto">
                 {params.assignments.map((assignment: any, index: number) => (
                   <div key={index} className="border border-slate-200 dark:border-slate-700 rounded p-2">
                     <div className="flex items-center gap-2">
@@ -259,7 +259,7 @@ export function NodeConfigView({ node }: NodeConfigViewProps) {
             {params.values && (
               <div>
                 <div className="text-xs text-slate-500 mb-2">Values</div>
-                <div className="space-y-1 max-h-48 overflow-y-auto">
+                <div className="space-y-1 max-h-80 overflow-y-auto">
                   {Object.entries(params.values).map(([key, value]) => (
                     <div key={key} className="flex justify-between text-xs bg-slate-50 dark:bg-slate-800 p-1.5 rounded">
                       <span className="font-mono text-slate-600 dark:text-slate-400">{key}:</span>
@@ -275,8 +275,10 @@ export function NodeConfigView({ node }: NodeConfigViewProps) {
     );
   }
 
-  // Trigger Nodes
+  // Trigger Nodes (including executeWorkflowTrigger)
   if (nodeType.includes('trigger') || nodeType.includes('webhook') || nodeType.includes('schedule') || nodeType.includes('cron')) {
+    const paramEntries = Object.entries(params).filter(([key]) => !key.startsWith('_'));
+
     return (
       <div className="space-y-4">
         <Card>
@@ -295,7 +297,7 @@ export function NodeConfigView({ node }: NodeConfigViewProps) {
                 </div>
               </div>
             )}
-            
+
             {params.path && (
               <div>
                 <div className="text-xs text-slate-500 mb-1">Path</div>
@@ -304,7 +306,7 @@ export function NodeConfigView({ node }: NodeConfigViewProps) {
                 </div>
               </div>
             )}
-            
+
             {params.rule && (
               <div>
                 <div className="text-xs text-slate-500 mb-1">Schedule Rule</div>
@@ -313,11 +315,38 @@ export function NodeConfigView({ node }: NodeConfigViewProps) {
                 </div>
               </div>
             )}
-            
+
             {params.httpMethod && (
               <div>
                 <div className="text-xs text-slate-500 mb-1">HTTP Method</div>
                 <Badge variant="outline">{params.httpMethod}</Badge>
+              </div>
+            )}
+
+            {/* Show all other parameters for trigger nodes like executeWorkflowTrigger */}
+            {paramEntries
+              .filter(([key]) => !['webhookId', 'path', 'rule', 'httpMethod'].includes(key))
+              .map(([key, value]) => (
+                <div key={key}>
+                  <div className="text-xs text-slate-500 mb-1 capitalize">
+                    {key.replace(/([A-Z])/g, ' $1')}
+                  </div>
+                  {typeof value === 'object' ? (
+                    <pre className="text-xs bg-slate-50 dark:bg-slate-800 p-2 rounded border overflow-x-auto font-mono whitespace-pre-wrap">
+                      {JSON.stringify(value, null, 2)}
+                    </pre>
+                  ) : (
+                    <div className="font-mono text-xs bg-slate-50 dark:bg-slate-800 p-2 rounded border break-words">
+                      {String(value)}
+                    </div>
+                  )}
+                </div>
+              ))}
+
+            {/* Show message if no parameters */}
+            {paramEntries.length === 0 && (
+              <div className="text-xs text-slate-500 italic">
+                No parameters configured
               </div>
             )}
           </CardContent>
@@ -365,7 +394,7 @@ export function NodeConfigView({ node }: NodeConfigViewProps) {
             {params.text && (
               <div>
                 <div className="text-xs text-slate-500 mb-1">Body</div>
-                <div className="text-xs bg-slate-50 dark:bg-slate-800 p-2 rounded border max-h-32 overflow-y-auto">
+                <div className="text-xs bg-slate-50 dark:bg-slate-800 p-2 rounded border max-h-64 overflow-y-auto">
                   {params.text}
                 </div>
               </div>
@@ -404,7 +433,7 @@ export function NodeConfigView({ node }: NodeConfigViewProps) {
                 <div key={field}>
                   <div className="text-xs text-slate-500 mb-1 capitalize">{field.replace(/([A-Z])/g, ' $1')}</div>
                   {typeof value === 'object' ? (
-                    <pre className="text-xs bg-slate-50 dark:bg-slate-800 p-2 rounded border overflow-x-auto max-h-32 overflow-y-auto">
+                    <pre className="text-xs bg-slate-50 dark:bg-slate-800 p-2 rounded border overflow-x-auto max-h-64 overflow-y-auto">
                       {JSON.stringify(value, null, 2)}
                     </pre>
                   ) : (
@@ -422,6 +451,28 @@ export function NodeConfigView({ node }: NodeConfigViewProps) {
   }
 
   // Final fallback - organized generic view
+  const paramEntries = Object.entries(params).filter(([key]) => !key.startsWith('_'));
+
+  if (paramEntries.length === 0) {
+    return (
+      <div className="space-y-4">
+        <Card>
+          <CardHeader className="pb-3">
+            <CardTitle className="text-sm flex items-center gap-2">
+              <Settings className="h-4 w-4" />
+              Configuration
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="text-xs text-slate-500 italic">
+              No parameters configured
+            </div>
+          </CardContent>
+        </Card>
+      </div>
+    );
+  }
+
   return (
     <div className="space-y-4">
       <Card>
@@ -432,27 +483,23 @@ export function NodeConfigView({ node }: NodeConfigViewProps) {
           </CardTitle>
         </CardHeader>
         <CardContent>
-          <div className="text-xs space-y-2 max-h-64 overflow-y-auto">
-            {Object.entries(params).map(([key, value]) => {
-              if (key.startsWith('_')) return null;
-              
-              return (
-                <div key={key} className="border-b border-slate-100 dark:border-slate-800 pb-2">
-                  <div className="font-semibold text-slate-700 dark:text-slate-300 mb-1 capitalize">
-                    {key.replace(/([A-Z])/g, ' $1')}
-                  </div>
-                  {typeof value === 'object' ? (
-                    <pre className="text-xs text-slate-600 dark:text-slate-400 font-mono break-words">
-                      {JSON.stringify(value, null, 2)}
-                    </pre>
-                  ) : (
-                    <div className="text-xs text-slate-600 dark:text-slate-400 font-mono break-words">
-                      {String(value)}
-                    </div>
-                  )}
+          <div className="text-xs space-y-2">
+            {paramEntries.map(([key, value]) => (
+              <div key={key} className="border-b border-slate-100 dark:border-slate-800 pb-2 last:border-b-0">
+                <div className="font-semibold text-slate-700 dark:text-slate-300 mb-1 capitalize">
+                  {key.replace(/([A-Z])/g, ' $1')}
                 </div>
-              );
-            })}
+                {typeof value === 'object' ? (
+                  <pre className="text-xs text-slate-600 dark:text-slate-400 font-mono whitespace-pre-wrap break-words">
+                    {JSON.stringify(value, null, 2)}
+                  </pre>
+                ) : (
+                  <div className="text-xs text-slate-600 dark:text-slate-400 font-mono break-words">
+                    {String(value)}
+                  </div>
+                )}
+              </div>
+            ))}
           </div>
         </CardContent>
       </Card>

@@ -1,5 +1,6 @@
 import { useState, useMemo, useEffect } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { Link } from 'react-router-dom';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -19,7 +20,7 @@ import { Search, ArrowUpDown, ArrowUp, ArrowDown, X, Tag as TagIcon, Calendar, D
 import type { EnvironmentType } from '@/types';
 import { toast } from 'sonner';
 
-type SortField = 'name' | 'createdAt' | 'updatedAt';
+type SortField = 'name' | 'workflows' | 'createdAt' | 'updatedAt';
 type SortDirection = 'asc' | 'desc';
 
 export function TagsPage() {
@@ -56,6 +57,25 @@ export function TagsPage() {
     },
     enabled: !!currentEnvironmentId,
   });
+
+  // Fetch workflows to compute workflow counts per tag
+  const { data: workflows } = useQuery({
+    queryKey: ['workflows', selectedEnvironment],
+    queryFn: () => api.getWorkflows(selectedEnvironment),
+  });
+
+  // Compute workflow counts per tag
+  const workflowCountsByTag = useMemo(() => {
+    if (!workflows?.data) return {};
+    const counts: Record<string, number> = {};
+    workflows.data.forEach((workflow: any) => {
+      const workflowTags = workflow.tags || [];
+      workflowTags.forEach((tag: string) => {
+        counts[tag] = (counts[tag] || 0) + 1;
+      });
+    });
+    return counts;
+  }, [workflows]);
 
   // Sync mutation to refresh from N8N (tags only)
   const syncMutation = useMutation({
@@ -115,6 +135,10 @@ export function TagsPage() {
           aValue = a.name.toLowerCase();
           bValue = b.name.toLowerCase();
           break;
+        case 'workflows':
+          aValue = workflowCountsByTag[a.name] || 0;
+          bValue = workflowCountsByTag[b.name] || 0;
+          break;
         case 'createdAt':
           aValue = a.createdAt ? new Date(a.createdAt).getTime() : 0;
           bValue = b.createdAt ? new Date(b.createdAt).getTime() : 0;
@@ -133,7 +157,7 @@ export function TagsPage() {
     });
 
     return result;
-  }, [tags, searchQuery, sortField, sortDirection]);
+  }, [tags, searchQuery, sortField, sortDirection, workflowCountsByTag]);
 
   // Pagination calculations
   const { paginatedTags, totalPages, totalTags } = useMemo(() => {
@@ -299,6 +323,9 @@ export function TagsPage() {
                       Tag Name {getSortIcon('name')}
                     </TableHead>
                     <TableHead>Tag ID</TableHead>
+                    <TableHead className="cursor-pointer hover:bg-muted/50" onClick={() => handleSort('workflows')}>
+                      Workflows {getSortIcon('workflows')}
+                    </TableHead>
                     <TableHead className="cursor-pointer hover:bg-muted/50" onClick={() => handleSort('createdAt')}>
                       Created {getSortIcon('createdAt')}
                     </TableHead>
@@ -319,6 +346,14 @@ export function TagsPage() {
                       </TableCell>
                       <TableCell className="text-sm text-muted-foreground font-mono">
                         {tag.tagId}
+                      </TableCell>
+                      <TableCell>
+                        <Link
+                          to={`/workflows?tag=${encodeURIComponent(tag.name)}`}
+                          className="text-primary hover:underline"
+                        >
+                          {workflowCountsByTag[tag.name] || 0}
+                        </Link>
                       </TableCell>
                       <TableCell className="text-sm text-muted-foreground">
                         {formatDate(tag.createdAt)}

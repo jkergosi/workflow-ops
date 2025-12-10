@@ -19,6 +19,13 @@ class OnboardingRequest(BaseModel):
     organization_name: Optional[str] = None
 
 
+class UserUpdateRequest(BaseModel):
+    """Request body for updating user profile."""
+    name: Optional[str] = None
+    email: Optional[EmailStr] = None
+    role: Optional[str] = None
+
+
 class UserResponse(BaseModel):
     """Response containing user and tenant info."""
     id: str
@@ -194,3 +201,88 @@ async def complete_onboarding(
             is_new=True
         )
     }
+
+
+@router.patch("/me")
+async def update_current_user(
+    updates: UserUpdateRequest,
+    user_info: dict = Depends(get_current_user)
+):
+    """Update current user's profile information."""
+    user = user_info.get("user")
+    tenant = user_info.get("tenant")
+
+    if not user or not tenant:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="User not found"
+        )
+
+    # Build update data (only include fields that are provided)
+    update_data = {}
+    if updates.name is not None:
+        update_data["name"] = updates.name
+    if updates.email is not None:
+        update_data["email"] = updates.email
+    if updates.role is not None:
+        # Only allow role updates if current user is admin
+        if user.get("role") != "admin":
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Only administrators can update user roles"
+            )
+        update_data["role"] = updates.role
+
+    if not update_data:
+        # No updates provided
+        return UserResponse(
+            id=user["id"],
+            email=user["email"],
+            name=user["name"],
+            role=user["role"],
+            tenant_id=tenant["id"],
+            tenant_name=tenant["name"],
+            subscription_plan=tenant.get("subscription_tier", "free"),
+            has_environment=False,
+            is_new=False
+        )
+
+    try:
+        # Update user in database
+        response = db_service.client.table("users").update(update_data).eq(
+            "id", user["id"]
+        ).eq("tenant_id", tenant["id"]).execute()
+
+        if not response.data or len(response.data) == 0:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="User not found"
+            )
+
+        updated_user = response.data[0]
+
+        # Check if user has any environments
+        env_response = db_service.client.table("environments").select(
+            "id", count="exact"
+        ).eq("tenant_id", tenant["id"]).execute()
+        has_environment = (env_response.count or 0) > 0
+
+        return UserResponse(
+            id=updated_user["id"],
+            email=updated_user["email"],
+            name=updated_user["name"],
+            role=updated_user["role"],
+            tenant_id=tenant["id"],
+            tenant_name=tenant["name"],
+            subscription_plan=tenant.get("subscription_tier", "free"),
+            has_environment=has_environment,
+            is_new=False
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to update user: {str(e)}"
+        )

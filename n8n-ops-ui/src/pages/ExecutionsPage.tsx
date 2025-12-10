@@ -1,5 +1,6 @@
 import { useState, useMemo, useEffect } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { useSearchParams, Link } from 'react-router-dom';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -26,14 +27,26 @@ export function ExecutionsPage() {
   const selectedEnvironment = useAppStore((state) => state.selectedEnvironment);
   const setSelectedEnvironment = useAppStore((state) => state.setSelectedEnvironment);
   const queryClient = useQueryClient();
+  const [searchParams, setSearchParams] = useSearchParams();
 
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedStatus, setSelectedStatus] = useState<string>('');
+  const [selectedWorkflow, setSelectedWorkflow] = useState<string>(() => searchParams.get('workflow') || '');
   const [sortField, setSortField] = useState<SortField>('startedAt');
   const [sortDirection, setSortDirection] = useState<SortDirection>('desc');
   const [currentPage, setCurrentPage] = useState(1);
   const [pageSize, setPageSize] = useState(50);
   const [isSyncing, setIsSyncing] = useState(false);
+
+  // Update URL when workflow filter changes
+  useEffect(() => {
+    if (selectedWorkflow) {
+      searchParams.set('workflow', selectedWorkflow);
+    } else {
+      searchParams.delete('workflow');
+    }
+    setSearchParams(searchParams, { replace: true });
+  }, [selectedWorkflow, searchParams, setSearchParams]);
 
   // Fetch environments to get environment ID
   const { data: environments } = useQuery({
@@ -97,6 +110,20 @@ export function ExecutionsPage() {
     syncMutation.mutate();
   };
 
+  // Get unique workflows from executions for the filter dropdown
+  const uniqueWorkflows = useMemo(() => {
+    if (!executions?.data) return [];
+    const workflowMap = new Map<string, string>();
+    executions.data.forEach((execution) => {
+      if (!workflowMap.has(execution.workflowId)) {
+        workflowMap.set(execution.workflowId, execution.workflowName || execution.workflowId);
+      }
+    });
+    return Array.from(workflowMap.entries())
+      .map(([id, name]) => ({ id, name }))
+      .sort((a, b) => a.name.localeCompare(b.name));
+  }, [executions]);
+
   // Filter and sort executions
   const filteredAndSortedExecutions = useMemo(() => {
     if (!executions?.data) return [];
@@ -116,6 +143,11 @@ export function ExecutionsPage() {
     // Apply status filter
     if (selectedStatus) {
       result = result.filter((execution) => execution.status === selectedStatus);
+    }
+
+    // Apply workflow filter
+    if (selectedWorkflow) {
+      result = result.filter((execution) => execution.workflowId === selectedWorkflow);
     }
 
     // Apply sorting
@@ -150,7 +182,7 @@ export function ExecutionsPage() {
     });
 
     return result;
-  }, [executions, searchQuery, selectedStatus, sortField, sortDirection]);
+  }, [executions, searchQuery, selectedStatus, selectedWorkflow, sortField, sortDirection]);
 
   // Pagination calculations
   const { paginatedExecutions, totalPages, totalExecutions } = useMemo(() => {
@@ -177,7 +209,7 @@ export function ExecutionsPage() {
   // Reset page when filters, search, or environment changes
   useEffect(() => {
     resetPage();
-  }, [searchQuery, selectedStatus, selectedEnvironment]);
+  }, [searchQuery, selectedStatus, selectedWorkflow, selectedEnvironment]);
 
   const handleSort = (field: SortField) => {
     if (sortField === field) {
@@ -202,9 +234,10 @@ export function ExecutionsPage() {
   const clearFilters = () => {
     setSearchQuery('');
     setSelectedStatus('');
+    setSelectedWorkflow('');
   };
 
-  const hasActiveFilters = searchQuery || selectedStatus;
+  const hasActiveFilters = searchQuery || selectedStatus || selectedWorkflow;
 
   const openExecution = (executionId: string, workflowId: string) => {
     if (currentEnvironment?.baseUrl) {
@@ -316,7 +349,7 @@ export function ExecutionsPage() {
           <CardTitle className="text-base">Filters</CardTitle>
         </CardHeader>
         <CardContent>
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
             {/* Search Filter */}
             <div className="space-y-2">
               <Label htmlFor="search">Search</Label>
@@ -330,6 +363,24 @@ export function ExecutionsPage() {
                   className="pl-8"
                 />
               </div>
+            </div>
+
+            {/* Workflow Filter */}
+            <div className="space-y-2">
+              <Label htmlFor="workflow">Workflow</Label>
+              <select
+                id="workflow"
+                value={selectedWorkflow}
+                onChange={(e) => setSelectedWorkflow(e.target.value)}
+                className="flex h-9 w-full rounded-md border border-input bg-background text-foreground px-3 py-1 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+              >
+                <option value="">All Workflows</option>
+                {uniqueWorkflows.map((workflow) => (
+                  <option key={workflow.id} value={workflow.id}>
+                    {workflow.name}
+                  </option>
+                ))}
+              </select>
             </div>
 
             {/* Status Filter */}
@@ -418,7 +469,12 @@ export function ExecutionsPage() {
                   {paginatedExecutions.map((execution) => (
                     <TableRow key={execution.id}>
                       <TableCell className="font-medium">
-                        {execution.workflowName || execution.workflowId}
+                        <Link
+                          to={`/workflows/${execution.workflowId}?environment=${selectedEnvironment}`}
+                          className="text-primary hover:underline"
+                        >
+                          {execution.workflowName || execution.workflowId}
+                        </Link>
                       </TableCell>
                       <TableCell>
                         {getStatusBadge(execution.status)}
