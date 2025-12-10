@@ -19,7 +19,6 @@ class EnvironmentBase(BaseModel):
     n8n_api_key: Optional[str] = None
     n8n_encryption_key: Optional[str] = None
     is_active: bool = True
-    is_production: bool = False  # Business logic flag: true if production environment
     allow_upload: bool = False  # Feature flag: true if workflows can be uploaded from this environment
     git_repo_url: Optional[str] = Field(None, max_length=500)
     git_branch: Optional[str] = Field(None, max_length=255)
@@ -37,7 +36,6 @@ class EnvironmentUpdate(BaseModel):
     n8n_api_key: Optional[str] = None
     n8n_encryption_key: Optional[str] = None
     is_active: Optional[bool] = None
-    is_production: Optional[bool] = None  # Business logic flag
     allow_upload: Optional[bool] = None  # Feature flag
     git_repo_url: Optional[str] = Field(None, max_length=500)
     git_branch: Optional[str] = Field(None, max_length=255)
@@ -54,7 +52,6 @@ class EnvironmentResponse(BaseModel):
     n8n_api_key: Optional[str] = None
     n8n_encryption_key: Optional[str] = None
     is_active: bool = True
-    is_production: bool = False  # Business logic flag
     allow_upload: bool = False  # Feature flag
     git_repo_url: Optional[str] = None
     git_branch: Optional[str] = None

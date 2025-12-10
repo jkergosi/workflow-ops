@@ -46,7 +46,6 @@ export function EnvironmentsPage() {
     type?: string;
     baseUrl: string;
     apiKey: string;
-    isProduction: boolean;
     allowUpload: boolean;
     gitRepoUrl: string;
     gitBranch: string;
@@ -56,7 +55,6 @@ export function EnvironmentsPage() {
     type: undefined,
     baseUrl: '',
     apiKey: '',
-    isProduction: false,
     allowUpload: true,
     gitRepoUrl: '',
     gitBranch: 'main',
@@ -212,7 +210,6 @@ export function EnvironmentsPage() {
       type: env.type,
       baseUrl: env.baseUrl,
       apiKey: env.apiKey || '',
-      isProduction: env.isProduction ?? false,
       allowUpload: env.allowUpload ?? false,
       gitRepoUrl: env.gitRepoUrl || '',
       gitBranch: env.gitBranch || 'main',
@@ -228,7 +225,6 @@ export function EnvironmentsPage() {
       type: undefined,
       baseUrl: '',
       apiKey: '',
-      isProduction: false,
       allowUpload: true,
       gitRepoUrl: '',
       gitBranch: 'main',
@@ -244,7 +240,6 @@ export function EnvironmentsPage() {
       type: undefined,
       baseUrl: '',
       apiKey: '',
-      isProduction: false,
       allowUpload: true,
       gitRepoUrl: '',
       gitBranch: 'main',
@@ -346,7 +341,6 @@ export function EnvironmentsPage() {
         type: formData.type,
         base_url: formData.baseUrl,
         api_key: formData.apiKey,
-        is_production: formData.isProduction,
         allow_upload: formData.allowUpload,
         git_repo_url: formData.gitRepoUrl || undefined,
         git_branch: formData.gitBranch || undefined,
@@ -360,7 +354,6 @@ export function EnvironmentsPage() {
           name: formData.name,
           base_url: formData.baseUrl,
           api_key: formData.apiKey,
-          is_production: formData.isProduction,
           allow_upload: formData.allowUpload,
           git_repo_url: formData.gitRepoUrl || undefined,
           git_branch: formData.gitBranch || undefined,
@@ -579,26 +572,8 @@ export function EnvironmentsPage() {
               </p>
             </div>
 
-            {/* Business Logic Flags */}
+            {/* Feature Flags */}
             <div className="space-y-3 p-4 border rounded-lg bg-muted/50">
-              <div className="flex items-center space-x-2">
-                <input
-                  type="checkbox"
-                  id="isProduction"
-                  checked={formData.isProduction}
-                  onChange={(e) =>
-                    setFormData({ ...formData, isProduction: e.target.checked })
-                  }
-                  className="h-4 w-4 rounded border-gray-300"
-                />
-                <Label htmlFor="isProduction" className="cursor-pointer">
-                  Production Environment
-                </Label>
-              </div>
-              <p className="text-xs text-muted-foreground ml-6">
-                When enabled, pipeline rules will be stricter (e.g., disallow placeholder credentials, prevent overwriting hotfixes).
-              </p>
-
               <div className="flex items-center space-x-2">
                 <input
                   type="checkbox"

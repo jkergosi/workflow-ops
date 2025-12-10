@@ -24,7 +24,6 @@ interface StageCardProps {
   sourceEnv: Environment | undefined;
   targetEnv: Environment | undefined;
   onChange: (stage: PipelineStage) => void;
-  isProduction: boolean;
 }
 
 export function StageCard({
@@ -32,7 +31,6 @@ export function StageCard({
   sourceEnv,
   targetEnv,
   onChange,
-  isProduction,
 }: StageCardProps) {
   const [isExpanded, setIsExpanded] = useState(true);
 

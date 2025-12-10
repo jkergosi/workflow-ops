@@ -11,7 +11,6 @@ export interface Environment {
   apiKey?: string;
   n8nEncryptionKey?: string;
   isActive: boolean;
-  isProduction: boolean;  // Business logic flag: true if production environment
   allowUpload: boolean;  // Feature flag: true if workflows can be uploaded from this environment
   lastConnected?: string;
   lastBackup?: string;

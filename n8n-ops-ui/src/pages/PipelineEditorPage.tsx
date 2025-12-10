@@ -119,8 +119,10 @@ export function PipelineEditorPage() {
         newStages.push(existingStage);
       } else {
         const targetEnv = availableEnvironments.find((e) => e.id === targetId);
-        // Use isProduction flag from environment
-        const isProduction = targetEnv?.isProduction ?? false;
+        // Smart defaults based on environment name/type (production environments typically need stricter rules)
+        const envName = targetEnv?.name?.toLowerCase() || '';
+        const envType = targetEnv?.type?.toLowerCase() || '';
+        const isProduction = envName.includes('prod') || envType === 'production';
         
         newStages.push({
           sourceEnvironmentId: sourceId,
@@ -138,6 +140,7 @@ export function PipelineEditorPage() {
             requireApproval: false,
           },
           policyFlags: {
+            // Smart defaults: production environments typically disallow placeholders and hotfix overwrites
             allowPlaceholderCredentials: !isProduction,
             allowOverwritingHotfixes: !isProduction,
             allowForcePromotionOnConflicts: false,
@@ -285,9 +288,6 @@ export function PipelineEditorPage() {
           {stages.map((stage, index) => {
             const sourceEnv = getEnvironment(stage.sourceEnvironmentId);
             const targetEnv = getEnvironment(stage.targetEnvironmentId);
-            // Check if environment is production - use type if available, otherwise check name
-            const isProduction = targetEnv?.type?.toLowerCase() === 'production' || 
-                                targetEnv?.name?.toLowerCase().includes('prod');
             
             return (
               <StageCard
@@ -296,7 +296,6 @@ export function PipelineEditorPage() {
                 sourceEnv={sourceEnv}
                 targetEnv={targetEnv}
                 onChange={(updatedStage) => handleStageChange(index, updatedStage)}
-                isProduction={isProduction}
               />
             );
           })}

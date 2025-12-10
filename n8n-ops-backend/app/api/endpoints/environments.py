@@ -192,7 +192,6 @@ async def create_environment(
             "n8n_api_key": environment.n8n_api_key,
             "n8n_encryption_key": environment.n8n_encryption_key,
             "is_active": environment.is_active,
-            "is_production": environment.is_production,
             "allow_upload": environment.allow_upload,
             "git_repo_url": environment.git_repo_url,
             "git_branch": environment.git_branch,
