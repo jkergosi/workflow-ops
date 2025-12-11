@@ -24,7 +24,7 @@ import {
 } from '@/components/ui/table';
 import { api } from '@/lib/api';
 import { useAppStore } from '@/store/use-app-store';
-import { Plus, Server, RefreshCw, Edit, Database, Download, Trash2, RefreshCcw, RotateCcw, AlertTriangle, Sparkles } from 'lucide-react';
+import { Plus, Server, RefreshCw, Edit, Database, Download, Trash2, RefreshCcw, RotateCcw, AlertTriangle, Sparkles, CheckCircle2, AlertCircle } from 'lucide-react';
 import { toast } from 'sonner';
 import type { Environment, EnvironmentType } from '@/types';
 import { useFeatures } from '@/lib/features';
@@ -72,13 +72,19 @@ export function EnvironmentsPage() {
       api.testEnvironmentConnection(baseUrl, apiKey),
     onSuccess: (result) => {
       if (result.data.success) {
-        toast.success('Connection test successful');
+        toast.success('Connection test successful', {
+          icon: <CheckCircle2 className="h-5 w-5" />,
+        });
       } else {
-        toast.error(result.data.message || 'Connection test failed');
+        toast.error(result.data.message || 'Connection test failed', {
+          icon: <AlertCircle className="h-5 w-5" />,
+        });
       }
     },
     onError: () => {
-      toast.error('Connection test failed');
+      toast.error('Connection test failed', {
+        icon: <AlertCircle className="h-5 w-5" />,
+      });
     },
     onSettled: () => {
       setTestingInDialog(false);

@@ -1,7 +1,12 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, Request, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from app.core.config import settings
 from app.api.endpoints import environments, workflows, executions, tags, billing, teams, n8n_users, tenants, auth, restore, promotions, dev, credentials, pipelines, deployments, snapshots, observability, notifications
+import logging
+import traceback
+
+logger = logging.getLogger(__name__)
 
 app = FastAPI(
     title=settings.PROJECT_NAME,
@@ -139,6 +144,65 @@ async def root():
 @app.get("/health")
 async def health_check():
     return {"status": "healthy"}
+
+
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    """
+    Global exception handler to catch unhandled exceptions and emit system.error events.
+    """
+    # Skip HTTPExceptions as they are already handled
+    if isinstance(exc, HTTPException):
+        raise exc
+    
+    # Extract tenant_id from request if available (from headers, query params, or path)
+    tenant_id = None
+    try:
+        # Try to get tenant_id from various sources
+        tenant_id = request.headers.get("x-tenant-id")
+        if not tenant_id:
+            # Try to extract from path if it's an environment-specific endpoint
+            path_parts = request.url.path.split("/")
+            if "environments" in path_parts:
+                env_idx = path_parts.index("environments")
+                if env_idx + 1 < len(path_parts):
+                    # Could potentially look up tenant from environment_id
+                    pass
+        # Fallback to system tenant if not found
+        if not tenant_id:
+            tenant_id = "00000000-0000-0000-0000-000000000000"  # MOCK_TENANT_ID
+    except Exception:
+        tenant_id = "00000000-0000-0000-0000-000000000000"
+    
+    # Emit system.error event
+    try:
+        from app.services.notification_service import notification_service
+        await notification_service.emit_event(
+            tenant_id=tenant_id,
+            event_type="system.error",
+            environment_id=None,
+            metadata={
+                "path": str(request.url.path),
+                "method": request.method,
+                "error_message": str(exc),
+                "error_type": type(exc).__name__,
+                "traceback": traceback.format_exc()
+            }
+        )
+    except Exception as event_error:
+        logger.error(f"Failed to emit system.error event: {str(event_error)}")
+    
+    # Log the error
+    logger.error(f"Unhandled exception: {str(exc)}", exc_info=True)
+    
+    # Return 500 error
+    return JSONResponse(
+        status_code=500,
+        content={
+            "detail": "Internal server error",
+            "error_type": type(exc).__name__
+        }
+    )
 
 
 if __name__ == "__main__":

@@ -1,4 +1,4 @@
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, HTTPException, status, Depends
 from typing import Optional, List
 
 from app.schemas.notification import (
@@ -12,8 +12,12 @@ from app.schemas.notification import (
     EventCatalogItem,
 )
 from app.services.notification_service import notification_service
+from app.core.entitlements_gate import require_entitlement
 
 router = APIRouter()
+
+
+# Entitlement gates for notification/alerting features
 
 # Mock tenant ID for development (same as other endpoints)
 MOCK_TENANT_ID = "00000000-0000-0000-0000-000000000001"
@@ -21,7 +25,9 @@ MOCK_TENANT_ID = "00000000-0000-0000-0000-000000000001"
 
 # Channel endpoints
 @router.get("/channels", response_model=List[NotificationChannelResponse])
-async def get_notification_channels():
+async def get_notification_channels(
+    _: dict = Depends(require_entitlement("observability_alerts"))
+):
     """Get all notification channels for the tenant."""
     try:
         channels = await notification_service.get_channels(MOCK_TENANT_ID)
@@ -34,7 +40,10 @@ async def get_notification_channels():
 
 
 @router.post("/channels", response_model=NotificationChannelResponse)
-async def create_notification_channel(data: NotificationChannelCreate):
+async def create_notification_channel(
+    data: NotificationChannelCreate,
+    _: dict = Depends(require_entitlement("observability_alerts"))
+):
     """Create a new notification channel."""
     try:
         channel = await notification_service.create_channel(MOCK_TENANT_ID, data)
@@ -47,7 +56,10 @@ async def create_notification_channel(data: NotificationChannelCreate):
 
 
 @router.get("/channels/{channel_id}", response_model=NotificationChannelResponse)
-async def get_notification_channel(channel_id: str):
+async def get_notification_channel(
+    channel_id: str,
+    _: dict = Depends(require_entitlement("observability_alerts"))
+):
     """Get a specific notification channel."""
     channel = await notification_service.get_channel(MOCK_TENANT_ID, channel_id)
     if not channel:
@@ -59,7 +71,11 @@ async def get_notification_channel(channel_id: str):
 
 
 @router.put("/channels/{channel_id}", response_model=NotificationChannelResponse)
-async def update_notification_channel(channel_id: str, data: NotificationChannelUpdate):
+async def update_notification_channel(
+    channel_id: str,
+    data: NotificationChannelUpdate,
+    _: dict = Depends(require_entitlement("observability_alerts"))
+):
     """Update a notification channel."""
     channel = await notification_service.update_channel(MOCK_TENANT_ID, channel_id, data)
     if not channel:
@@ -71,14 +87,20 @@ async def update_notification_channel(channel_id: str, data: NotificationChannel
 
 
 @router.delete("/channels/{channel_id}")
-async def delete_notification_channel(channel_id: str):
+async def delete_notification_channel(
+    channel_id: str,
+    _: dict = Depends(require_entitlement("observability_alerts"))
+):
     """Delete a notification channel."""
     await notification_service.delete_channel(MOCK_TENANT_ID, channel_id)
     return {"message": "Notification channel deleted"}
 
 
 @router.post("/channels/{channel_id}/test")
-async def test_notification_channel(channel_id: str):
+async def test_notification_channel(
+    channel_id: str,
+    _: dict = Depends(require_entitlement("observability_alerts"))
+):
     """
     Test a notification channel by sending a test event.
     Returns success/failure status and message.
@@ -94,7 +116,9 @@ async def test_notification_channel(channel_id: str):
 
 # Rule endpoints
 @router.get("/rules", response_model=List[NotificationRuleResponse])
-async def get_notification_rules():
+async def get_notification_rules(
+    _: dict = Depends(require_entitlement("observability_alerts"))
+):
     """Get all notification rules for the tenant."""
     try:
         rules = await notification_service.get_rules(MOCK_TENANT_ID)
@@ -107,7 +131,10 @@ async def get_notification_rules():
 
 
 @router.post("/rules", response_model=NotificationRuleResponse)
-async def create_notification_rule(data: NotificationRuleCreate):
+async def create_notification_rule(
+    data: NotificationRuleCreate,
+    _: dict = Depends(require_entitlement("observability_alerts"))
+):
     """Create a new notification rule."""
     try:
         rule = await notification_service.create_rule(MOCK_TENANT_ID, data)
@@ -120,7 +147,10 @@ async def create_notification_rule(data: NotificationRuleCreate):
 
 
 @router.get("/rules/{event_type}", response_model=NotificationRuleResponse)
-async def get_notification_rule_by_event(event_type: str):
+async def get_notification_rule_by_event(
+    event_type: str,
+    _: dict = Depends(require_entitlement("observability_alerts"))
+):
     """Get the notification rule for a specific event type."""
     rule = await notification_service.get_rule_by_event(MOCK_TENANT_ID, event_type)
     if not rule:
@@ -132,7 +162,11 @@ async def get_notification_rule_by_event(event_type: str):
 
 
 @router.put("/rules/{rule_id}", response_model=NotificationRuleResponse)
-async def update_notification_rule(rule_id: str, data: NotificationRuleUpdate):
+async def update_notification_rule(
+    rule_id: str,
+    data: NotificationRuleUpdate,
+    _: dict = Depends(require_entitlement("observability_alerts"))
+):
     """Update a notification rule."""
     rule = await notification_service.update_rule(MOCK_TENANT_ID, rule_id, data)
     if not rule:
@@ -144,7 +178,10 @@ async def update_notification_rule(rule_id: str, data: NotificationRuleUpdate):
 
 
 @router.delete("/rules/{rule_id}")
-async def delete_notification_rule(rule_id: str):
+async def delete_notification_rule(
+    rule_id: str,
+    _: dict = Depends(require_entitlement("observability_alerts"))
+):
     """Delete a notification rule."""
     await notification_service.delete_rule(MOCK_TENANT_ID, rule_id)
     return {"message": "Notification rule deleted"}
@@ -154,7 +191,8 @@ async def delete_notification_rule(rule_id: str):
 @router.get("/events", response_model=List[EventResponse])
 async def get_alert_events(
     limit: int = 50,
-    event_type: Optional[str] = None
+    event_type: Optional[str] = None,
+    _: dict = Depends(require_entitlement("observability_alerts"))
 ):
     """
     Get recent alert events.
@@ -183,7 +221,9 @@ async def get_alert_events(
 
 
 @router.get("/event-catalog", response_model=List[EventCatalogItem])
-async def get_event_catalog():
+async def get_event_catalog(
+    _: dict = Depends(require_entitlement("observability_alerts"))
+):
     """
     Get the event catalog - a list of all available event types
     with their display names, descriptions, and categories.

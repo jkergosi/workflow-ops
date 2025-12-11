@@ -180,7 +180,18 @@ function App() {
               </Route>
               </Routes>
             </BrowserRouter>
-            <Toaster position="top-right" />
+            <Toaster
+              position="top-right"
+              expand={true}
+              richColors={false}
+              toastOptions={{
+                classNames: {
+                  toast: '!rounded-lg !shadow-lg !border-l-4 !font-medium !px-4 !py-3 !text-sm',
+                  success: '!bg-green-50 dark:!bg-green-950/90 !text-green-900 dark:!text-green-50 !border-green-500',
+                  error: '!bg-red-50 dark:!bg-red-950/90 !text-red-900 dark:!text-red-50 !border-red-500',
+                },
+              }}
+            />
           </FeaturesProvider>
         </AuthProvider>
         <ReactQueryDevtools initialIsOpen={false} />

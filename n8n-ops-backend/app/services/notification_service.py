@@ -1,9 +1,12 @@
 from typing import Optional, List, Dict, Any
 from datetime import datetime
 import httpx
+import smtplib
+import base64
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
 
 from app.services.database import db_service
-from app.services.n8n_client import N8NClient
 from app.schemas.notification import (
     NotificationChannelCreate,
     NotificationChannelUpdate,
@@ -16,6 +19,7 @@ from app.schemas.notification import (
     EventCatalogItem,
     EVENT_CATALOG,
     NotificationStatus,
+    ChannelType,
 )
 
 
@@ -301,47 +305,88 @@ class NotificationService:
         metadata: Optional[Dict[str, Any]]
     ) -> bool:
         """
-        Send a notification to an n8n workflow channel.
-        The channel config_json contains: environment_id, workflow_id, webhook_path
+        Send a notification to a channel based on its type.
+        Supports: slack, email, webhook
         """
+        channel_type = channel.get("type", "")
         config = channel.get("config_json", {})
 
-        # Get the environment for this channel to get the n8n base URL
-        channel_env_id = config.get("environment_id")
-        webhook_path = config.get("webhook_path", "")
+        # Get display name for event
+        display_name = event_type
+        for item in EVENT_CATALOG:
+            if item.event_type == event_type:
+                display_name = item.display_name
+                break
 
-        if not channel_env_id or not webhook_path:
-            print(f"Channel {channel.get('name')} missing environment_id or webhook_path")
+        if channel_type == ChannelType.SLACK.value or channel_type == "slack":
+            return await self._send_slack_notification(
+                config, event_type, display_name, environment_id, metadata, channel.get("name")
+            )
+        elif channel_type == ChannelType.EMAIL.value or channel_type == "email":
+            return await self._send_email_notification(
+                config, event_type, display_name, environment_id, metadata, channel.get("name")
+            )
+        elif channel_type == ChannelType.WEBHOOK.value or channel_type == "webhook":
+            return await self._send_webhook_notification(
+                config, event_type, display_name, environment_id, metadata, channel.get("name")
+            )
+        else:
+            print(f"Unknown channel type: {channel_type}")
             return False
 
-        # Get environment to construct webhook URL
-        # Note: We need to get the environment for the channel, not the event
-        env = await db_service.get_environment(channel_env_id, channel["tenant_id"])
-        if not env:
-            print(f"Environment {channel_env_id} not found for channel {channel.get('name')}")
+    async def _send_slack_notification(
+        self,
+        config: Dict[str, Any],
+        event_type: str,
+        display_name: str,
+        environment_id: Optional[str],
+        metadata: Optional[Dict[str, Any]],
+        channel_name: Optional[str]
+    ) -> bool:
+        """Send notification to Slack via incoming webhook"""
+        webhook_url = config.get("webhook_url")
+        if not webhook_url:
+            print(f"Slack channel missing webhook_url")
             return False
 
-        base_url = env.get("n8n_base_url", "").rstrip("/")
-        if not base_url:
-            print(f"No base_url for environment {channel_env_id}")
-            return False
+        # Determine color based on event type
+        color = "#36a64f"  # green for success
+        if "failure" in event_type or "error" in event_type or "unhealthy" in event_type:
+            color = "#dc3545"  # red for errors
+        elif "blocked" in event_type or "missing" in event_type or "drift" in event_type:
+            color = "#ffc107"  # yellow for warnings
 
-        # Construct webhook URL
-        # webhook_path should be like "/webhook/abc123" or "webhook/abc123"
-        if not webhook_path.startswith("/"):
-            webhook_path = "/" + webhook_path
-        webhook_url = f"{base_url}{webhook_path}"
+        # Build Slack message
+        fields = []
+        if environment_id:
+            fields.append({"title": "Environment", "value": environment_id, "short": True})
+        if metadata:
+            for key, value in metadata.items():
+                if key != "message":
+                    fields.append({"title": key.replace("_", " ").title(), "value": str(value), "short": True})
 
-        # Build payload
-        payload = {
-            "event_type": event_type,
-            "environment_id": environment_id,
-            "timestamp": datetime.utcnow().isoformat(),
-            "metadata": metadata or {},
-            "channel_name": channel.get("name")
+        attachment = {
+            "fallback": f"{display_name}: {metadata.get('message', event_type) if metadata else event_type}",
+            "color": color,
+            "title": display_name,
+            "text": metadata.get("message", "") if metadata else "",
+            "fields": fields,
+            "footer": "N8N Ops",
+            "ts": int(datetime.utcnow().timestamp())
         }
 
-        # Send POST request to webhook
+        payload = {
+            "attachments": [attachment]
+        }
+
+        # Add optional overrides
+        if config.get("channel"):
+            payload["channel"] = config["channel"]
+        if config.get("username"):
+            payload["username"] = config["username"]
+        if config.get("icon_emoji"):
+            payload["icon_emoji"] = config["icon_emoji"]
+
         try:
             async with httpx.AsyncClient() as client:
                 response = await client.post(
@@ -349,9 +394,159 @@ class NotificationService:
                     json=payload,
                     timeout=10.0
                 )
+                return response.status_code == 200
+        except Exception as e:
+            print(f"Failed to send Slack notification: {e}")
+            return False
+
+    async def _send_email_notification(
+        self,
+        config: Dict[str, Any],
+        event_type: str,
+        display_name: str,
+        environment_id: Optional[str],
+        metadata: Optional[Dict[str, Any]],
+        channel_name: Optional[str]
+    ) -> bool:
+        """Send notification via email (SMTP)"""
+        smtp_host = config.get("smtp_host")
+        smtp_port = config.get("smtp_port", 587)
+        smtp_user = config.get("smtp_user")
+        smtp_password = config.get("smtp_password")
+        from_address = config.get("from_address")
+        to_addresses = config.get("to_addresses", [])
+        use_tls = config.get("use_tls", True)
+
+        if not all([smtp_host, smtp_user, smtp_password, from_address, to_addresses]):
+            print(f"Email channel missing required configuration")
+            return False
+
+        # Build email content
+        subject = f"[N8N Ops] {display_name}"
+
+        # HTML body
+        body_html = f"""
+        <html>
+        <body style="font-family: Arial, sans-serif; line-height: 1.6;">
+            <h2 style="color: #333;">{display_name}</h2>
+            <p><strong>Event Type:</strong> {event_type}</p>
+        """
+
+        if environment_id:
+            body_html += f"<p><strong>Environment:</strong> {environment_id}</p>"
+
+        if metadata:
+            if metadata.get("message"):
+                body_html += f"<p><strong>Message:</strong> {metadata['message']}</p>"
+
+            other_metadata = {k: v for k, v in metadata.items() if k != "message"}
+            if other_metadata:
+                body_html += "<h3>Details:</h3><ul>"
+                for key, value in other_metadata.items():
+                    body_html += f"<li><strong>{key.replace('_', ' ').title()}:</strong> {value}</li>"
+                body_html += "</ul>"
+
+        body_html += f"""
+            <hr style="border: 1px solid #eee;">
+            <p style="color: #666; font-size: 12px;">
+                Sent by N8N Ops at {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')} UTC
+            </p>
+        </body>
+        </html>
+        """
+
+        # Plain text body
+        body_text = f"{display_name}\n\nEvent Type: {event_type}\n"
+        if environment_id:
+            body_text += f"Environment: {environment_id}\n"
+        if metadata:
+            if metadata.get("message"):
+                body_text += f"Message: {metadata['message']}\n"
+            for key, value in metadata.items():
+                if key != "message":
+                    body_text += f"{key.replace('_', ' ').title()}: {value}\n"
+        body_text += f"\nSent by N8N Ops at {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')} UTC"
+
+        try:
+            msg = MIMEMultipart("alternative")
+            msg["Subject"] = subject
+            msg["From"] = from_address
+            msg["To"] = ", ".join(to_addresses)
+
+            msg.attach(MIMEText(body_text, "plain"))
+            msg.attach(MIMEText(body_html, "html"))
+
+            if use_tls:
+                server = smtplib.SMTP(smtp_host, smtp_port)
+                server.starttls()
+            else:
+                server = smtplib.SMTP(smtp_host, smtp_port)
+
+            server.login(smtp_user, smtp_password)
+            server.sendmail(from_address, to_addresses, msg.as_string())
+            server.quit()
+            return True
+        except Exception as e:
+            print(f"Failed to send email notification: {e}")
+            return False
+
+    async def _send_webhook_notification(
+        self,
+        config: Dict[str, Any],
+        event_type: str,
+        display_name: str,
+        environment_id: Optional[str],
+        metadata: Optional[Dict[str, Any]],
+        channel_name: Optional[str]
+    ) -> bool:
+        """Send notification to a generic webhook"""
+        url = config.get("url")
+        if not url:
+            print(f"Webhook channel missing url")
+            return False
+
+        method = config.get("method", "POST").upper()
+        headers = config.get("headers", {}) or {}
+        auth_type = config.get("auth_type")
+        auth_value = config.get("auth_value")
+
+        # Build payload
+        payload = {
+            "event_type": event_type,
+            "display_name": display_name,
+            "environment_id": environment_id,
+            "timestamp": datetime.utcnow().isoformat(),
+            "metadata": metadata or {},
+            "source": "n8n-ops"
+        }
+
+        # Set content-type if not provided
+        if "Content-Type" not in headers and "content-type" not in headers:
+            headers["Content-Type"] = "application/json"
+
+        # Handle authentication
+        if auth_type == "basic" and auth_value:
+            # auth_value should be "username:password"
+            encoded = base64.b64encode(auth_value.encode()).decode()
+            headers["Authorization"] = f"Basic {encoded}"
+        elif auth_type == "bearer" and auth_value:
+            headers["Authorization"] = f"Bearer {auth_value}"
+
+        try:
+            async with httpx.AsyncClient() as client:
+                if method == "POST":
+                    response = await client.post(url, json=payload, headers=headers, timeout=10.0)
+                elif method == "PUT":
+                    response = await client.put(url, json=payload, headers=headers, timeout=10.0)
+                elif method == "PATCH":
+                    response = await client.patch(url, json=payload, headers=headers, timeout=10.0)
+                else:
+                    print(f"Unsupported HTTP method: {method}")
+                    return False
+
                 return response.status_code in [200, 201, 202, 204]
         except Exception as e:
-            print(f"Failed to send notification to {webhook_url}: {e}")
+            print(f"Failed to send webhook notification to {url}: {e}")
             return False
 
     async def test_channel(

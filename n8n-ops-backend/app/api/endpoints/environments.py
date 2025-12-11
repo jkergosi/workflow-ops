@@ -14,6 +14,7 @@ from app.services.n8n_client import N8NClient
 from app.services.github_service import GitHubService
 from app.services.feature_service import feature_service
 from app.core.feature_gate import require_environment_limit
+from app.core.entitlements_gate import require_entitlement
 
 router = APIRouter()
 
@@ -28,7 +29,9 @@ async def test_endpoint():
 
 
 @router.get("/", response_model=List[EnvironmentResponse], response_model_exclude_none=False)
-async def get_environments():
+async def get_environments(
+    _: dict = Depends(require_entitlement("environment_basic"))
+):
     """Get all environments for the current tenant"""
     try:
         environments = await db_service.get_environments(MOCK_TENANT_ID)
@@ -59,7 +62,10 @@ async def get_environment_limits():
 
 
 @router.post("/test-connection")
-async def test_environment_connection(connection: EnvironmentTestConnection):
+async def test_environment_connection(
+    connection: EnvironmentTestConnection,
+    _: dict = Depends(require_entitlement("environment_basic"))
+):
     """Test connection to an N8N instance"""
     try:
         # Create a temporary N8N client with the provided credentials
@@ -84,7 +90,10 @@ async def test_environment_connection(connection: EnvironmentTestConnection):
 
 
 @router.post("/test-git-connection")
-async def test_git_connection(connection: GitTestConnection):
+async def test_git_connection(
+    connection: GitTestConnection,
+    _: dict = Depends(require_entitlement("environment_diff"))
+):
     """Test connection to a GitHub repository"""
     try:
         # Parse repo URL to extract owner and repo name
@@ -155,7 +164,10 @@ async def test_git_connection(connection: GitTestConnection):
 
 
 @router.get("/{environment_id}", response_model=EnvironmentResponse, response_model_exclude_none=False)
-async def get_environment(environment_id: str):
+async def get_environment(
+    environment_id: str,
+    _: dict = Depends(require_entitlement("environment_basic"))
+):
     """Get a specific environment by ID"""
     try:
         environment = await db_service.get_environment(environment_id, MOCK_TENANT_ID)
@@ -210,7 +222,11 @@ async def create_environment(
 
 
 @router.patch("/{environment_id}", response_model=EnvironmentResponse, response_model_exclude_none=False)
-async def update_environment(environment_id: str, environment: EnvironmentUpdate):
+async def update_environment(
+    environment_id: str,
+    environment: EnvironmentUpdate,
+    _: dict = Depends(require_entitlement("environment_basic"))
+):
     """Update an environment"""
     try:
         # Check if environment exists
@@ -250,7 +266,10 @@ async def update_environment(environment_id: str, environment: EnvironmentUpdate
 
 
 @router.delete("/{environment_id}", status_code=status.HTTP_204_NO_CONTENT)
-async def delete_environment(environment_id: str):
+async def delete_environment(
+    environment_id: str,
+    _: dict = Depends(require_entitlement("environment_basic"))
+):
     """Delete an environment"""
     try:
         # Check if environment exists
@@ -312,7 +331,10 @@ async def update_connection_status(environment_id: str):
 
 
 @router.post("/{environment_id}/sync")
-async def sync_environment(environment_id: str):
+async def sync_environment(
+    environment_id: str,
+    _: dict = Depends(require_entitlement("environment_basic"))
+):
     """
     Sync workflows, executions, credentials, tags, and users from N8N to database.
     This will:
@@ -447,6 +469,28 @@ async def sync_environment(environment_id: str):
             for key in ["workflows", "executions", "credentials", "users", "tags"]
         )
 
+        # Emit sync.failure event if there are errors
+        if has_errors:
+            try:
+                from app.services.notification_service import notification_service
+                await notification_service.emit_event(
+                    tenant_id=MOCK_TENANT_ID,
+                    event_type="sync.failure",
+                    environment_id=environment_id,
+                    metadata={
+                        "environment_id": environment_id,
+                        "sync_type": "full_sync",
+                        "errors": {
+                            key: sync_results[key]["errors"]
+                            for key in ["workflows", "executions", "credentials", "users", "tags"]
+                            if sync_results[key]["errors"]
+                        }
+                    }
+                )
+            except Exception as e:
+                import logging
+                logging.error(f"Failed to emit sync.failure event: {str(e)}")
+
         return {
             "success": not has_errors,
             "message": "Sync completed successfully" if not has_errors else "Sync completed with errors",
@@ -456,6 +500,24 @@ async def sync_environment(environment_id: str):
     except HTTPException:
         raise
     except Exception as e:
+        # Emit sync.failure event on exception
+        try:
+            from app.services.notification_service import notification_service
+            await notification_service.emit_event(
+                tenant_id=MOCK_TENANT_ID,
+                event_type="sync.failure",
+                environment_id=environment_id,
+                metadata={
+                    "environment_id": environment_id,
+                    "sync_type": "full_sync",
+                    "error_message": str(e),
+                    "error_type": type(e).__name__
+                }
+            )
+        except Exception as event_error:
+            import logging
+            logging.error(f"Failed to emit sync.failure event: {str(event_error)}")
+        
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to sync environment: {str(e)}"

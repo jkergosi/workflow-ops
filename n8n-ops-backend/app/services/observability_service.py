@@ -1,9 +1,13 @@
 from typing import Optional, List, Dict, Any
 from datetime import datetime, timedelta
 import time
+import logging
 
 from app.services.database import db_service
 from app.services.n8n_client import N8NClient
+from app.services.notification_service import notification_service
+
+logger = logging.getLogger(__name__)
 from app.schemas.observability import (
     TimeRange,
     EnvironmentStatus,
@@ -266,6 +270,12 @@ class ObservabilityService:
             status = EnvironmentStatus.UNREACHABLE
             error_message = str(e)
 
+        # Get previous health check status for recovery detection
+        previous_check = await db_service.get_latest_health_check(tenant_id, environment_id)
+        previous_status = None
+        if previous_check:
+            previous_status = EnvironmentStatus(previous_check.get("status")) if previous_check.get("status") else None
+
         # Store health check result
         health_check_data = {
             "tenant_id": tenant_id,
@@ -275,6 +285,51 @@ class ObservabilityService:
             "error_message": error_message
         }
         result = await db_service.create_health_check(health_check_data)
+
+        # Emit environment health events
+        try:
+            # Check for status changes and emit appropriate events
+            if status == EnvironmentStatus.UNREACHABLE:
+                await notification_service.emit_event(
+                    tenant_id=tenant_id,
+                    event_type="environment.connection_lost",
+                    environment_id=environment_id,
+                    metadata={
+                        "environment_id": environment_id,
+                        "status": status.value,
+                        "latency_ms": latency_ms,
+                        "error_message": error_message,
+                        "previous_status": previous_status.value if previous_status else None
+                    }
+                )
+            elif status == EnvironmentStatus.DEGRADED:
+                await notification_service.emit_event(
+                    tenant_id=tenant_id,
+                    event_type="environment.unhealthy",
+                    environment_id=environment_id,
+                    metadata={
+                        "environment_id": environment_id,
+                        "status": status.value,
+                        "latency_ms": latency_ms,
+                        "error_message": error_message,
+                        "previous_status": previous_status.value if previous_status else None
+                    }
+                )
+            elif status == EnvironmentStatus.HEALTHY and previous_status and previous_status != EnvironmentStatus.HEALTHY:
+                # Environment recovered from unhealthy/unreachable state
+                await notification_service.emit_event(
+                    tenant_id=tenant_id,
+                    event_type="environment.recovered",
+                    environment_id=environment_id,
+                    metadata={
+                        "environment_id": environment_id,
+                        "status": status.value,
+                        "latency_ms": latency_ms,
+                        "previous_status": previous_status.value
+                    }
+                )
+        except Exception as e:
+            logger.error(f"Failed to emit environment health event: {str(e)}")
 
         return HealthCheckResponse(
             id=result["id"],

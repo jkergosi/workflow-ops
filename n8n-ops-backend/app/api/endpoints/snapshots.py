@@ -1,9 +1,15 @@
-from fastapi import APIRouter, HTTPException, status, Query
+from fastapi import APIRouter, HTTPException, status, Query, Depends
 from typing import Optional, List
 from datetime import datetime
+import logging
 from app.services.database import db_service
 from app.services.github_service import GitHubService
 from app.services.n8n_client import N8NClient
+from app.services.notification_service import notification_service
+from app.services.auth_service import get_current_user
+from app.core.entitlements_gate import require_entitlement
+
+logger = logging.getLogger(__name__)
 from app.schemas.deployment import (
     SnapshotResponse,
     SnapshotCreate,
@@ -25,6 +31,7 @@ async def get_snapshots(
     to_date: Optional[datetime] = Query(None),
     page: int = Query(1, ge=1),
     page_size: int = Query(50, ge=1, le=100),
+    _: dict = Depends(require_entitlement("snapshots_enabled"))
 ):
     """
     Get list of snapshots with filtering and pagination.
@@ -61,7 +68,10 @@ async def get_snapshots(
 
 
 @router.get("/{snapshot_id}", response_model=SnapshotResponse)
-async def get_snapshot(snapshot_id: str):
+async def get_snapshot(
+    snapshot_id: str,
+    _: dict = Depends(require_entitlement("snapshots_enabled"))
+):
     """
     Get snapshot details including metadata and related deployment.
     """
@@ -93,18 +103,24 @@ async def get_snapshot(snapshot_id: str):
 
 
 @router.post("/{snapshot_id}/restore")
-async def restore_snapshot(snapshot_id: str):
+async def restore_snapshot(
+    snapshot_id: str,
+    user_info: dict = Depends(require_entitlement("snapshots_enabled"))
+):
     """
     Restore an environment to a snapshot's state.
     Pulls workflows from GitHub at the snapshot's commit SHA and pushes to N8N.
+    Requires snapshots_enabled entitlement.
     """
+    tenant_id = user_info["tenant"]["id"]
+
     try:
         # Get snapshot
         snapshot_result = (
             db_service.client.table("snapshots")
             .select("*")
             .eq("id", snapshot_id)
-            .eq("tenant_id", MOCK_TENANT_ID)
+            .eq("tenant_id", tenant_id)
             .single()
             .execute()
         )
@@ -120,7 +136,7 @@ async def restore_snapshot(snapshot_id: str):
         commit_sha = snapshot["git_commit_sha"]
 
         # Get environment config
-        env_config = await db_service.get_environment(environment_id, MOCK_TENANT_ID)
+        env_config = await db_service.get_environment(environment_id, tenant_id)
         if not env_config:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
@@ -179,8 +195,28 @@ async def restore_snapshot(snapshot_id: str):
         # Optionally create a new snapshot after rollback
         # This would be a manual_backup type snapshot
 
+        success = len(errors) == 0
+        
+        # Emit snapshot.restore_success or snapshot.restore_failure event
+        try:
+            event_type = "snapshot.restore_success" if success else "snapshot.restore_failure"
+            await notification_service.emit_event(
+                tenant_id=tenant_id,
+                event_type=event_type,
+                environment_id=environment_id,
+                metadata={
+                    "snapshot_id": snapshot_id,
+                    "environment_id": environment_id,
+                    "restored_count": restored_count,
+                    "failed_count": len(errors),
+                    "errors": errors
+                }
+            )
+        except Exception as e:
+            logger.error(f"Failed to emit snapshot.restore event: {str(e)}")
+
         return {
-            "success": len(errors) == 0,
+            "success": success,
             "restored": restored_count,
             "failed": len(errors),
             "errors": errors,
@@ -190,6 +226,30 @@ async def restore_snapshot(snapshot_id: str):
     except HTTPException:
         raise
     except Exception as e:
+        # Emit snapshot.restore_failure event on exception
+        try:
+            snapshot_result = (
+                db_service.client.table("snapshots")
+                .select("*")
+                .eq("id", snapshot_id)
+                .eq("tenant_id", tenant_id)
+                .single()
+                .execute()
+            )
+            if snapshot_result.data:
+                await notification_service.emit_event(
+                    tenant_id=tenant_id,
+                    event_type="snapshot.restore_failure",
+                    environment_id=snapshot_result.data.get("environment_id"),
+                    metadata={
+                        "snapshot_id": snapshot_id,
+                        "error_message": str(e),
+                        "error_type": type(e).__name__
+                    }
+                )
+        except Exception as event_error:
+            logger.error(f"Failed to emit snapshot.restore_failure event: {str(event_error)}")
+
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to restore snapshot: {str(e)}",

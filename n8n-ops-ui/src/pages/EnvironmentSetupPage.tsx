@@ -5,7 +5,7 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import { Loader2, Server, GitBranch, CheckCircle, XCircle, ArrowLeft } from 'lucide-react';
+import { Loader2, Server, GitBranch, CheckCircle, XCircle, ArrowLeft, CheckCircle2, AlertCircle } from 'lucide-react';
 import { toast } from 'sonner';
 import { apiClient } from '@/lib/api-client';
 import { useAuth } from '@/lib/auth';
@@ -69,7 +69,9 @@ export function EnvironmentSetupPage() {
 
   const testN8nConnection = async () => {
     if (!formData.n8nUrl || !formData.n8nApiKey) {
-      toast.error('Please enter N8N URL and API key first');
+      toast.error('Please enter N8N URL and API key first', {
+        icon: <AlertCircle className="h-5 w-5" />,
+      });
       return;
     }
 
@@ -79,14 +81,20 @@ export function EnvironmentSetupPage() {
       const response = await apiClient.testEnvironmentConnection(formData.n8nUrl, formData.n8nApiKey);
       setN8nTestResult(response.data);
       if (response.data.success) {
-        toast.success('N8N connection successful!');
+        toast.success('N8N connection successful!', {
+          icon: <CheckCircle2 className="h-5 w-5" />,
+        });
       } else {
-        toast.error(response.data.message || 'Connection failed');
+        toast.error(response.data.message || 'Connection failed', {
+          icon: <AlertCircle className="h-5 w-5" />,
+        });
       }
     } catch (error: any) {
       const message = error.response?.data?.detail || 'Connection test failed';
       setN8nTestResult({ success: false, message });
-      toast.error(message);
+      toast.error(message, {
+        icon: <AlertCircle className="h-5 w-5" />,
+      });
     } finally {
       setTestingN8n(false);
     }

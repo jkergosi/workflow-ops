@@ -21,10 +21,10 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import {
   Bell,
   Plus,
-  Workflow,
   CheckCircle,
   AlertTriangle,
   Info,
@@ -36,6 +36,9 @@ import {
   Loader2,
   XCircle,
   Clock,
+  Mail,
+  MessageSquare,
+  Webhook,
 } from 'lucide-react';
 import { apiClient } from '@/lib/api-client';
 import { toast } from 'sonner';
@@ -44,8 +47,37 @@ import type {
   NotificationRule,
   AlertEvent,
   EventCatalogItem,
-  Environment,
+  ChannelType,
+  SlackConfig,
+  EmailConfig,
+  WebhookConfig,
 } from '@/types';
+
+// Default configs for each channel type
+const defaultSlackConfig: SlackConfig = {
+  webhook_url: '',
+  channel: '',
+  username: 'N8N Ops',
+  icon_emoji: ':bell:',
+};
+
+const defaultEmailConfig: EmailConfig = {
+  smtp_host: '',
+  smtp_port: 587,
+  smtp_user: '',
+  smtp_password: '',
+  from_address: '',
+  to_addresses: [],
+  use_tls: true,
+};
+
+const defaultWebhookConfig: WebhookConfig = {
+  url: '',
+  method: 'POST',
+  headers: {},
+  auth_type: 'none',
+  auth_value: '',
+};
 
 export function AlertsPage() {
   const queryClient = useQueryClient();
@@ -56,12 +88,22 @@ export function AlertsPage() {
   const [selectedChannel, setSelectedChannel] = useState<NotificationChannel | null>(null);
   const [selectedRule, setSelectedRule] = useState<NotificationRule | null>(null);
 
-  const [channelForm, setChannelForm] = useState({
+  const [channelForm, setChannelForm] = useState<{
+    name: string;
+    type: ChannelType;
+    isEnabled: boolean;
+    slackConfig: SlackConfig;
+    emailConfig: EmailConfig;
+    webhookConfig: WebhookConfig;
+    emailToAddresses: string; // comma-separated for input
+  }>({
     name: '',
-    environmentId: '',
-    workflowId: '',
-    webhookPath: '/webhook',
+    type: 'slack',
     isEnabled: true,
+    slackConfig: { ...defaultSlackConfig },
+    emailConfig: { ...defaultEmailConfig },
+    webhookConfig: { ...defaultWebhookConfig },
+    emailToAddresses: '',
   });
 
   const [ruleForm, setRuleForm] = useState({
@@ -91,20 +133,14 @@ export function AlertsPage() {
     queryFn: () => apiClient.getEventCatalog(),
   });
 
-  const { data: environmentsData } = useQuery({
-    queryKey: ['environments'],
-    queryFn: () => apiClient.getEnvironments(),
-  });
-
   const channels = channelsData?.data ?? [];
   const rules = rulesData?.data ?? [];
   const events = eventsData?.data ?? [];
   const eventCatalog = catalogData?.data ?? [];
-  const environments = environmentsData?.data ?? [];
 
   // Mutations
   const createChannelMutation = useMutation({
-    mutationFn: (data: { name: string; configJson: { environmentId: string; workflowId: string; webhookPath: string }; isEnabled: boolean }) =>
+    mutationFn: (data: { name: string; type: ChannelType; configJson: Record<string, unknown>; isEnabled: boolean }) =>
       apiClient.createNotificationChannel(data),
     onSuccess: () => {
       toast.success('Notification channel created');
@@ -113,7 +149,10 @@ export function AlertsPage() {
       resetChannelForm();
     },
     onError: (error: Error) => {
-      toast.error(`Failed to create channel: ${error.message}`);
+      toast.error('Failed to create channel', {
+        description: error.message,
+        duration: 8000,
+      });
     },
   });
 
@@ -127,7 +166,10 @@ export function AlertsPage() {
       setSelectedChannel(null);
     },
     onError: (error: Error) => {
-      toast.error(`Failed to update channel: ${error.message}`);
+      toast.error('Failed to update channel', {
+        description: error.message,
+        duration: 8000,
+      });
     },
   });
 
@@ -138,7 +180,10 @@ export function AlertsPage() {
       queryClient.invalidateQueries({ queryKey: ['notification-channels'] });
     },
     onError: (error: Error) => {
-      toast.error(`Failed to delete channel: ${error.message}`);
+      toast.error('Failed to delete channel', {
+        description: error.message,
+        duration: 8000,
+      });
     },
   });
 
@@ -148,11 +193,17 @@ export function AlertsPage() {
       if (result.data.success) {
         toast.success(result.data.message || 'Test notification sent successfully');
       } else {
-        toast.error(result.data.message || 'Test notification failed');
+        toast.error('Test notification failed', {
+          description: result.data.message || 'The test notification could not be delivered',
+          duration: 8000,
+        });
       }
     },
     onError: (error: Error) => {
-      toast.error(`Test failed: ${error.message}`);
+      toast.error('Test failed', {
+        description: error.message,
+        duration: 8000,
+      });
     },
   });
 
@@ -166,7 +217,10 @@ export function AlertsPage() {
       resetRuleForm();
     },
     onError: (error: Error) => {
-      toast.error(`Failed to create rule: ${error.message}`);
+      toast.error('Failed to create rule', {
+        description: error.message,
+        duration: 8000,
+      });
     },
   });
 
@@ -180,7 +234,10 @@ export function AlertsPage() {
       setSelectedRule(null);
     },
     onError: (error: Error) => {
-      toast.error(`Failed to update rule: ${error.message}`);
+      toast.error('Failed to update rule', {
+        description: error.message,
+        duration: 8000,
+      });
     },
   });
 
@@ -191,7 +248,10 @@ export function AlertsPage() {
       queryClient.invalidateQueries({ queryKey: ['notification-rules'] });
     },
     onError: (error: Error) => {
-      toast.error(`Failed to delete rule: ${error.message}`);
+      toast.error('Failed to delete rule', {
+        description: error.message,
+        duration: 8000,
+      });
     },
   });
 
@@ -199,10 +259,12 @@ export function AlertsPage() {
   const resetChannelForm = () => {
     setChannelForm({
       name: '',
-      environmentId: '',
-      workflowId: '',
-      webhookPath: '/webhook',
+      type: 'slack',
       isEnabled: true,
+      slackConfig: { ...defaultSlackConfig },
+      emailConfig: { ...defaultEmailConfig },
+      webhookConfig: { ...defaultWebhookConfig },
+      emailToAddresses: '',
     });
   };
 
@@ -214,33 +276,70 @@ export function AlertsPage() {
     });
   };
 
+  const getConfigForType = (type: ChannelType): Record<string, unknown> => {
+    switch (type) {
+      case 'slack':
+        return channelForm.slackConfig;
+      case 'email':
+        return {
+          ...channelForm.emailConfig,
+          to_addresses: channelForm.emailToAddresses.split(',').map((e) => e.trim()).filter(Boolean),
+        };
+      case 'webhook':
+        return channelForm.webhookConfig;
+      default:
+        return {};
+    }
+  };
+
   const handleCreateChannel = () => {
-    if (!channelForm.name || !channelForm.environmentId || !channelForm.workflowId) {
-      toast.error('Please fill in all required fields');
+    if (!channelForm.name) {
+      toast.warning('Missing channel name', {
+        description: 'Please enter a name for this notification channel',
+      });
       return;
     }
+
+    const configJson = getConfigForType(channelForm.type);
+
+    // Validate required fields
+    if (channelForm.type === 'slack' && !channelForm.slackConfig.webhook_url) {
+      toast.warning('Missing Slack webhook URL', {
+        description: 'Enter your Slack incoming webhook URL to enable notifications',
+      });
+      return;
+    }
+    if (channelForm.type === 'email') {
+      if (!channelForm.emailConfig.smtp_host || !channelForm.emailConfig.from_address || !channelForm.emailToAddresses) {
+        toast.warning('Missing email configuration', {
+          description: 'Please fill in SMTP host, from address, and recipient addresses',
+        });
+        return;
+      }
+    }
+    if (channelForm.type === 'webhook' && !channelForm.webhookConfig.url) {
+      toast.warning('Missing webhook URL', {
+        description: 'Enter the URL where notifications should be sent',
+      });
+      return;
+    }
+
     createChannelMutation.mutate({
       name: channelForm.name,
-      configJson: {
-        environmentId: channelForm.environmentId,
-        workflowId: channelForm.workflowId,
-        webhookPath: channelForm.webhookPath,
-      },
+      type: channelForm.type,
+      configJson,
       isEnabled: channelForm.isEnabled,
     });
   };
 
   const handleUpdateChannel = () => {
     if (!selectedChannel) return;
+    const configJson = getConfigForType(channelForm.type);
     updateChannelMutation.mutate({
       id: selectedChannel.id,
       data: {
         name: channelForm.name,
-        configJson: {
-          environmentId: channelForm.environmentId,
-          workflowId: channelForm.workflowId,
-          webhookPath: channelForm.webhookPath,
-        },
+        configJson: configJson as any,
         isEnabled: channelForm.isEnabled,
       },
     });
@@ -248,19 +347,25 @@ export function AlertsPage() {
 
   const handleEditChannel = (channel: NotificationChannel) => {
     setSelectedChannel(channel);
+    const config = channel.configJson as Record<string, unknown>;
+
     setChannelForm({
       name: channel.name,
-      environmentId: channel.configJson.environmentId,
-      workflowId: channel.configJson.workflowId,
-      webhookPath: channel.configJson.webhookPath || '/webhook',
+      type: channel.type,
       isEnabled: channel.isEnabled,
+      slackConfig: channel.type === 'slack' ? (config as SlackConfig) : { ...defaultSlackConfig },
+      emailConfig: channel.type === 'email' ? (config as EmailConfig) : { ...defaultEmailConfig },
+      webhookConfig: channel.type === 'webhook' ? (config as WebhookConfig) : { ...defaultWebhookConfig },
+      emailToAddresses: channel.type === 'email' ? ((config as EmailConfig).to_addresses || []).join(', ') : '',
     });
     setEditChannelOpen(true);
   };
 
   const handleCreateRule = () => {
     if (!ruleForm.eventType || ruleForm.channelIds.length === 0) {
-      toast.error('Please select an event type and at least one channel');
+      toast.warning('Incomplete rule configuration', {
+        description: 'Please select an event type and at least one notification channel',
+      });
       return;
     }
     createRuleMutation.mutate(ruleForm);
@@ -301,19 +406,22 @@ export function AlertsPage() {
     return catalogItem?.displayName || eventType;
   };
 
-  const getEventCategory = (eventType: string): string => {
-    const catalogItem = eventCatalog.find((item) => item.eventType === eventType);
-    return catalogItem?.category || 'Other';
-  };
-
-  const getEnvironmentName = (envId: string): string => {
-    const env = environments.find((e) => e.id === envId);
-    return env?.name || envId;
-  };
-
   const getChannelName = (channelId: string): string => {
     const channel = channels.find((c) => c.id === channelId);
     return channel?.name || channelId;
+  };
+
+  const getChannelIcon = (type: ChannelType) => {
+    switch (type) {
+      case 'slack':
+        return <MessageSquare className="h-4 w-4" />;
+      case 'email':
+        return <Mail className="h-4 w-4" />;
+      case 'webhook':
+        return <Webhook className="h-4 w-4" />;
+      default:
+        return <Bell className="h-4 w-4" />;
+    }
   };
 
   const getStatusIcon = (status?: string) => {
@@ -394,10 +502,10 @@ export function AlertsPage() {
             <div className="flex items-center justify-between">
               <div>
                 <CardTitle className="flex items-center gap-2">
-                  <Workflow className="h-5 w-5" />
+                  <Bell className="h-5 w-5" />
                   Notification Channels
                 </CardTitle>
-                <CardDescription>n8n workflows that receive event notifications</CardDescription>
+                <CardDescription>Configure where notifications are sent</CardDescription>
               </div>
               <Button size="sm" onClick={() => setCreateChannelOpen(true)}>
                 <Plus className="h-4 w-4 mr-1" />
@@ -424,13 +532,11 @@ export function AlertsPage() {
                 >
                   <div className="flex items-center gap-3">
                     <div className="p-2 rounded-lg bg-muted">
-                      <Workflow className="h-4 w-4" />
+                      {getChannelIcon(channel.type)}
                     </div>
                     <div>
                       <p className="font-medium">{channel.name}</p>
-                      <p className="text-sm text-muted-foreground">
-                        {getEnvironmentName(channel.configJson.environmentId)} → {channel.configJson.workflowId}
-                      </p>
+                      <p className="text-sm text-muted-foreground capitalize">{channel.type}</p>
                     </div>
                   </div>
                   <div className="flex items-center gap-2">
@@ -610,9 +716,7 @@ export function AlertsPage() {
                     <p className="text-sm text-muted-foreground mt-1">
                       <code className="bg-muted px-1 rounded text-xs">{event.eventType}</code>
                       {event.environmentId && (
-                        <span className="ml-2">
-                          Environment: {getEnvironmentName(event.environmentId)}
-                        </span>
+                        <span className="ml-2">Environment: {event.environmentId}</span>
                       )}
                     </p>
                     {event.metadataJson && Object.keys(event.metadataJson).length > 0 && (
@@ -643,11 +747,11 @@ export function AlertsPage() {
 
       {/* Create Channel Dialog */}
       <Dialog open={createChannelOpen} onOpenChange={setCreateChannelOpen}>
-        <DialogContent className="max-w-md">
+        <DialogContent className="max-w-lg">
           <DialogHeader>
             <DialogTitle>Add Notification Channel</DialogTitle>
             <DialogDescription>
-              Configure an n8n workflow to receive event notifications
+              Configure a channel to receive event notifications
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-4">
@@ -655,57 +759,225 @@ export function AlertsPage() {
               <Label htmlFor="channel-name">Channel Name</Label>
               <Input
                 id="channel-name"
-                placeholder="My Alert Workflow"
+                placeholder="My Alert Channel"
                 value={channelForm.name}
                 onChange={(e) => setChannelForm({ ...channelForm, name: e.target.value })}
               />
             </div>
-            <div className="space-y-2">
-              <Label htmlFor="channel-env">n8n Environment</Label>
-              <Select
-                value={channelForm.environmentId}
-                onValueChange={(value) => setChannelForm({ ...channelForm, environmentId: value })}
-              >
-                <SelectTrigger>
-                  <SelectValue placeholder="Select environment" />
-                </SelectTrigger>
-                <SelectContent>
-                  {environments.map((env) => (
-                    <SelectItem key={env.id} value={env.id}>
-                      {env.name}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-            <div className="space-y-2">
-              <Label htmlFor="channel-workflow">Workflow ID</Label>
-              <Input
-                id="channel-workflow"
-                placeholder="workflow-id-123"
-                value={channelForm.workflowId}
-                onChange={(e) => setChannelForm({ ...channelForm, workflowId: e.target.value })}
-              />
-              <p className="text-xs text-muted-foreground">
-                The n8n workflow ID that will receive webhook calls
-              </p>
-            </div>
-            <div className="space-y-2">
-              <Label htmlFor="channel-webhook">Webhook Path</Label>
-              <Input
-                id="channel-webhook"
-                placeholder="/webhook"
-                value={channelForm.webhookPath}
-                onChange={(e) => setChannelForm({ ...channelForm, webhookPath: e.target.value })}
-              />
-              <p className="text-xs text-muted-foreground">
-                The webhook trigger path in your n8n workflow
-              </p>
-            </div>
+
+            <Tabs value={channelForm.type} onValueChange={(v) => setChannelForm({ ...channelForm, type: v as ChannelType })}>
+              <TabsList className="grid grid-cols-3">
+                <TabsTrigger value="slack">
+                  <MessageSquare className="h-4 w-4 mr-2" />
+                  Slack
+                </TabsTrigger>
+                <TabsTrigger value="email">
+                  <Mail className="h-4 w-4 mr-2" />
+                  Email
+                </TabsTrigger>
+                <TabsTrigger value="webhook">
+                  <Webhook className="h-4 w-4 mr-2" />
+                  Webhook
+                </TabsTrigger>
+              </TabsList>
+
+              <TabsContent value="slack" className="space-y-4 mt-4">
+                <div className="space-y-2">
+                  <Label>Webhook URL *</Label>
+                  <Input
+                    placeholder="https://hooks.slack.com/services/..."
+                    value={channelForm.slackConfig.webhook_url}
+                    onChange={(e) => setChannelForm({
+                      ...channelForm,
+                      slackConfig: { ...channelForm.slackConfig, webhook_url: e.target.value }
+                    })}
+                  />
+                  <p className="text-xs text-muted-foreground">
+                    Create an incoming webhook in your Slack workspace
+                  </p>
+                </div>
+                <div className="grid grid-cols-2 gap-4">
+                  <div className="space-y-2">
+                    <Label>Channel Override</Label>
+                    <Input
+                      placeholder="#alerts"
+                      value={channelForm.slackConfig.channel || ''}
+                      onChange={(e) => setChannelForm({
+                        ...channelForm,
+                        slackConfig: { ...channelForm.slackConfig, channel: e.target.value }
+                      })}
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <Label>Username</Label>
+                    <Input
+                      placeholder="N8N Ops"
+                      value={channelForm.slackConfig.username || ''}
+                      onChange={(e) => setChannelForm({
+                        ...channelForm,
+                        slackConfig: { ...channelForm.slackConfig, username: e.target.value }
+                      })}
+                    />
+                  </div>
+                </div>
+              </TabsContent>
+
+              <TabsContent value="email" className="space-y-4 mt-4">
+                <div className="grid grid-cols-2 gap-4">
+                  <div className="space-y-2">
+                    <Label>SMTP Host *</Label>
+                    <Input
+                      placeholder="smtp.gmail.com"
+                      value={channelForm.emailConfig.smtp_host}
+                      onChange={(e) => setChannelForm({
+                        ...channelForm,
+                        emailConfig: { ...channelForm.emailConfig, smtp_host: e.target.value }
+                      })}
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <Label>SMTP Port</Label>
+                    <Input
+                      type="number"
+                      placeholder="587"
+                      value={channelForm.emailConfig.smtp_port}
+                      onChange={(e) => setChannelForm({
+                        ...channelForm,
+                        emailConfig: { ...channelForm.emailConfig, smtp_port: parseInt(e.target.value) || 587 }
+                      })}
+                    />
+                  </div>
+                </div>
+                <div className="grid grid-cols-2 gap-4">
+                  <div className="space-y-2">
+                    <Label>SMTP User *</Label>
+                    <Input
+                      placeholder="user@example.com"
+                      value={channelForm.emailConfig.smtp_user}
+                      onChange={(e) => setChannelForm({
+                        ...channelForm,
+                        emailConfig: { ...channelForm.emailConfig, smtp_user: e.target.value }
+                      })}
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <Label>SMTP Password *</Label>
+                    <Input
+                      type="password"
+                      placeholder="••••••••"
+                      value={channelForm.emailConfig.smtp_password}
+                      onChange={(e) => setChannelForm({
+                        ...channelForm,
+                        emailConfig: { ...channelForm.emailConfig, smtp_password: e.target.value }
+                      })}
+                    />
+                  </div>
+                </div>
+                <div className="space-y-2">
+                  <Label>From Address *</Label>
+                  <Input
+                    placeholder="alerts@yourcompany.com"
+                    value={channelForm.emailConfig.from_address}
+                    onChange={(e) => setChannelForm({
+                      ...channelForm,
+                      emailConfig: { ...channelForm.emailConfig, from_address: e.target.value }
+                    })}
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label>To Addresses * (comma-separated)</Label>
+                  <Input
+                    placeholder="admin@example.com, ops@example.com"
+                    value={channelForm.emailToAddresses}
+                    onChange={(e) => setChannelForm({ ...channelForm, emailToAddresses: e.target.value })}
+                  />
+                </div>
+                <div className="flex items-center justify-between">
+                  <Label>Use TLS</Label>
+                  <Switch
+                    checked={channelForm.emailConfig.use_tls}
+                    onCheckedChange={(checked) => setChannelForm({
+                      ...channelForm,
+                      emailConfig: { ...channelForm.emailConfig, use_tls: checked }
+                    })}
+                  />
+                </div>
+              </TabsContent>
+
+              <TabsContent value="webhook" className="space-y-4 mt-4">
+                <div className="space-y-2">
+                  <Label>Webhook URL *</Label>
+                  <Input
+                    placeholder="https://api.example.com/webhook"
+                    value={channelForm.webhookConfig.url}
+                    onChange={(e) => setChannelForm({
+                      ...channelForm,
+                      webhookConfig: { ...channelForm.webhookConfig, url: e.target.value }
+                    })}
+                  />
+                </div>
+                <div className="grid grid-cols-2 gap-4">
+                  <div className="space-y-2">
+                    <Label>HTTP Method</Label>
+                    <Select
+                      value={channelForm.webhookConfig.method}
+                      onValueChange={(value) => setChannelForm({
+                        ...channelForm,
+                        webhookConfig: { ...channelForm.webhookConfig, method: value }
+                      })}
+                    >
+                      <SelectTrigger>
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="POST">POST</SelectItem>
+                        <SelectItem value="PUT">PUT</SelectItem>
+                        <SelectItem value="PATCH">PATCH</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div className="space-y-2">
+                    <Label>Authentication</Label>
+                    <Select
+                      value={channelForm.webhookConfig.auth_type || 'none'}
+                      onValueChange={(value) => setChannelForm({
+                        ...channelForm,
+                        webhookConfig: { ...channelForm.webhookConfig, auth_type: value as 'none' | 'basic' | 'bearer' }
+                      })}
+                    >
+                      <SelectTrigger>
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="none">None</SelectItem>
+                        <SelectItem value="basic">Basic Auth</SelectItem>
+                        <SelectItem value="bearer">Bearer Token</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                </div>
+                {channelForm.webhookConfig.auth_type && channelForm.webhookConfig.auth_type !== 'none' && (
+                  <div className="space-y-2">
+                    <Label>
+                      {channelForm.webhookConfig.auth_type === 'basic' ? 'Credentials (username:password)' : 'Bearer Token'}
+                    </Label>
+                    <Input
+                      type="password"
+                      placeholder={channelForm.webhookConfig.auth_type === 'basic' ? 'username:password' : 'your-token'}
+                      value={channelForm.webhookConfig.auth_value || ''}
+                      onChange={(e) => setChannelForm({
+                        ...channelForm,
+                        webhookConfig: { ...channelForm.webhookConfig, auth_value: e.target.value }
+                      })}
+                    />
+                  </div>
+                )}
+              </TabsContent>
+            </Tabs>
+
             <div className="flex items-center justify-between">
-              <Label htmlFor="channel-enabled">Enable channel</Label>
+              <Label>Enable channel</Label>
               <Switch
-                id="channel-enabled"
                 checked={channelForm.isEnabled}
                 onCheckedChange={(checked) => setChannelForm({ ...channelForm, isEnabled: checked })}
               />
@@ -725,60 +997,163 @@ export function AlertsPage() {
 
       {/* Edit Channel Dialog */}
       <Dialog open={editChannelOpen} onOpenChange={setEditChannelOpen}>
-        <DialogContent className="max-w-md">
+        <DialogContent className="max-w-lg">
           <DialogHeader>
             <DialogTitle>Edit Notification Channel</DialogTitle>
             <DialogDescription>
-              Update the n8n workflow notification settings
+              Update the notification channel settings
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-4">
             <div className="space-y-2">
-              <Label htmlFor="edit-channel-name">Channel Name</Label>
+              <Label>Channel Name</Label>
               <Input
-                id="edit-channel-name"
                 value={channelForm.name}
                 onChange={(e) => setChannelForm({ ...channelForm, name: e.target.value })}
               />
             </div>
+
             <div className="space-y-2">
-              <Label htmlFor="edit-channel-env">n8n Environment</Label>
-              <Select
-                value={channelForm.environmentId}
-                onValueChange={(value) => setChannelForm({ ...channelForm, environmentId: value })}
-              >
-                <SelectTrigger>
-                  <SelectValue placeholder="Select environment" />
-                </SelectTrigger>
-                <SelectContent>
-                  {environments.map((env) => (
-                    <SelectItem key={env.id} value={env.id}>
-                      {env.name}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+              <Label>Channel Type</Label>
+              <div className="flex items-center gap-2 p-2 border rounded-md bg-muted">
+                {getChannelIcon(channelForm.type)}
+                <span className="capitalize">{channelForm.type}</span>
+              </div>
             </div>
-            <div className="space-y-2">
-              <Label htmlFor="edit-channel-workflow">Workflow ID</Label>
-              <Input
-                id="edit-channel-workflow"
-                value={channelForm.workflowId}
-                onChange={(e) => setChannelForm({ ...channelForm, workflowId: e.target.value })}
-              />
-            </div>
-            <div className="space-y-2">
-              <Label htmlFor="edit-channel-webhook">Webhook Path</Label>
-              <Input
-                id="edit-channel-webhook"
-                value={channelForm.webhookPath}
-                onChange={(e) => setChannelForm({ ...channelForm, webhookPath: e.target.value })}
-              />
-            </div>
+
+            {channelForm.type === 'slack' && (
+              <div className="space-y-4">
+                <div className="space-y-2">
+                  <Label>Webhook URL</Label>
+                  <Input
+                    placeholder="https://hooks.slack.com/services/..."
+                    value={channelForm.slackConfig.webhook_url}
+                    onChange={(e) => setChannelForm({
+                      ...channelForm,
+                      slackConfig: { ...channelForm.slackConfig, webhook_url: e.target.value }
+                    })}
+                  />
+                </div>
+                <div className="grid grid-cols-2 gap-4">
+                  <div className="space-y-2">
+                    <Label>Channel Override</Label>
+                    <Input
+                      placeholder="#alerts"
+                      value={channelForm.slackConfig.channel || ''}
+                      onChange={(e) => setChannelForm({
+                        ...channelForm,
+                        slackConfig: { ...channelForm.slackConfig, channel: e.target.value }
+                      })}
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <Label>Username</Label>
+                    <Input
+                      placeholder="N8N Ops"
+                      value={channelForm.slackConfig.username || ''}
+                      onChange={(e) => setChannelForm({
+                        ...channelForm,
+                        slackConfig: { ...channelForm.slackConfig, username: e.target.value }
+                      })}
+                    />
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {channelForm.type === 'email' && (
+              <div className="space-y-4">
+                <div className="grid grid-cols-2 gap-4">
+                  <div className="space-y-2">
+                    <Label>SMTP Host</Label>
+                    <Input
+                      value={channelForm.emailConfig.smtp_host}
+                      onChange={(e) => setChannelForm({
+                        ...channelForm,
+                        emailConfig: { ...channelForm.emailConfig, smtp_host: e.target.value }
+                      })}
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <Label>SMTP Port</Label>
+                    <Input
+                      type="number"
+                      value={channelForm.emailConfig.smtp_port}
+                      onChange={(e) => setChannelForm({
+                        ...channelForm,
+                        emailConfig: { ...channelForm.emailConfig, smtp_port: parseInt(e.target.value) || 587 }
+                      })}
+                    />
+                  </div>
+                </div>
+                <div className="space-y-2">
+                  <Label>To Addresses (comma-separated)</Label>
+                  <Input
+                    value={channelForm.emailToAddresses}
+                    onChange={(e) => setChannelForm({ ...channelForm, emailToAddresses: e.target.value })}
+                  />
+                </div>
+              </div>
+            )}
+
+            {channelForm.type === 'webhook' && (
+              <div className="space-y-4">
+                <div className="space-y-2">
+                  <Label>Webhook URL</Label>
+                  <Input
+                    value={channelForm.webhookConfig.url}
+                    onChange={(e) => setChannelForm({
+                      ...channelForm,
+                      webhookConfig: { ...channelForm.webhookConfig, url: e.target.value }
+                    })}
+                  />
+                </div>
+                <div className="grid grid-cols-2 gap-4">
+                  <div className="space-y-2">
+                    <Label>HTTP Method</Label>
+                    <Select
+                      value={channelForm.webhookConfig.method}
+                      onValueChange={(value) => setChannelForm({
+                        ...channelForm,
+                        webhookConfig: { ...channelForm.webhookConfig, method: value }
+                      })}
+                    >
+                      <SelectTrigger>
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="POST">POST</SelectItem>
+                        <SelectItem value="PUT">PUT</SelectItem>
+                        <SelectItem value="PATCH">PATCH</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div className="space-y-2">
+                    <Label>Authentication</Label>
+                    <Select
+                      value={channelForm.webhookConfig.auth_type || 'none'}
+                      onValueChange={(value) => setChannelForm({
+                        ...channelForm,
+                        webhookConfig: { ...channelForm.webhookConfig, auth_type: value as 'none' | 'basic' | 'bearer' }
+                      })}
+                    >
+                      <SelectTrigger>
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="none">None</SelectItem>
+                        <SelectItem value="basic">Basic Auth</SelectItem>
+                        <SelectItem value="bearer">Bearer Token</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                </div>
+              </div>
+            )}
+
             <div className="flex items-center justify-between">
-              <Label htmlFor="edit-channel-enabled">Enable channel</Label>
+              <Label>Enable channel</Label>
               <Switch
-                id="edit-channel-enabled"
                 checked={channelForm.isEnabled}
                 onCheckedChange={(checked) => setChannelForm({ ...channelForm, isEnabled: checked })}
               />
@@ -805,7 +1180,7 @@ export function AlertsPage() {
           </DialogHeader>
           <div className="space-y-4">
             <div className="space-y-2">
-              <Label htmlFor="rule-event">Event Type</Label>
+              <Label>Event Type</Label>
               <Select
                 value={ruleForm.eventType}
                 onValueChange={(value) => setRuleForm({ ...ruleForm, eventType: value })}
@@ -816,7 +1191,7 @@ export function AlertsPage() {
                 <SelectContent>
                   {Object.entries(catalogByCategory).map(([category, items]) => (
                     <div key={category}>
-                      <div className="px-2 py-1.5 text-xs font-semibold text-muted-foreground">
+                      <div className="px-2 py-1.5 text-xs font-semibold text-muted-foreground capitalize">
                         {category}
                       </div>
                       {items.map((item) => (
@@ -845,7 +1220,10 @@ export function AlertsPage() {
                       checked={ruleForm.channelIds.includes(channel.id)}
                       onChange={() => toggleRuleChannel(channel.id)}
                     />
-                    <span className="text-sm">{channel.name}</span>
+                    <span className="flex items-center gap-2 text-sm">
+                      {getChannelIcon(channel.type)}
+                      {channel.name}
+                    </span>
                     {!channel.isEnabled && (
                       <Badge variant="outline" className="text-xs">disabled</Badge>
                     )}
@@ -854,9 +1232,8 @@ export function AlertsPage() {
               </div>
             </div>
             <div className="flex items-center justify-between">
-              <Label htmlFor="rule-enabled">Enable rule</Label>
+              <Label>Enable rule</Label>
               <Switch
-                id="rule-enabled"
                 checked={ruleForm.isEnabled}
                 onCheckedChange={(checked) => setRuleForm({ ...ruleForm, isEnabled: checked })}
               />
@@ -902,7 +1279,10 @@ export function AlertsPage() {
                       checked={ruleForm.channelIds.includes(channel.id)}
                       onChange={() => toggleRuleChannel(channel.id)}
                     />
-                    <span className="text-sm">{channel.name}</span>
+                    <span className="flex items-center gap-2 text-sm">
+                      {getChannelIcon(channel.type)}
+                      {channel.name}
+                    </span>
                     {!channel.isEnabled && (
                       <Badge variant="outline" className="text-xs">disabled</Badge>
                     )}
@@ -911,9 +1291,8 @@ export function AlertsPage() {
               </div>
             </div>
             <div className="flex items-center justify-between">
-              <Label htmlFor="edit-rule-enabled">Enable rule</Label>
+              <Label>Enable rule</Label>
               <Switch
-                id="edit-rule-enabled"
                 checked={ruleForm.isEnabled}
                 onCheckedChange={(checked) => setRuleForm({ ...ruleForm, isEnabled: checked })}
               />

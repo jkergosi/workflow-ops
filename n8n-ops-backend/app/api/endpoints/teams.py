@@ -1,4 +1,4 @@
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, HTTPException, status, Depends
 from typing import List
 
 from app.schemas.team import (
@@ -8,15 +8,21 @@ from app.schemas.team import (
     TeamLimitsResponse
 )
 from app.services.database import db_service
+from app.core.entitlements_gate import require_entitlement
 
 router = APIRouter()
+
+
+# Entitlement gates for RBAC features
 
 # TODO: Replace with actual tenant ID from authenticated user
 MOCK_TENANT_ID = "00000000-0000-0000-0000-000000000000"
 
 
 @router.get("/", response_model=List[TeamMemberResponse])
-async def get_team_members():
+async def get_team_members(
+    _: dict = Depends(require_entitlement("rbac_basic"))
+):
     """Get all team members for the current tenant"""
     try:
         response = db_service.client.table("users").select("*").eq(
@@ -33,7 +39,9 @@ async def get_team_members():
 
 
 @router.get("/limits", response_model=TeamLimitsResponse)
-async def get_team_limits():
+async def get_team_limits(
+    _: dict = Depends(require_entitlement("rbac_basic"))
+):
     """Get team member limits based on subscription plan"""
     try:
         # Get current active team members count
@@ -70,7 +78,10 @@ async def get_team_limits():
 
 
 @router.get("/{member_id}", response_model=TeamMemberResponse)
-async def get_team_member(member_id: str):
+async def get_team_member(
+    member_id: str,
+    _: dict = Depends(require_entitlement("rbac_basic"))
+):
     """Get a specific team member"""
     try:
         response = db_service.client.table("users").select("*").eq(
@@ -95,7 +106,10 @@ async def get_team_member(member_id: str):
 
 
 @router.post("/", response_model=TeamMemberResponse, status_code=status.HTTP_201_CREATED)
-async def create_team_member(member: TeamMemberCreate):
+async def create_team_member(
+    member: TeamMemberCreate,
+    _: dict = Depends(require_entitlement("rbac_basic"))
+):
     """Add a new team member"""
     try:
         # Check if email already exists
@@ -154,7 +168,11 @@ async def create_team_member(member: TeamMemberCreate):
 
 
 @router.patch("/{member_id}", response_model=TeamMemberResponse)
-async def update_team_member(member_id: str, member: TeamMemberUpdate):
+async def update_team_member(
+    member_id: str,
+    member: TeamMemberUpdate,
+    _: dict = Depends(require_entitlement("rbac_basic"))
+):
     """Update a team member"""
     try:
         # Check if member exists
@@ -197,7 +215,10 @@ async def update_team_member(member_id: str, member: TeamMemberUpdate):
 
 
 @router.delete("/{member_id}", status_code=status.HTTP_204_NO_CONTENT)
-async def delete_team_member(member_id: str):
+async def delete_team_member(
+    member_id: str,
+    _: dict = Depends(require_entitlement("rbac_basic"))
+):
     """Remove a team member"""
     try:
         # Check if member exists
@@ -240,7 +261,10 @@ async def delete_team_member(member_id: str):
 
 
 @router.post("/{member_id}/resend-invite")
-async def resend_invitation(member_id: str):
+async def resend_invitation(
+    member_id: str,
+    _: dict = Depends(require_entitlement("rbac_basic"))
+):
     """Resend invitation email to a pending team member"""
     try:
         # Check if member exists and is pending

@@ -1,4 +1,4 @@
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, HTTPException, status, Depends
 from typing import Optional, List
 
 from app.schemas.observability import (
@@ -11,6 +11,7 @@ from app.schemas.observability import (
     HealthCheckResponse,
 )
 from app.services.observability_service import observability_service
+from app.core.entitlements_gate import require_entitlement
 
 router = APIRouter()
 
@@ -20,7 +21,8 @@ MOCK_TENANT_ID = "00000000-0000-0000-0000-000000000001"
 
 @router.get("/overview", response_model=ObservabilityOverview)
 async def get_observability_overview(
-    time_range: TimeRange = TimeRange.TWENTY_FOUR_HOURS
+    time_range: TimeRange = TimeRange.TWENTY_FOUR_HOURS,
+    _: dict = Depends(require_entitlement("observability_basic"))
 ):
     """
     Get complete observability overview including KPIs, workflow performance,
@@ -41,7 +43,8 @@ async def get_observability_overview(
 
 @router.get("/kpi", response_model=KPIMetrics)
 async def get_kpi_metrics(
-    time_range: TimeRange = TimeRange.TWENTY_FOUR_HOURS
+    time_range: TimeRange = TimeRange.TWENTY_FOUR_HOURS,
+    _: dict = Depends(require_entitlement("observability_basic"))
 ):
     """
     Get KPI metrics for the specified time range.
@@ -64,7 +67,8 @@ async def get_kpi_metrics(
 async def get_workflow_performance(
     time_range: TimeRange = TimeRange.TWENTY_FOUR_HOURS,
     limit: int = 10,
-    sort_by: str = "executions"
+    sort_by: str = "executions",
+    _: dict = Depends(require_entitlement("observability_basic"))
 ):
     """
     Get per-workflow performance metrics.
@@ -95,7 +99,9 @@ async def get_workflow_performance(
 
 
 @router.get("/environment-health", response_model=List[EnvironmentHealth])
-async def get_environment_health():
+async def get_environment_health(
+    _: dict = Depends(require_entitlement("environment_health"))
+):
     """
     Get health status for all environments.
     Includes latency, uptime, workflow counts, and last deployment/snapshot info.
@@ -111,7 +117,10 @@ async def get_environment_health():
 
 
 @router.get("/promotion-stats", response_model=PromotionSyncStats)
-async def get_promotion_stats(days: int = 7):
+async def get_promotion_stats(
+    days: int = 7,
+    _: dict = Depends(require_entitlement("workflow_ci_cd"))
+):
     """
     Get promotion and sync statistics for the specified number of days.
     """
@@ -135,7 +144,10 @@ async def get_promotion_stats(days: int = 7):
 
 
 @router.post("/health-check/{environment_id}", response_model=HealthCheckResponse)
-async def trigger_health_check(environment_id: str):
+async def trigger_health_check(
+    environment_id: str,
+    _: dict = Depends(require_entitlement("environment_health"))
+):
     """
     Trigger a manual health check for an environment.
     Returns the health check result with latency and status.

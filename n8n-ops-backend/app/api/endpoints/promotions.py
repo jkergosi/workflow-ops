@@ -5,11 +5,16 @@ from fastapi import APIRouter, HTTPException, status, Depends
 from typing import List, Optional
 from datetime import datetime
 from uuid import uuid4
+import logging
+
+logger = logging.getLogger(__name__)
 
 from app.services.feature_service import feature_service
 from app.core.feature_gate import require_feature
+from app.core.entitlements_gate import require_entitlement
 from app.services.promotion_service import promotion_service
 from app.services.database import db_service
+from app.services.notification_service import notification_service
 from app.schemas.promotion import (
     PromotionInitiateRequest,
     PromotionInitiateResponse,
@@ -35,7 +40,7 @@ MOCK_TENANT_ID = "00000000-0000-0000-0000-000000000000"
 @router.post("/initiate", response_model=PromotionInitiateResponse)
 async def initiate_promotion(
     request: PromotionInitiateRequest,
-    _: None = Depends(require_feature("environment_promotion"))
+    _: None = Depends(require_entitlement("workflow_ci_cd"))
 ):
     """
     Initiate a promotion following the pipeline-aware flow.
@@ -87,6 +92,24 @@ async def initiate_promotion(
             )
 
             if drift_check.has_drift and not drift_check.can_proceed:
+                # Emit promotion.blocked event before raising exception
+                try:
+                    await notification_service.emit_event(
+                        tenant_id=MOCK_TENANT_ID,
+                        event_type="promotion.blocked",
+                        environment_id=request.target_environment_id,
+                        metadata={
+                            "pipeline_id": request.pipeline_id,
+                            "source_environment_id": request.source_environment_id,
+                            "target_environment_id": request.target_environment_id,
+                            "reason": "drift_detected",
+                            "drift_detected": True,
+                            "drift_details": drift_check.drift_details if hasattr(drift_check, 'drift_details') else []
+                        }
+                    )
+                except Exception as e:
+                    logger.error(f"Failed to emit promotion.blocked event: {str(e)}")
+                
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
                     detail="Target environment has drift. Please sync to GitHub first.",
@@ -140,6 +163,24 @@ async def initiate_promotion(
 
         # Check if gates block promotion
         if gate_results.errors:
+            # Emit promotion.blocked event before raising exception
+            try:
+                await notification_service.emit_event(
+                    tenant_id=MOCK_TENANT_ID,
+                    event_type="promotion.blocked",
+                    environment_id=request.target_environment_id,
+                    metadata={
+                        "pipeline_id": request.pipeline_id,
+                        "source_environment_id": request.source_environment_id,
+                        "target_environment_id": request.target_environment_id,
+                        "reason": "gates_failed",
+                        "gate_results": gate_results_dict,
+                        "drift_detected": drift_check.has_drift if drift_check else False
+                    }
+                )
+            except Exception as e:
+                logger.error(f"Failed to emit promotion.blocked event: {str(e)}")
+            
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Promotion blocked by gates",
@@ -172,6 +213,23 @@ async def initiate_promotion(
 
         # Store promotion
         await db_service.create_promotion(promotion_data)
+
+        # Emit promotion.started event
+        try:
+            await notification_service.emit_event(
+                tenant_id=MOCK_TENANT_ID,
+                event_type="promotion.started",
+                environment_id=request.target_environment_id,
+                metadata={
+                    "promotion_id": promotion_id,
+                    "pipeline_id": request.pipeline_id,
+                    "source_environment_id": request.source_environment_id,
+                    "target_environment_id": request.target_environment_id,
+                    "status": promotion_data["status"]
+                }
+            )
+        except Exception as e:
+            logger.error(f"Failed to emit promotion.started event: {str(e)}")
 
         # Check if approval required
         requires_approval = active_stage.get("approvals", {}).get("require_approval", False)
@@ -208,7 +266,7 @@ async def initiate_promotion(
 @router.post("/execute/{promotion_id}")
 async def execute_promotion(
     promotion_id: str,
-    _: None = Depends(require_feature("environment_promotion"))
+    _: None = Depends(require_entitlement("workflow_ci_cd"))
 ):
     """
     Execute a promotion that has passed all gates and approvals.
@@ -392,6 +450,28 @@ async def execute_promotion(
             "completed_at": datetime.utcnow().isoformat()
         })
         
+        # Emit promotion.success or promotion.failure event
+        try:
+            event_type = "promotion.success" if execution_result.status.value == "success" else "promotion.failure"
+            await notification_service.emit_event(
+                tenant_id=MOCK_TENANT_ID,
+                event_type=event_type,
+                environment_id=promotion.get("target_environment_id"),
+                metadata={
+                    "promotion_id": promotion_id,
+                    "deployment_id": deployment_id,
+                    "pipeline_id": promotion.get("pipeline_id"),
+                    "source_environment_id": promotion.get("source_environment_id"),
+                    "target_environment_id": promotion.get("target_environment_id"),
+                    "workflows_total": summary_json["total"],
+                    "workflows_failed": execution_result.workflows_failed,
+                    "workflows_skipped": execution_result.workflows_skipped,
+                    "errors": execution_result.errors if hasattr(execution_result, 'errors') else []
+                }
+            )
+        except Exception as e:
+            logger.error(f"Failed to emit promotion.{execution_result.status.value} event: {str(e)}")
+        
         return execution_result.dict()
 
     except HTTPException:
@@ -403,6 +483,22 @@ async def execute_promotion(
                 "status": "failed",
                 "completed_at": datetime.utcnow().isoformat()
             })
+            
+            # Emit promotion.failure event
+            try:
+                promotion = await db_service.get_promotion(promotion_id, MOCK_TENANT_ID)
+                await notification_service.emit_event(
+                    tenant_id=MOCK_TENANT_ID,
+                    event_type="promotion.failure",
+                    environment_id=promotion.get("target_environment_id") if promotion else None,
+                    metadata={
+                        "promotion_id": promotion_id,
+                        "error_message": str(e),
+                        "error_type": type(e).__name__
+                    }
+                )
+            except Exception as event_error:
+                logger.error(f"Failed to emit promotion.failure event: {str(event_error)}")
         except:
             pass
         
@@ -416,7 +512,7 @@ async def execute_promotion(
 async def approve_promotion(
     promotion_id: str,
     request: PromotionApprovalRequest,
-    _: None = Depends(require_feature("environment_promotion"))
+    _: None = Depends(require_entitlement("workflow_ci_cd"))
 ):
     """
     Approve or reject a pending promotion.
@@ -476,6 +572,25 @@ async def approve_promotion(
                 "rejected_at": datetime.utcnow().isoformat(),
                 "completed_at": datetime.utcnow().isoformat()
             })
+            
+            # Emit promotion.blocked event for rejection
+            try:
+                await notification_service.emit_event(
+                    tenant_id=MOCK_TENANT_ID,
+                    event_type="promotion.blocked",
+                    environment_id=promotion.get("target_environment_id"),
+                    metadata={
+                        "promotion_id": promotion_id,
+                        "pipeline_id": promotion.get("pipeline_id"),
+                        "source_environment_id": promotion.get("source_environment_id"),
+                        "target_environment_id": promotion.get("target_environment_id"),
+                        "reason": "rejected",
+                        "rejection_reason": request.comment,
+                        "rejected_by": approver_id
+                    }
+                )
+            except Exception as e:
+                logger.error(f"Failed to emit promotion.blocked event: {str(e)}")
             
             # Create audit log
             await promotion_service._create_audit_log(
@@ -657,7 +772,7 @@ async def approve_promotion(
 async def list_promotions(
     status_filter: Optional[str] = None,
     limit: int = 20,
-    _: None = Depends(require_feature("environment_promotion"))
+    _: None = Depends(require_entitlement("workflow_ci_cd"))
 ):
     """
     List all promotions for the tenant.
@@ -672,7 +787,7 @@ async def list_promotions(
 @router.get("/{promotion_id}", response_model=PromotionDetail)
 async def get_promotion(
     promotion_id: str,
-    _: None = Depends(require_feature("environment_promotion"))
+    _: None = Depends(require_entitlement("workflow_ci_cd"))
 ):
     """
     Get details of a specific promotion.
@@ -726,7 +841,7 @@ async def get_promotion(
 @router.post("/snapshots", response_model=PromotionSnapshotResponse)
 async def create_snapshot(
     request: PromotionSnapshotRequest,
-    _: None = Depends(require_feature("environment_promotion"))
+    _: None = Depends(require_entitlement("workflow_ci_cd"))
 ):
     """
     Create a snapshot of an environment (used for drift checking).
@@ -757,7 +872,7 @@ async def create_snapshot(
 async def check_drift(
     environment_id: str,
     snapshot_id: str,
-    _: None = Depends(require_feature("environment_promotion"))
+    _: None = Depends(require_entitlement("workflow_ci_cd"))
 ):
     """
     Check if an environment has drifted from its snapshot.
@@ -781,7 +896,7 @@ async def check_drift(
 @router.post("/compare-workflows")
 async def compare_workflows(
     request: dict,
-    _: None = Depends(require_feature("environment_promotion"))
+    _: None = Depends(require_entitlement("workflow_ci_cd"))
 ):
     """
     Compare workflows between source and target environments.

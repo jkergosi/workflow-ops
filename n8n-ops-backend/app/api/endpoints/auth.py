@@ -10,6 +10,7 @@ from app.services.auth_service import (
 )
 from app.services.database import db_service
 from app.services.feature_service import feature_service
+from app.services.entitlements_service import entitlements_service
 
 router = APIRouter()
 
@@ -99,6 +100,7 @@ async def get_auth_status(user_info: dict = Depends(get_current_user_optional)):
     # Get plan features and usage for authenticated users
     features = None
     usage = None
+    entitlements = None
     if tenant:
         try:
             usage = await feature_service.get_usage_summary(tenant["id"])
@@ -106,6 +108,12 @@ async def get_auth_status(user_info: dict = Depends(get_current_user_optional)):
         except Exception:
             features = None
             usage = None
+
+        # Get entitlements from new entitlements service
+        try:
+            entitlements = await entitlements_service.get_tenant_entitlements(tenant["id"])
+        except Exception:
+            entitlements = None
 
     return {
         "authenticated": True,
@@ -126,7 +134,13 @@ async def get_auth_status(user_info: dict = Depends(get_current_user_optional)):
         "usage": {
             "environments": usage.get("environments") if usage else None,
             "team_members": usage.get("team_members") if usage else None,
-        } if usage else None
+        } if usage else None,
+        "entitlements": {
+            "plan_id": entitlements.get("plan_id") if entitlements else None,
+            "plan_name": entitlements.get("plan_name", "free") if entitlements else "free",
+            "entitlements_version": entitlements.get("entitlements_version", 0) if entitlements else 0,
+            "features": entitlements.get("features", {}) if entitlements else {},
+        } if entitlements else None,
     }
 
 

@@ -509,19 +509,42 @@ export interface HealthCheckResponse {
 }
 
 // Notification/Alert types
-export type ChannelType = 'n8n_workflow';
+export type ChannelType = 'slack' | 'email' | 'webhook';
 export type NotificationStatusType = 'pending' | 'sent' | 'failed' | 'skipped';
+
+export interface SlackConfig {
+  webhook_url: string;
+  channel?: string;
+  username?: string;
+  icon_emoji?: string;
+}
+
+export interface EmailConfig {
+  smtp_host: string;
+  smtp_port: number;
+  smtp_user: string;
+  smtp_password: string;
+  from_address: string;
+  to_addresses: string[];
+  use_tls: boolean;
+}
+
+export interface WebhookConfig {
+  url: string;
+  method: string;
+  headers?: Record<string, string>;
+  auth_type?: 'none' | 'basic' | 'bearer';
+  auth_value?: string;
+}
+
+export type ChannelConfig = SlackConfig | EmailConfig | WebhookConfig;
 
 export interface NotificationChannel {
   id: string;
   tenantId: string;
   name: string;
   type: ChannelType;
-  configJson: {
-    environmentId: string;
-    workflowId: string;
-    webhookPath: string;
-  };
+  configJson: ChannelConfig;
   isEnabled: boolean;
   createdAt: string;
   updatedAt: string;
@@ -553,4 +576,18 @@ export interface EventCatalogItem {
   displayName: string;
   description: string;
   category: string;
+}
+
+// Entitlements types (Phase 1)
+export interface EntitlementsFeature {
+  name: string;
+  type: 'flag' | 'limit';
+  value: boolean | number;
+}
+
+export interface Entitlements {
+  plan_id: string;
+  plan_name: string;
+  entitlements_version: number;
+  features: Record<string, boolean | number>;
 }

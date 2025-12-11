@@ -1,4 +1,4 @@
-from fastapi import APIRouter, HTTPException, status, Query
+from fastapi import APIRouter, HTTPException, status, Query, Depends
 from typing import Optional, List
 from datetime import datetime, timedelta
 from app.services.database import db_service
@@ -10,8 +10,12 @@ from app.schemas.deployment import (
     DeploymentWorkflowResponse,
     SnapshotResponse,
 )
+from app.core.entitlements_gate import require_entitlement
 
 router = APIRouter()
+
+
+# Entitlement gates for CI/CD features
 
 # TODO: Replace with actual tenant ID from authenticated user
 MOCK_TENANT_ID = "00000000-0000-0000-0000-000000000000"
@@ -26,6 +30,7 @@ async def get_deployments(
     to_date: Optional[datetime] = Query(None),
     page: int = Query(1, ge=1),
     page_size: int = Query(50, ge=1, le=100),
+    _: dict = Depends(require_entitlement("workflow_ci_cd"))
 ):
     """
     Get list of deployments with filtering and pagination.
@@ -97,7 +102,10 @@ async def get_deployments(
 
 
 @router.get("/{deployment_id}", response_model=DeploymentDetailResponse)
-async def get_deployment(deployment_id: str):
+async def get_deployment(
+    deployment_id: str,
+    _: dict = Depends(require_entitlement("workflow_ci_cd"))
+):
     """
     Get deployment details including workflows and linked snapshots.
     """

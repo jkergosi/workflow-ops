@@ -1,4 +1,4 @@
-from fastapi import APIRouter, HTTPException, status, UploadFile, File, Body
+from fastapi import APIRouter, HTTPException, status, UploadFile, File, Body, Depends
 from fastapi.responses import StreamingResponse
 from typing import List, Dict, Any, Optional
 import json
@@ -13,6 +13,7 @@ from app.services.database import db_service
 from app.services.github_service import GitHubService
 from app.services.diff_service import compare_workflows
 from app.services.sync_status_service import compute_sync_status
+from app.core.entitlements_gate import require_workflow_limit, require_entitlement
 
 router = APIRouter()
 
@@ -55,7 +56,8 @@ async def resolve_environment_config(
 async def get_workflows(
     environment_id: Optional[str] = None,
     environment: Optional[str] = None,  # Deprecated: use environment_id instead
-    force_refresh: bool = False
+    force_refresh: bool = False,
+    _: dict = Depends(require_entitlement("workflow_read"))
 ):
     """
     Get all workflows for the specified environment.
@@ -356,7 +358,8 @@ async def download_workflows(environment_id: str):
 @router.post("/sync-from-github")
 async def sync_workflows_from_github(
     environment_id: Optional[str] = None,
-    environment: Optional[str] = None  # Deprecated: use environment_id instead
+    environment: Optional[str] = None,  # Deprecated: use environment_id instead
+    _: dict = Depends(require_entitlement("workflow_push"))
 ):
     """Sync workflows from GitHub to N8N"""
     try:
@@ -463,7 +466,8 @@ async def sync_workflows_from_github(
 @router.post("/sync-to-github")
 async def sync_workflows_to_github(
     environment_id: Optional[str] = None,
-    environment: Optional[str] = None  # Deprecated: use environment_id instead
+    environment: Optional[str] = None,  # Deprecated: use environment_id instead
+    _: dict = Depends(require_entitlement("workflow_push"))
 ):
     """Backup/sync all workflows from N8N to GitHub"""
     try:
@@ -797,7 +801,8 @@ async def get_all_workflows_drift(
 async def get_workflow(
     workflow_id: str,
     environment_id: Optional[str] = None,
-    environment: Optional[str] = None  # Deprecated: use environment_id instead
+    environment: Optional[str] = None,  # Deprecated: use environment_id instead
+    _: dict = Depends(require_entitlement("workflow_read"))
 ):
     """Get a specific workflow by ID"""
     try:
@@ -842,11 +847,14 @@ async def get_workflow(
 async def upload_workflows(
     files: List[UploadFile] = File(...),
     environment: str = "dev",
-    sync_to_github: bool = True
+    sync_to_github: bool = True,
+    user_info: dict = Depends(require_workflow_limit())
 ):
-    """Upload workflow files (.json or .zip) to N8N"""
+    """Upload workflow files (.json or .zip) to N8N. Requires workflow_limits entitlement."""
+    tenant_id = user_info["tenant"]["id"]
+
     try:
-        env_config = await resolve_environment_config(environment_id, environment)
+        env_config = await resolve_environment_config(None, environment)
 
         # Create N8N client
         n8n_client = N8NClient(
@@ -993,7 +1001,8 @@ async def _upload_single_workflow(
 async def activate_workflow(
     workflow_id: str,
     environment_id: Optional[str] = None,
-    environment: Optional[str] = None  # Deprecated: use environment_id instead
+    environment: Optional[str] = None,  # Deprecated: use environment_id instead
+    _: dict = Depends(require_entitlement("workflow_push"))
 ):
     """Activate a workflow"""
     try:
@@ -1032,7 +1041,8 @@ async def activate_workflow(
 async def deactivate_workflow(
     workflow_id: str,
     environment_id: Optional[str] = None,
-    environment: Optional[str] = None  # Deprecated: use environment_id instead
+    environment: Optional[str] = None,  # Deprecated: use environment_id instead
+    _: dict = Depends(require_entitlement("workflow_push"))
 ):
     """Deactivate a workflow"""
     try:
@@ -1137,7 +1147,8 @@ async def update_workflow(
     workflow_id: str,
     workflow_data: Dict[str, Any],
     environment_id: Optional[str] = None,
-    environment: Optional[str] = None  # Deprecated: use environment_id instead
+    environment: Optional[str] = None,  # Deprecated: use environment_id instead
+    _: dict = Depends(require_entitlement("workflow_push"))
 ):
     """Update a workflow (name, active status, tags)"""
     try:
@@ -1208,7 +1219,8 @@ async def update_workflow(
 async def delete_workflow(
     workflow_id: str,
     environment_id: Optional[str] = None,
-    environment: Optional[str] = None  # Deprecated: use environment_id instead
+    environment: Optional[str] = None,  # Deprecated: use environment_id instead
+    _: dict = Depends(require_entitlement("workflow_push"))
 ):
     """Delete a workflow from N8N"""
     try:
@@ -1257,7 +1269,8 @@ async def delete_workflow(
 async def get_workflow_drift(
     workflow_id: str,
     environment_id: Optional[str] = None,
-    environment: Optional[str] = None  # Deprecated: use environment_id instead
+    environment: Optional[str] = None,  # Deprecated: use environment_id instead
+    _: dict = Depends(require_entitlement("workflow_dirty_check"))
 ):
     """
     Compare a workflow between N8N runtime and GitHub repository.

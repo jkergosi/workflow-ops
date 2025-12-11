@@ -1,5 +1,6 @@
 import React, { createContext, useContext, useState, useEffect, useCallback } from 'react';
 import { apiClient } from './api-client';
+import type { Entitlements } from '@/types';
 
 // DEV MODE - Always enabled, bypasses Auth0 entirely
 // Assumes first user in database is the current user
@@ -23,11 +24,13 @@ interface AuthContextType {
   needsOnboarding: boolean;
   user: User | null;
   tenant: Tenant | null;
+  entitlements: Entitlements | null;
   availableUsers: Array<{ id: string; email: string; name: string; tenant_id: string }>;
   login: () => void;
   logout: () => void;
   loginAs: (userId: string) => Promise<void>;
   completeOnboarding: (organizationName?: string) => Promise<void>;
+  refreshEntitlements: () => Promise<void>;
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
@@ -35,6 +38,7 @@ const AuthContext = createContext<AuthContextType | undefined>(undefined);
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
   const [tenant, setTenant] = useState<Tenant | null>(null);
+  const [entitlements, setEntitlements] = useState<Entitlements | null>(null);
   const [needsOnboarding, setNeedsOnboarding] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
   const [availableUsers, setAvailableUsers] = useState<Array<{ id: string; email: string; name: string; tenant_id: string }>>([]);
@@ -69,6 +73,16 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
               setNeedsOnboarding(false);
               localStorage.setItem('dev_user_id', firstUser.id);
               apiClient.setAuthToken(`dev-token-${firstUser.id}`);
+
+              // Fetch entitlements after login
+              try {
+                const { data: statusData } = await apiClient.getAuthStatus();
+                if (statusData.entitlements) {
+                  setEntitlements(statusData.entitlements);
+                }
+              } catch (entitlementError) {
+                console.warn('Failed to fetch entitlements:', entitlementError);
+              }
             }
           } catch (loginError) {
             console.error('Failed to login as first user:', loginError);
@@ -159,6 +173,16 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         });
         localStorage.setItem('dev_user_id', userId);
         apiClient.setAuthToken(`dev-token-${userId}`);
+
+        // Fetch entitlements after switching users
+        try {
+          const { data: statusData } = await apiClient.getAuthStatus();
+          if (statusData.entitlements) {
+            setEntitlements(statusData.entitlements);
+          }
+        } catch (entitlementError) {
+          console.warn('Failed to fetch entitlements:', entitlementError);
+        }
       }
     } catch (error) {
       console.error('Failed to login as user:', error);
@@ -172,6 +196,17 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setNeedsOnboarding(false);
   }, []);
 
+  const refreshEntitlements = useCallback(async () => {
+    try {
+      const { data } = await apiClient.getAuthStatus();
+      if (data.entitlements) {
+        setEntitlements(data.entitlements);
+      }
+    } catch (error) {
+      console.error('Failed to refresh entitlements:', error);
+    }
+  }, []);
+
   const isAuthenticated = user !== null && tenant !== null;
 
   return (
@@ -182,11 +217,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         needsOnboarding,
         user,
         tenant,
+        entitlements,
         availableUsers,
         login,
         logout,
         loginAs,
         completeOnboarding,
+        refreshEntitlements,
       }}
     >
       {children}

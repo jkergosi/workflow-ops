@@ -5,7 +5,9 @@ from enum import Enum
 
 
 class ChannelType(str, Enum):
-    N8N_WORKFLOW = "n8n_workflow"
+    SLACK = "slack"
+    EMAIL = "email"
+    WEBHOOK = "webhook"
 
 
 class EventType(str, Enum):
@@ -39,16 +41,35 @@ class NotificationStatus(str, Enum):
     SKIPPED = "skipped"
 
 
-# Channel Models
-class N8NWorkflowConfig(BaseModel):
-    environment_id: str
-    workflow_id: str
-    webhook_path: str  # e.g., "/webhook/abc123"
+# Channel Config Models
+class SlackConfig(BaseModel):
+    webhook_url: str  # Slack incoming webhook URL
+    channel: Optional[str] = None  # Override channel (optional)
+    username: Optional[str] = None  # Override username (optional)
+    icon_emoji: Optional[str] = None  # Override icon (optional)
+
+
+class EmailConfig(BaseModel):
+    smtp_host: str
+    smtp_port: int = 587
+    smtp_user: str
+    smtp_password: str
+    from_address: str
+    to_addresses: List[str]
+    use_tls: bool = True
+
+
+class WebhookConfig(BaseModel):
+    url: str
+    method: str = "POST"
+    headers: Optional[Dict[str, str]] = None
+    auth_type: Optional[str] = None  # "none", "basic", "bearer"
+    auth_value: Optional[str] = None  # Basic auth credentials or bearer token
 
 
 class NotificationChannelBase(BaseModel):
     name: str
-    type: ChannelType = ChannelType.N8N_WORKFLOW
+    type: ChannelType
     config_json: Dict[str, Any]
     is_enabled: bool = True
 

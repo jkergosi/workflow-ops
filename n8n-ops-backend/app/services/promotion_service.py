@@ -10,6 +10,7 @@ from uuid import uuid4
 from app.services.n8n_client import N8NClient
 from app.services.github_service import GitHubService
 from app.services.database import db_service
+from app.services.notification_service import notification_service
 from app.schemas.promotion import (
     PromotionStatus,
     WorkflowChangeType,
@@ -136,6 +137,25 @@ class PromotionService:
         # Store snapshot in new snapshots table
         await self.db.create_snapshot(snapshot_data)
         
+        # Emit snapshot.created event
+        try:
+            await notification_service.emit_event(
+                tenant_id=tenant_id,
+                event_type="snapshot.created",
+                environment_id=environment_id,
+                metadata={
+                    "snapshot_id": snapshot_id,
+                    "environment_id": environment_id,
+                    "reason": reason,
+                    "type": snapshot_type.value,
+                    "workflows_count": workflows_synced,
+                    "commit_sha": commit_sha,
+                    **(metadata or {})
+                }
+            )
+        except Exception as e:
+            logger.error(f"Failed to emit snapshot.created event: {str(e)}")
+        
         return snapshot_id, commit_sha or ""
 
     async def check_drift(
@@ -220,12 +240,31 @@ class PromotionService:
                 })
                 has_drift = True
 
-        return PromotionDriftCheck(
+        drift_result = PromotionDriftCheck(
             has_drift=has_drift,
             drift_details=drift_details,
             can_proceed=not has_drift,
             requires_sync=has_drift
         )
+        
+        # Emit drift_detected event if drift is found
+        if has_drift:
+            try:
+                await notification_service.emit_event(
+                    tenant_id=tenant_id,
+                    event_type="sync.drift_detected",
+                    environment_id=environment_id,
+                    metadata={
+                        "environment_id": environment_id,
+                        "snapshot_id": snapshot_id,
+                        "drift_details": drift_details,
+                        "requires_sync": has_drift
+                    }
+                )
+            except Exception as e:
+                logger.error(f"Failed to emit sync.drift_detected event: {str(e)}")
+        
+        return drift_result
 
     def _extract_workflow_dependencies(self, workflow_data: Dict[str, Any]) -> List[str]:
         """
@@ -494,7 +533,7 @@ class PromotionService:
                         if allow_placeholders:
                             # Create placeholder credential
                             placeholder_created = await self._create_placeholder_credential(
-                                target_n8n, cred_type, cred_name
+                                target_n8n, cred_type, cred_name, tenant_id, target_env_id
                             )
                             credential_issues.append({
                                 "workflow_id": selection.workflow_id,
@@ -504,6 +543,22 @@ class PromotionService:
                                 "placeholder_created": placeholder_created
                             })
                         else:
+                            # Emit credential.missing event when placeholders are not allowed
+                            try:
+                                await notification_service.emit_event(
+                                    tenant_id=tenant_id,
+                                    event_type="credential.missing",
+                                    environment_id=target_env_id,
+                                    metadata={
+                                        "credential_type": cred_type,
+                                        "credential_name": cred_name,
+                                        "workflow_id": selection.workflow_id,
+                                        "workflow_name": selection.workflow_name
+                                    }
+                                )
+                            except Exception as e:
+                                logger.error(f"Failed to emit credential.missing event: {str(e)}")
+                            
                             credential_issues.append({
                                 "workflow_id": selection.workflow_id,
                                 "workflow_name": selection.workflow_name,
@@ -518,7 +573,9 @@ class PromotionService:
         self,
         n8n_client: N8NClient,
         cred_type: str,
-        cred_name: str
+        cred_name: str,
+        tenant_id: Optional[str] = None,
+        environment_id: Optional[str] = None
     ) -> bool:
         """
         Create a placeholder credential in target environment.
@@ -537,7 +594,25 @@ class PromotionService:
             # Note: This would need to be implemented based on N8N's credential API
             # For now, return False as placeholder creation needs N8N API support
             logger.info(f"Would create placeholder credential: {cred_name} of type {cred_type}")
-            return False  # Placeholder - needs N8N credential API implementation
+            created = False  # Placeholder - needs N8N credential API implementation
+            
+            # Emit credential.placeholder_created event if created successfully
+            # Note: Currently always False, but when implemented, emit event on success
+            if created and tenant_id and environment_id:
+                try:
+                    await notification_service.emit_event(
+                        tenant_id=tenant_id,
+                        event_type="credential.placeholder_created",
+                        environment_id=environment_id,
+                        metadata={
+                            "credential_type": cred_type,
+                            "credential_name": cred_name
+                        }
+                    )
+                except Exception as e:
+                    logger.error(f"Failed to emit credential.placeholder_created event: {str(e)}")
+            
+            return created
         except Exception as e:
             logger.error(f"Failed to create placeholder credential: {str(e)}")
             return False

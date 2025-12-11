@@ -46,6 +46,7 @@ import type {
   NotificationRule,
   AlertEvent,
   EventCatalogItem,
+  Entitlements,
 } from '@/types';
 
 // Helper function to determine if a string is a UUID
@@ -136,6 +137,21 @@ class ApiClient {
     } else {
       localStorage.removeItem('auth_token');
     }
+  }
+
+  // Get auth status with entitlements
+  async getAuthStatus(): Promise<{
+    data: {
+      authenticated: boolean;
+      onboarding_required: boolean;
+      has_environment: boolean;
+      user: { id: string; email: string; name: string; role: string } | null;
+      tenant: { id: string; name: string; subscription_plan: string } | null;
+      entitlements: Entitlements | null;
+    };
+  }> {
+    const response = await this.client.get('/auth/status');
+    return { data: response.data };
   }
 
   // Environment endpoints

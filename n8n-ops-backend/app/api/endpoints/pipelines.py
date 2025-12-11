@@ -8,6 +8,7 @@ import uuid
 
 from app.services.feature_service import feature_service
 from app.core.feature_gate import require_feature
+from app.core.entitlements_gate import require_entitlement
 from app.services.database import db_service
 from app.schemas.pipeline import PipelineCreate, PipelineUpdate, PipelineResponse
 
@@ -19,7 +20,7 @@ MOCK_TENANT_ID = "00000000-0000-0000-0000-000000000000"
 
 @router.get("/", response_model=List[PipelineResponse])
 async def get_pipelines(
-    _: None = Depends(require_feature("environment_promotion"))
+    _: None = Depends(require_entitlement("workflow_ci_cd"))
 ):
     """
     Get all pipelines for the tenant.
@@ -56,7 +57,7 @@ async def get_pipelines(
 @router.get("/{pipeline_id}", response_model=PipelineResponse)
 async def get_pipeline(
     pipeline_id: str,
-    _: None = Depends(require_feature("environment_promotion"))
+    _: None = Depends(require_entitlement("workflow_ci_cd"))
 ):
     """
     Get a specific pipeline by ID.
@@ -94,7 +95,7 @@ async def get_pipeline(
 @router.post("/", response_model=PipelineResponse)
 async def create_pipeline(
     pipeline: PipelineCreate,
-    _: None = Depends(require_feature("environment_promotion"))
+    _: None = Depends(require_entitlement("workflow_ci_cd"))
 ):
     """
     Create a new pipeline.
@@ -192,7 +193,7 @@ async def create_pipeline(
 async def update_pipeline(
     pipeline_id: str,
     pipeline: PipelineUpdate,
-    _: None = Depends(require_feature("environment_promotion"))
+    _: None = Depends(require_entitlement("workflow_ci_cd"))
 ):
     """
     Update an existing pipeline.
@@ -298,7 +299,7 @@ async def update_pipeline(
 @router.delete("/{pipeline_id}")
 async def delete_pipeline(
     pipeline_id: str,
-    _: None = Depends(require_feature("environment_promotion"))
+    _: None = Depends(require_entitlement("workflow_ci_cd"))
 ):
     """
     Delete a pipeline (soft delete by setting is_active=false).
