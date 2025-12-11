@@ -99,9 +99,18 @@ class ApiClient {
       (response) => response,
       (error) => {
         if (error.response?.status === 401) {
-          // Handle unauthorized - redirect to login
+          // TEMPORARY: In dev mode, don't redirect on 401 for dev endpoints
+          const url = error.config?.url || '';
+          if (url.includes('/auth/dev/')) {
+            // Don't redirect for dev endpoints - they don't require auth
+            return Promise.reject(error);
+          }
+          // Handle unauthorized - redirect to login (only for non-dev endpoints)
           localStorage.removeItem('auth_token');
-          window.location.href = '/login';
+          // Only redirect if not already on login page to prevent loops
+          if (window.location.pathname !== '/login') {
+            window.location.href = '/login';
+          }
         }
         return Promise.reject(error);
       }

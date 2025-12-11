@@ -61,7 +61,7 @@ function ProtectedRoute({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     // If user needs onboarding and not already on onboarding page, redirect
     if (!isLoading && needsOnboarding && window.location.pathname !== '/onboarding') {
-      navigate('/onboarding');
+      navigate('/onboarding', { replace: true });
     }
   }, [isLoading, needsOnboarding, navigate]);
 
@@ -78,7 +78,9 @@ function ProtectedRoute({ children }: { children: React.ReactNode }) {
 
   // Check if user is authenticated (login completed)
   // isAuthenticated is true when user is logged in AND has completed onboarding
-  if (!isAuthenticated && !needsOnboarding) {
+  // Only redirect if we're not already on login or onboarding page to prevent loops
+  const currentPath = window.location.pathname;
+  if (!isAuthenticated && !needsOnboarding && currentPath !== '/login' && currentPath !== '/onboarding') {
     return <Navigate to="/login" replace />;
   }
 

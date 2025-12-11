@@ -42,12 +42,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [needsOnboarding, setNeedsOnboarding] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
   const [availableUsers, setAvailableUsers] = useState<Array<{ id: string; email: string; name: string; tenant_id: string }>>([]);
+  const [initComplete, setInitComplete] = useState(false);
 
   // Load available users and auto-login on mount
   useEffect(() => {
     const initAuth = async () => {
       try {
-        // Get list of users from backend
+        // Get list of users from backend (no auth required for this endpoint)
         const { data } = await apiClient.getDevUsers();
         const users = data.users || [];
         setAvailableUsers(users);
@@ -60,6 +61,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
             : users[0].id;
           
           const selectedUser = users.find(u => u.id === userIdToUse) || users[0];
+          
+          // Set the token BEFORE making the login call
+          const devToken = `dev-token-${selectedUser.id}`;
+          apiClient.setAuthToken(devToken);
+          localStorage.setItem('dev_user_id', selectedUser.id);
           
           try {
             const loginResult = await apiClient.devLoginAs(selectedUser.id);
@@ -76,8 +82,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
                 subscriptionPlan: loginResult.data.tenant.subscription_tier || 'free',
               });
               setNeedsOnboarding(false);
-              localStorage.setItem('dev_user_id', selectedUser.id);
-              apiClient.setAuthToken(`dev-token-${selectedUser.id}`);
 
               // Fetch entitlements after login
               try {
@@ -91,6 +95,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
             }
           } catch (loginError) {
             console.error('Failed to login as user:', loginError);
+            // Even if login fails, set user from what we know
+            setUser({
+              id: selectedUser.id,
+              email: selectedUser.email,
+              name: selectedUser.name,
+              role: 'admin',
+            });
             setNeedsOnboarding(false);
           }
         } else {
@@ -103,6 +114,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         setNeedsOnboarding(false);
       } finally {
         setIsLoading(false);
+        setInitComplete(true);
       }
     };
 
@@ -171,7 +183,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
   }, []);
 
-  const isAuthenticated = user !== null && tenant !== null;
+  // Only consider authenticated if initialization is complete
+  const isAuthenticated = initComplete && user !== null && tenant !== null;
 
   return (
     <AuthContext.Provider

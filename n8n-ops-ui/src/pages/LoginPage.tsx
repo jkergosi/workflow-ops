@@ -11,11 +11,11 @@ export function LoginPage() {
 
   // Redirect if already authenticated
   useEffect(() => {
-    if (!isLoading) {
+    if (!isLoading && isAuthenticated) {
       if (needsOnboarding) {
-        navigate('/onboarding');
-      } else if (isAuthenticated) {
-        navigate('/');
+        navigate('/onboarding', { replace: true });
+      } else {
+        navigate('/', { replace: true });
       }
     }
   }, [isAuthenticated, isLoading, needsOnboarding, navigate]);

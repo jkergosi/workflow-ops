@@ -1,10 +1,9 @@
 
 
-Cloudflare Free
-https://dash.cloudflare.com/68aa74f1532449bb1cc6ef4edfa66b6c/welcome
-firewall, App gateway
 
+JK_COPOUDFLARE_SETUP.MD
 
+Customer support in the app.
 
 
 Node Types
