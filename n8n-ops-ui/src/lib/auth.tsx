@@ -48,16 +48,21 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     const initAuth = async () => {
       try {
         // Get list of users from backend
-        try {
-          const { data } = await apiClient.getDevUsers();
-          const users = data.users || [];
-          setAvailableUsers(users);
+        const { data } = await apiClient.getDevUsers();
+        const users = data.users || [];
+        setAvailableUsers(users);
 
         if (users.length > 0) {
-          // Auto-login as first user
-          const firstUser = users[0];
+          // Check if we have a saved user ID, otherwise use first user
+          const savedUserId = localStorage.getItem('dev_user_id');
+          const userIdToUse = savedUserId && users.find(u => u.id === savedUserId) 
+            ? savedUserId 
+            : users[0].id;
+          
+          const selectedUser = users.find(u => u.id === userIdToUse) || users[0];
+          
           try {
-            const loginResult = await apiClient.devLoginAs(firstUser.id);
+            const loginResult = await apiClient.devLoginAs(selectedUser.id);
             if (loginResult.data.user && loginResult.data.tenant) {
               setUser({
                 id: loginResult.data.user.id,
@@ -71,8 +76,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
                 subscriptionPlan: loginResult.data.tenant.subscription_tier || 'free',
               });
               setNeedsOnboarding(false);
-              localStorage.setItem('dev_user_id', firstUser.id);
-              apiClient.setAuthToken(`dev-token-${firstUser.id}`);
+              localStorage.setItem('dev_user_id', selectedUser.id);
+              apiClient.setAuthToken(`dev-token-${selectedUser.id}`);
 
               // Fetch entitlements after login
               try {
@@ -85,58 +90,17 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
               }
             }
           } catch (loginError) {
-            console.error('Failed to login as first user:', loginError);
-            // Still don't need onboarding if users exist
+            console.error('Failed to login as user:', loginError);
             setNeedsOnboarding(false);
           }
         } else {
-          // No users exist - but don't require onboarding, just skip auth
-          console.log('No users in database - running without authentication');
+          // No users exist
+          console.log('No users in database');
           setNeedsOnboarding(false);
-          // Set a dummy user/tenant so the app works
-          setUser({
-            id: 'dev-user',
-            email: 'dev@example.com',
-            name: 'Dev User',
-            role: 'admin',
-          });
-          setTenant({
-            id: 'dev-tenant',
-            name: 'Dev Tenant',
-            subscriptionPlan: 'enterprise',
-          });
-        }
-        } catch (authError) {
-          // If auth endpoint fails (404), continue without auth (dev mode)
-          console.warn('Auth endpoint not available, continuing without authentication:', authError);
-          setNeedsOnboarding(false);
-          setUser({
-            id: 'dev-user',
-            email: 'dev@example.com',
-            name: 'Dev User',
-            role: 'admin',
-          });
-          setTenant({
-            id: 'dev-tenant',
-            name: 'Dev Tenant',
-            subscriptionPlan: 'enterprise',
-          });
         }
       } catch (error) {
         console.error('Failed to init auth:', error);
-        // On error, skip auth and use dummy user
         setNeedsOnboarding(false);
-        setUser({
-          id: 'dev-user',
-          email: 'dev@example.com',
-          name: 'Dev User',
-          role: 'admin',
-        });
-        setTenant({
-          id: 'dev-tenant',
-          name: 'Dev Tenant',
-          subscriptionPlan: 'enterprise',
-        });
       } finally {
         setIsLoading(false);
       }

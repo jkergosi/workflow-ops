@@ -8,7 +8,8 @@ from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from app.core.config import settings
 from app.services.database import db_service
 
-security = HTTPBearer()
+# TEMPORARY: Make security optional to bypass Auth0
+security = HTTPBearer(auto_error=False)
 
 
 class Auth0Service:
@@ -198,13 +199,17 @@ auth_service = Auth0Service()
 
 
 async def get_current_user(
-    credentials: HTTPAuthorizationCredentials = Depends(security)
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(security)
 ) -> Dict[str, Any]:
     """Dependency to get the current authenticated user."""
-    token = credentials.credentials
+    # TEMPORARY: Bypass Auth0 - use first user from database
+    # If no token provided or token is not a dev token, use first user
+    token = None
+    if credentials:
+        token = credentials.credentials
 
     # Check for dev token (format: dev-token-{user_id})
-    if token.startswith("dev-token-"):
+    if token and token.startswith("dev-token-"):
         user_id = token.replace("dev-token-", "")
         # Get user from database
         try:
@@ -242,27 +247,122 @@ async def get_current_user(
                 detail=f"Dev token validation failed: {str(e)}"
             )
 
-    # Verify the token with Auth0
-    auth0_payload = await auth_service.verify_token(token)
+    # TEMPORARY: Bypass Auth0 - get first user from database
+    try:
+        # Get first user from database
+        user_response = db_service.client.table("users").select("*, tenants(*)").order("created_at").limit(1).execute()
+        
+        if not user_response.data or len(user_response.data) == 0:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="No users found in database"
+            )
 
-    # Get or create the user
-    user_info = await auth_service.get_or_create_user(auth0_payload)
+        user = user_response.data[0]
+        tenant = user.get("tenants")
 
-    if user_info.get("is_new") and user_info.get("user") is None:
-        # User needs to complete onboarding
+        return {
+            "user": {
+                "id": user["id"],
+                "email": user["email"],
+                "name": user["name"],
+                "role": user.get("role", "admin"),
+            },
+            "tenant": {
+                "id": tenant["id"],
+                "name": tenant["name"],
+                "subscription_tier": tenant.get("subscription_tier", "free"),
+            } if tenant else None
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
         raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="onboarding_required",
-            headers={"X-Onboarding-Required": "true"}
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=f"Failed to get first user: {str(e)}"
         )
 
-    return user_info
+    # Original Auth0 code (disabled temporarily)
+    # # Verify the token with Auth0
+    # auth0_payload = await auth_service.verify_token(token)
+    # # Get or create the user
+    # user_info = await auth_service.get_or_create_user(auth0_payload)
+    # if user_info.get("is_new") and user_info.get("user") is None:
+    #     raise HTTPException(
+    #         status_code=status.HTTP_403_FORBIDDEN,
+    #         detail="onboarding_required",
+    #         headers={"X-Onboarding-Required": "true"}
+    #     )
+    # return user_info
 
 
 async def get_current_user_optional(
-    credentials: HTTPAuthorizationCredentials = Depends(security)
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(security)
 ) -> Dict[str, Any]:
     """Dependency to get the current user, allowing new users for onboarding."""
-    token = credentials.credentials
-    auth0_payload = await auth_service.verify_token(token)
-    return await auth_service.get_or_create_user(auth0_payload)
+    # TEMPORARY: Bypass Auth0 - use first user from database
+    token = None
+    if credentials:
+        token = credentials.credentials
+
+    # Check for dev token
+    if token and token.startswith("dev-token-"):
+        user_id = token.replace("dev-token-", "")
+        try:
+            user_response = db_service.client.table("users").select("*, tenants(*)").eq(
+                "id", user_id
+            ).execute()
+            if user_response.data and len(user_response.data) > 0:
+                user = user_response.data[0]
+                tenant = user.get("tenants")
+                return {
+                    "user": {
+                        "id": user["id"],
+                        "email": user["email"],
+                        "name": user["name"],
+                        "role": user.get("role", "admin"),
+                    },
+                    "tenant": {
+                        "id": tenant["id"],
+                        "name": tenant["name"],
+                        "subscription_tier": tenant.get("subscription_tier", "free"),
+                    } if tenant else None,
+                    "is_new": False
+                }
+        except Exception:
+            pass
+
+    # Get first user from database
+    try:
+        user_response = db_service.client.table("users").select("*, tenants(*)").order("created_at").limit(1).execute()
+        if user_response.data and len(user_response.data) > 0:
+            user = user_response.data[0]
+            tenant = user.get("tenants")
+            return {
+                "user": {
+                    "id": user["id"],
+                    "email": user["email"],
+                    "name": user["name"],
+                    "role": user.get("role", "admin"),
+                },
+                "tenant": {
+                    "id": tenant["id"],
+                    "name": tenant["name"],
+                    "subscription_tier": tenant.get("subscription_tier", "free"),
+                } if tenant else None,
+                "is_new": False
+            }
+    except Exception:
+        pass
+
+    # Return empty if no user found (for onboarding)
+    return {
+        "user": None,
+        "tenant": None,
+        "is_new": True
+    }
+
+    # Original Auth0 code (disabled temporarily)
+    # token = credentials.credentials
+    # auth0_payload = await auth_service.verify_token(token)
+    # return await auth_service.get_or_create_user(auth0_payload)

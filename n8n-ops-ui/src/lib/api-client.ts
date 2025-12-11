@@ -935,6 +935,48 @@ class ApiClient {
     return { data: response.data };
   }
 
+  async getCredential(credentialId: string): Promise<{ data: Credential }> {
+    const response = await this.client.get<Credential>(`/credentials/${credentialId}`);
+    return { data: response.data };
+  }
+
+  async createCredential(data: {
+    name: string;
+    type: string;
+    data: Record<string, any>;
+    environment_id: string;
+  }): Promise<{ data: Credential }> {
+    const response = await this.client.post<Credential>('/credentials/', data);
+    return { data: response.data };
+  }
+
+  async updateCredential(
+    credentialId: string,
+    data: { name?: string; data?: Record<string, any> }
+  ): Promise<{ data: Credential }> {
+    const response = await this.client.put<Credential>(`/credentials/${credentialId}`, data);
+    return { data: response.data };
+  }
+
+  async deleteCredential(credentialId: string, deleteFromN8n: boolean = true): Promise<{ data: { success: boolean; message: string } }> {
+    const response = await this.client.delete(`/credentials/${credentialId}`, {
+      params: { delete_from_n8n: deleteFromN8n },
+    });
+    return { data: response.data };
+  }
+
+  async getCredentialTypes(environmentId: string): Promise<{ data: any[] }> {
+    const response = await this.client.get('/credentials/types/schema', {
+      params: { environment_id: environmentId },
+    });
+    return { data: response.data };
+  }
+
+  async syncCredentials(environmentId: string): Promise<{ data: { success: boolean; synced: number; message: string } }> {
+    const response = await this.client.post(`/credentials/sync/${environmentId}`);
+    return { data: response.data };
+  }
+
   // N8N User endpoints
   async getN8NUsers(environmentType?: string): Promise<{ data: N8NUser[] }> {
     const params = environmentType ? { environment_type: environmentType } : {};

@@ -682,3 +682,117 @@ export interface FeatureAccessLog {
   resourceId?: string;
   accessedAt: string;
 }
+
+// Credential types
+export interface WorkflowReference {
+  id: string;
+  name: string;
+  n8n_workflow_id?: string;
+}
+
+export interface CredentialEnvironment {
+  id: string;
+  name: string;
+  type?: string;
+  n8n_base_url?: string;
+}
+
+export interface Credential {
+  id: string;
+  name: string;
+  type: string;
+  n8n_credential_id?: string;
+  tenant_id?: string;
+  environment_id?: string;
+  created_at?: string;
+  updated_at?: string;
+  used_by_workflows?: WorkflowReference[];
+  environment?: CredentialEnvironment;
+  credential_data?: Record<string, any>;
+}
+
+export interface CredentialCreate {
+  name: string;
+  type: string;
+  data: Record<string, any>;
+  environment_id: string;
+}
+
+export interface CredentialUpdate {
+  name?: string;
+  data?: Record<string, any>;
+}
+
+export interface CredentialTypeField {
+  displayName: string;
+  name: string;
+  type: string;
+  default?: any;
+  required?: boolean;
+  description?: string;
+  options?: Array<{ name: string; value: any }>;
+}
+
+export interface CredentialTypeSchema {
+  name: string;
+  displayName: string;
+  properties: CredentialTypeField[];
+  documentationUrl?: string;
+}
+
+// N8N User types
+export interface N8NUser {
+  id: string;
+  email: string;
+  firstName?: string;
+  lastName?: string;
+  role?: string;
+  environment_id?: string;
+  environment?: CredentialEnvironment;
+}
+
+// Tag types
+export interface Tag {
+  id: string;
+  name: string;
+  n8n_tag_id?: string;
+  environment_id?: string;
+}
+
+// Team limits
+export interface TeamLimits {
+  maxMembers: number;
+  currentMembers: number;
+  canAddMembers: boolean;
+}
+
+// Payment history
+export interface PaymentHistory {
+  id: string;
+  amount: number;
+  currency: string;
+  status: string;
+  description?: string;
+  createdAt: string;
+}
+
+// Checkout and Portal sessions
+export interface CheckoutSession {
+  url: string;
+  sessionId: string;
+}
+
+export interface PortalSession {
+  url: string;
+}
+
+// Subscription
+export interface Subscription {
+  id: string;
+  planId: string;
+  planName: string;
+  status: string;
+  currentPeriodStart: string;
+  currentPeriodEnd: string;
+  cancelAtPeriodEnd: boolean;
+}

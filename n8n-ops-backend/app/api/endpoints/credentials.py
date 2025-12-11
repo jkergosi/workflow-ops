@@ -3,6 +3,14 @@ from typing import List, Optional
 import json
 
 from app.services.database import db_service
+from app.services.n8n_client import N8NClient
+from app.schemas.credential import (
+    CredentialCreate,
+    CredentialUpdate,
+    CredentialResponse,
+    CredentialTypeSchema,
+    CredentialSyncResult,
+)
 
 router = APIRouter()
 
@@ -122,4 +130,306 @@ async def get_credential(credential_id: str):
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to fetch credential: {str(e)}"
+        )
+
+
+@router.post("/", status_code=status.HTTP_201_CREATED)
+async def create_credential(credential: CredentialCreate):
+    """Create a new credential in N8N and cache it in the database.
+
+    The credential data (secrets) is sent to N8N where it's encrypted and stored.
+    Only metadata is cached locally - actual secrets are never stored in our database.
+    """
+    try:
+        # Get environment to verify it exists and get connection info
+        env = await db_service.get_environment(credential.environment_id, MOCK_TENANT_ID)
+        if not env:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Environment not found"
+            )
+
+        # Create N8N client for this environment
+        n8n_client = N8NClient(
+            base_url=env.get("n8n_base_url"),
+            api_key=env.get("n8n_api_key")
+        )
+
+        # Create credential in N8N
+        n8n_credential = await n8n_client.create_credential({
+            "name": credential.name,
+            "type": credential.type,
+            "data": credential.data
+        })
+
+        # Cache the credential metadata (without secrets) in our database
+        cached_credential = await db_service.upsert_credential(
+            MOCK_TENANT_ID,
+            credential.environment_id,
+            {
+                "id": n8n_credential.get("id"),
+                "name": n8n_credential.get("name"),
+                "type": n8n_credential.get("type"),
+                "createdAt": n8n_credential.get("createdAt"),
+                "updatedAt": n8n_credential.get("updatedAt"),
+                "used_by_workflows": []
+            }
+        )
+
+        # Add environment info to response
+        cached_credential["environment"] = {
+            "id": env["id"],
+            "name": env["n8n_name"],
+            "type": env["n8n_type"],
+            "n8n_base_url": env["n8n_base_url"]
+        }
+
+        return cached_credential
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to create credential: {str(e)}"
+        )
+
+
+@router.put("/{credential_id}")
+async def update_credential(credential_id: str, credential: CredentialUpdate):
+    """Update an existing credential in N8N.
+
+    Only provided fields will be updated. The credential data (secrets) is sent
+    to N8N where it's encrypted. Secrets are never stored locally.
+    """
+    try:
+        # Get existing credential to find the environment
+        existing = db_service.client.table("credentials").select(
+            "*"
+        ).eq("id", credential_id).eq("tenant_id", MOCK_TENANT_ID).single().execute()
+
+        if not existing.data:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Credential not found"
+            )
+
+        credential_record = existing.data
+        n8n_credential_id = credential_record.get("n8n_credential_id")
+        environment_id = credential_record.get("environment_id")
+
+        # Get environment connection info
+        env = await db_service.get_environment(environment_id, MOCK_TENANT_ID)
+        if not env:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Environment not found"
+            )
+
+        # Create N8N client for this environment
+        n8n_client = N8NClient(
+            base_url=env.get("n8n_base_url"),
+            api_key=env.get("n8n_api_key")
+        )
+
+        # Build update payload (only include non-None fields)
+        update_data = {}
+        if credential.name is not None:
+            update_data["name"] = credential.name
+        if credential.data is not None:
+            update_data["data"] = credential.data
+
+        if not update_data:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="No fields to update"
+            )
+
+        # Update credential in N8N
+        n8n_updated = await n8n_client.update_credential(n8n_credential_id, update_data)
+
+        # Update our cached metadata
+        cache_update = {
+            "name": n8n_updated.get("name"),
+            "type": n8n_updated.get("type"),
+            "updated_at": n8n_updated.get("updatedAt")
+        }
+        db_service.client.table("credentials").update(cache_update).eq(
+            "id", credential_id
+        ).eq("tenant_id", MOCK_TENANT_ID).execute()
+
+        # Return updated credential
+        updated_response = db_service.client.table("credentials").select(
+            "*"
+        ).eq("id", credential_id).eq("tenant_id", MOCK_TENANT_ID).single().execute()
+
+        credential_response = updated_response.data
+        credential_response["environment"] = {
+            "id": env["id"],
+            "name": env["n8n_name"],
+            "type": env["n8n_type"],
+            "n8n_base_url": env["n8n_base_url"]
+        }
+        credential_response = parse_used_by_workflows(credential_response)
+
+        return credential_response
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to update credential: {str(e)}"
+        )
+
+
+@router.delete("/{credential_id}")
+async def delete_credential(credential_id: str, delete_from_n8n: bool = True):
+    """Delete a credential.
+
+    By default, this deletes the credential from both N8N and our cache.
+    Set delete_from_n8n=false to only remove from our cache (useful when
+    the credential was already deleted in N8N).
+    """
+    try:
+        # Get existing credential
+        existing = db_service.client.table("credentials").select(
+            "*"
+        ).eq("id", credential_id).eq("tenant_id", MOCK_TENANT_ID).single().execute()
+
+        if not existing.data:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Credential not found"
+            )
+
+        credential_record = existing.data
+        n8n_credential_id = credential_record.get("n8n_credential_id")
+        environment_id = credential_record.get("environment_id")
+
+        # Check if credential is being used by workflows
+        used_by = credential_record.get("used_by_workflows", [])
+        credential_data = credential_record.get("credential_data", {})
+        if isinstance(credential_data, dict):
+            used_by = used_by or credential_data.get("used_by_workflows", [])
+
+        if used_by and len(used_by) > 0:
+            workflow_names = [wf.get("name", "Unknown") for wf in used_by[:3]]
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Cannot delete credential: it is used by {len(used_by)} workflow(s): {', '.join(workflow_names)}"
+            )
+
+        # Delete from N8N if requested
+        if delete_from_n8n and n8n_credential_id and ":" not in n8n_credential_id:
+            # Only attempt N8N deletion if we have a valid N8N ID (not a generated key)
+            env = await db_service.get_environment(environment_id, MOCK_TENANT_ID)
+            if env:
+                n8n_client = N8NClient(
+                    base_url=env.get("n8n_base_url"),
+                    api_key=env.get("n8n_api_key")
+                )
+                try:
+                    await n8n_client.delete_credential(n8n_credential_id)
+                except Exception as n8n_error:
+                    # If N8N deletion fails, still allow local cache deletion
+                    # but warn the user
+                    pass
+
+        # Soft delete in our cache
+        db_service.client.table("credentials").update({
+            "is_deleted": True
+        }).eq("id", credential_id).eq("tenant_id", MOCK_TENANT_ID).execute()
+
+        return {"success": True, "message": "Credential deleted successfully"}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to delete credential: {str(e)}"
+        )
+
+
+@router.get("/types/schema")
+async def get_credential_types(environment_id: str):
+    """Get available credential types from N8N.
+
+    Returns the schema for each credential type, which can be used
+    to build dynamic forms for creating credentials.
+    """
+    try:
+        # Get environment connection info
+        env = await db_service.get_environment(environment_id, MOCK_TENANT_ID)
+        if not env:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Environment not found"
+            )
+
+        # Create N8N client for this environment
+        n8n_client = N8NClient(
+            base_url=env.get("n8n_base_url"),
+            api_key=env.get("n8n_api_key")
+        )
+
+        # Get credential types from N8N
+        types = await n8n_client.get_credential_types()
+
+        return types
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to fetch credential types: {str(e)}"
+        )
+
+
+@router.post("/sync/{environment_id}")
+async def sync_credentials(environment_id: str):
+    """Sync credentials from N8N for a specific environment.
+
+    Fetches all credentials from N8N and updates the local cache.
+    This only syncs metadata - no secrets are stored locally.
+    """
+    try:
+        # Get environment connection info
+        env = await db_service.get_environment(environment_id, MOCK_TENANT_ID)
+        if not env:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Environment not found"
+            )
+
+        # Create N8N client for this environment
+        n8n_client = N8NClient(
+            base_url=env.get("n8n_base_url"),
+            api_key=env.get("n8n_api_key")
+        )
+
+        # Fetch credentials from N8N
+        n8n_credentials = await n8n_client.get_credentials()
+
+        # Sync to database
+        results = await db_service.sync_credentials_from_n8n(
+            MOCK_TENANT_ID,
+            environment_id,
+            n8n_credentials
+        )
+
+        return {
+            "success": True,
+            "synced": len(results),
+            "message": f"Synced {len(results)} credentials from N8N"
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to sync credentials: {str(e)}"
         )

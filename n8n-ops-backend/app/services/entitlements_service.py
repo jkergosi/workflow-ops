@@ -49,6 +49,7 @@ FEATURE_DISPLAY_NAMES = {
     "sso_saml": "SSO/SAML",
     "support_priority": "Priority Support",
     "data_residency": "Data Residency",
+    "enterprise_limits": "Enterprise Limits",
 }
 
 # Minimum plan required for each feature (for upgrade messages)
@@ -91,6 +92,7 @@ FEATURE_REQUIRED_PLANS = {
     "sso_saml": "enterprise",
     "support_priority": "pro",
     "data_residency": "enterprise",
+    "enterprise_limits": "enterprise",
 }
 
 
@@ -468,6 +470,7 @@ class EntitlementsService:
                 "sso_saml": False,
                 "support_priority": False,
                 "data_residency": False,
+                "enterprise_limits": 0,
             }
         }
 

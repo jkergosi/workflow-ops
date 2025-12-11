@@ -4,6 +4,8 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
+import { Textarea } from '@/components/ui/textarea';
 import {
   Table,
   TableBody,
@@ -12,16 +14,117 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table';
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog';
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from '@/components/ui/alert-dialog';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu';
 import { api } from '@/lib/api';
 import { useAppStore } from '@/store/use-app-store';
-import { Search, AlertCircle, RefreshCw, Key, Download, ArrowUpDown, ArrowUp, ArrowDown, ExternalLink } from 'lucide-react';
+import {
+  Search, AlertCircle, RefreshCw, Key, Download, ArrowUpDown, ArrowUp, ArrowDown,
+  ExternalLink, Plus, MoreHorizontal, Pencil, Trash2, Eye, EyeOff, Info
+} from 'lucide-react';
 import { Link } from 'react-router-dom';
-import type { EnvironmentType } from '@/types';
+import type { EnvironmentType, Credential, Environment } from '@/types';
 import { toast } from 'sonner';
 import { formatNodeType } from '@/lib/workflow-analysis';
 
 type SortField = 'name' | 'type' | 'environment' | 'workflows';
 type SortDirection = 'asc' | 'desc';
+
+// Common credential type fields mapping
+const CREDENTIAL_TYPE_FIELDS: Record<string, { name: string; fields: { key: string; label: string; type: string; required?: boolean; placeholder?: string }[] }> = {
+  slackApi: {
+    name: 'Slack API',
+    fields: [
+      { key: 'accessToken', label: 'Access Token', type: 'password', required: true, placeholder: 'xoxb-...' },
+    ],
+  },
+  githubApi: {
+    name: 'GitHub API',
+    fields: [
+      { key: 'accessToken', label: 'Personal Access Token', type: 'password', required: true, placeholder: 'ghp_...' },
+    ],
+  },
+  httpBasicAuth: {
+    name: 'HTTP Basic Auth',
+    fields: [
+      { key: 'user', label: 'Username', type: 'text', required: true },
+      { key: 'password', label: 'Password', type: 'password', required: true },
+    ],
+  },
+  httpHeaderAuth: {
+    name: 'HTTP Header Auth',
+    fields: [
+      { key: 'name', label: 'Header Name', type: 'text', required: true, placeholder: 'Authorization' },
+      { key: 'value', label: 'Header Value', type: 'password', required: true, placeholder: 'Bearer ...' },
+    ],
+  },
+  oAuth2Api: {
+    name: 'OAuth2 API',
+    fields: [
+      { key: 'clientId', label: 'Client ID', type: 'text', required: true },
+      { key: 'clientSecret', label: 'Client Secret', type: 'password', required: true },
+      { key: 'accessToken', label: 'Access Token', type: 'password' },
+      { key: 'refreshToken', label: 'Refresh Token', type: 'password' },
+    ],
+  },
+  postgresApi: {
+    name: 'PostgreSQL',
+    fields: [
+      { key: 'host', label: 'Host', type: 'text', required: true, placeholder: 'localhost' },
+      { key: 'port', label: 'Port', type: 'text', required: true, placeholder: '5432' },
+      { key: 'database', label: 'Database', type: 'text', required: true },
+      { key: 'user', label: 'User', type: 'text', required: true },
+      { key: 'password', label: 'Password', type: 'password', required: true },
+    ],
+  },
+  mysqlApi: {
+    name: 'MySQL',
+    fields: [
+      { key: 'host', label: 'Host', type: 'text', required: true, placeholder: 'localhost' },
+      { key: 'port', label: 'Port', type: 'text', required: true, placeholder: '3306' },
+      { key: 'database', label: 'Database', type: 'text', required: true },
+      { key: 'user', label: 'User', type: 'text', required: true },
+      { key: 'password', label: 'Password', type: 'password', required: true },
+    ],
+  },
+  awsApi: {
+    name: 'AWS',
+    fields: [
+      { key: 'accessKeyId', label: 'Access Key ID', type: 'text', required: true },
+      { key: 'secretAccessKey', label: 'Secret Access Key', type: 'password', required: true },
+      { key: 'region', label: 'Region', type: 'text', placeholder: 'us-east-1' },
+    ],
+  },
+};
 
 export function CredentialsPage() {
   const selectedEnvironment = useAppStore((state) => state.selectedEnvironment);
@@ -34,36 +137,96 @@ export function CredentialsPage() {
   const [sortField, setSortField] = useState<SortField>('name');
   const [sortDirection, setSortDirection] = useState<SortDirection>('asc');
 
+  // Dialog states
+  const [createDialogOpen, setCreateDialogOpen] = useState(false);
+  const [editDialogOpen, setEditDialogOpen] = useState(false);
+  const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
+  const [selectedCredential, setSelectedCredential] = useState<Credential | null>(null);
+
+  // Form states
+  const [formName, setFormName] = useState('');
+  const [formType, setFormType] = useState('');
+  const [formEnvironmentId, setFormEnvironmentId] = useState('');
+  const [formData, setFormData] = useState<Record<string, string>>({});
+  const [showPasswords, setShowPasswords] = useState<Record<string, boolean>>({});
+
   // Fetch all credentials
   const { data: credentials, isLoading, refetch } = useQuery({
     queryKey: ['credentials', selectedEnvironment],
     queryFn: () => api.getCredentials(selectedEnvironment === 'dev' ? undefined : selectedEnvironment),
   });
 
-  // Fetch environments for filter
+  // Fetch environments for filter and create dialog
   const { data: environments } = useQuery({
     queryKey: ['environments'],
     queryFn: () => api.getEnvironments(),
   });
 
+  // Create credential mutation
+  const createMutation = useMutation({
+    mutationFn: (data: { name: string; type: string; data: Record<string, any>; environment_id: string }) =>
+      api.createCredential(data),
+    onSuccess: () => {
+      toast.success('Credential created successfully');
+      queryClient.invalidateQueries({ queryKey: ['credentials'] });
+      setCreateDialogOpen(false);
+      resetForm();
+    },
+    onError: (error: any) => {
+      const message = error.response?.data?.detail || 'Failed to create credential';
+      toast.error(message);
+    },
+  });
+
+  // Update credential mutation
+  const updateMutation = useMutation({
+    mutationFn: ({ id, data }: { id: string; data: { name?: string; data?: Record<string, any> } }) =>
+      api.updateCredential(id, data),
+    onSuccess: () => {
+      toast.success('Credential updated successfully');
+      queryClient.invalidateQueries({ queryKey: ['credentials'] });
+      setEditDialogOpen(false);
+      resetForm();
+    },
+    onError: (error: any) => {
+      const message = error.response?.data?.detail || 'Failed to update credential';
+      toast.error(message);
+    },
+  });
+
+  // Delete credential mutation
+  const deleteMutation = useMutation({
+    mutationFn: (id: string) => api.deleteCredential(id),
+    onSuccess: () => {
+      toast.success('Credential deleted successfully');
+      queryClient.invalidateQueries({ queryKey: ['credentials'] });
+      setDeleteDialogOpen(false);
+      setSelectedCredential(null);
+    },
+    onError: (error: any) => {
+      const message = error.response?.data?.detail || 'Failed to delete credential';
+      toast.error(message);
+    },
+  });
+
   // Sync mutation to refresh from N8N (via environment sync)
   const syncMutation = useMutation({
     mutationFn: async () => {
-      // Get all environments or just the selected one
-      const envsToSync = environments?.data?.filter((env: any) =>
-        selectedEnvironment === 'dev' || env.n8n_type === selectedEnvironment
+      const envsToSync = environments?.data?.filter((env: Environment) =>
+        selectedEnvironment === 'dev' || env.type === selectedEnvironment
       ) || [];
 
       const results = [];
       for (const env of envsToSync) {
-        const result = await api.syncEnvironment(env.id);
-        results.push({ env: env.n8n_name, ...result.data });
+        const result = await api.syncCredentials(env.id);
+        results.push({ env: env.name, ...result.data });
       }
       return results;
     },
-    onSuccess: () => {
+    onSuccess: (results) => {
       setIsSyncing(false);
-      toast.success('Synced credentials from N8N workflows');
+      const total = results.reduce((sum, r) => sum + (r.synced || 0), 0);
+      toast.success(`Synced ${total} credentials from N8N`);
       queryClient.invalidateQueries({ queryKey: ['credentials'] });
     },
     onError: (error: any) => {
@@ -74,9 +237,79 @@ export function CredentialsPage() {
   });
 
   const handleSyncFromN8N = () => {
-    toast.info('Syncing credentials from N8N workflows...');
+    toast.info('Syncing credentials from N8N...');
     setIsSyncing(true);
     syncMutation.mutate();
+  };
+
+  // Form helpers
+  const resetForm = () => {
+    setFormName('');
+    setFormType('');
+    setFormEnvironmentId('');
+    setFormData({});
+    setShowPasswords({});
+    setSelectedCredential(null);
+  };
+
+  const openCreateDialog = () => {
+    resetForm();
+    // Set default environment if one is selected
+    if (environments?.data?.length) {
+      const defaultEnv = environments.data.find((e: Environment) => e.type === selectedEnvironment) || environments.data[0];
+      setFormEnvironmentId(defaultEnv.id);
+    }
+    setCreateDialogOpen(true);
+  };
+
+  const openEditDialog = (cred: Credential) => {
+    setSelectedCredential(cred);
+    setFormName(cred.name);
+    setFormType(cred.type);
+    setFormData({});
+    setEditDialogOpen(true);
+  };
+
+  const openDeleteDialog = (cred: Credential) => {
+    setSelectedCredential(cred);
+    setDeleteDialogOpen(true);
+  };
+
+  const handleCreate = () => {
+    if (!formName || !formType || !formEnvironmentId) {
+      toast.error('Please fill in all required fields');
+      return;
+    }
+    createMutation.mutate({
+      name: formName,
+      type: formType,
+      data: formData,
+      environment_id: formEnvironmentId,
+    });
+  };
+
+  const handleUpdate = () => {
+    if (!selectedCredential || !formName) {
+      toast.error('Please fill in all required fields');
+      return;
+    }
+    const updateData: { name?: string; data?: Record<string, any> } = { name: formName };
+    if (Object.keys(formData).length > 0) {
+      updateData.data = formData;
+    }
+    updateMutation.mutate({ id: selectedCredential.id, data: updateData });
+  };
+
+  const handleDelete = () => {
+    if (!selectedCredential) return;
+    deleteMutation.mutate(selectedCredential.id);
+  };
+
+  // Get fields for selected credential type
+  const getTypeFields = (type: string) => {
+    return CREDENTIAL_TYPE_FIELDS[type]?.fields || [
+      { key: 'apiKey', label: 'API Key', type: 'password', required: true },
+    ];
   };
 
   // Handle sorting
@@ -102,7 +335,7 @@ export function CredentialsPage() {
   const allTypes = useMemo(() => {
     if (!credentials?.data) return [];
     const types = new Set<string>();
-    credentials.data.forEach((cred: any) => {
+    credentials.data.forEach((cred: Credential) => {
       if (cred.type) types.add(cred.type);
     });
     return Array.from(types).sort();
@@ -117,7 +350,7 @@ export function CredentialsPage() {
     // Apply search filter (name and type)
     if (searchQuery) {
       const query = searchQuery.toLowerCase();
-      result = result.filter((cred: any) =>
+      result = result.filter((cred: Credential) =>
         cred.name?.toLowerCase().includes(query) ||
         cred.type?.toLowerCase().includes(query)
       );
@@ -125,11 +358,11 @@ export function CredentialsPage() {
 
     // Apply type filter
     if (selectedType !== 'all') {
-      result = result.filter((cred: any) => cred.type === selectedType);
+      result = result.filter((cred: Credential) => cred.type === selectedType);
     }
 
     // Apply sorting
-    result.sort((a: any, b: any) => {
+    result.sort((a: Credential, b: Credential) => {
       let aValue: any;
       let bValue: any;
 
@@ -163,22 +396,23 @@ export function CredentialsPage() {
     return result;
   }, [credentials?.data, searchQuery, selectedType, sortField, sortDirection]);
 
-  const getEnvironmentBadge = (type: EnvironmentType) => {
-    const colors: Record<EnvironmentType, string> = {
+  const getEnvironmentBadge = (type: string | undefined) => {
+    if (!type) return null;
+    const colors: Record<string, string> = {
       dev: 'bg-blue-50 text-blue-700 border-blue-200',
       staging: 'bg-yellow-50 text-yellow-700 border-yellow-200',
       production: 'bg-green-50 text-green-700 border-green-200',
     };
 
     return (
-      <Badge variant="outline" className={colors[type]}>
+      <Badge variant="outline" className={colors[type] || 'bg-gray-50 text-gray-700 border-gray-200'}>
         {type}
       </Badge>
     );
   };
 
   // Open credential in N8N
-  const openInN8N = (cred: any) => {
+  const openInN8N = (cred: Credential) => {
     const baseUrl = cred.environment?.n8n_base_url;
     const credId = cred.n8n_credential_id;
     if (baseUrl && credId && !credId.includes(':')) {
@@ -187,7 +421,7 @@ export function CredentialsPage() {
   };
 
   // Check if credential can be opened in N8N (has valid ID, not a generated key)
-  const canOpenInN8N = (cred: any) => {
+  const canOpenInN8N = (cred: Credential) => {
     const credId = cred.n8n_credential_id;
     return cred.environment?.n8n_base_url && credId && !credId.includes(':');
   };
@@ -198,7 +432,7 @@ export function CredentialsPage() {
         <div>
           <h1 className="text-3xl font-bold">Credentials</h1>
           <p className="text-muted-foreground">
-            View credentials synced from N8N instances across environments
+            Manage credentials for your N8N workflows across environments
           </p>
         </div>
         <div className="flex gap-2">
@@ -208,15 +442,32 @@ export function CredentialsPage() {
           </Button>
           <Button
             onClick={handleSyncFromN8N}
-            variant="default"
+            variant="outline"
             size="sm"
             disabled={isSyncing}
           >
             <Download className={`h-4 w-4 mr-2 ${isSyncing ? 'animate-spin' : ''}`} />
             Sync from N8N
           </Button>
+          <Button onClick={openCreateDialog} size="sm">
+            <Plus className="h-4 w-4 mr-2" />
+            Create Credential
+          </Button>
         </div>
       </div>
+
+      {/* Info Banner */}
+      <Card className="bg-blue-50 border-blue-200">
+        <CardContent className="py-3">
+          <div className="flex items-start gap-2">
+            <Info className="h-4 w-4 text-blue-600 mt-0.5" />
+            <p className="text-sm text-blue-800">
+              Credential secrets are encrypted and stored securely in N8N. Only metadata (name, type) is cached locally.
+              Actual secrets are never visible or stored in this application.
+            </p>
+          </div>
+        </CardContent>
+      </Card>
 
       <Card>
         <CardHeader>
@@ -225,7 +476,7 @@ export function CredentialsPage() {
             N8N Credentials
           </CardTitle>
           <CardDescription>
-            Credentials referenced by workflows in your N8N environments. Extracted from workflow node configurations.
+            Credentials used by workflows in your N8N environments.
           </CardDescription>
         </CardHeader>
         <CardContent>
@@ -244,12 +495,12 @@ export function CredentialsPage() {
             </div>
 
             <select
-              value={selectedEnvironment}
+              value={selectedEnvironment || 'dev'}
               onChange={(e) => setSelectedEnvironment(e.target.value as EnvironmentType)}
               className="flex h-9 w-[180px] rounded-md border border-input bg-background text-foreground px-3 py-1 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
             >
               <option value="dev">All Environments</option>
-              {environments?.data?.map((env: any) => (
+              {environments?.data?.map((env: Environment) => (
                 <option key={env.id} value={env.type}>
                   {env.name}
                 </option>
@@ -282,9 +533,15 @@ export function CredentialsPage() {
                   : 'No credentials match your filters.'}
               </p>
               {credentials?.data?.length === 0 && (
-                <p className="text-xs text-muted-foreground max-w-md mx-auto">
-                  Click "Sync from N8N" to extract credential references from your workflows.
-                </p>
+                <div className="space-y-2">
+                  <p className="text-xs text-muted-foreground max-w-md mx-auto">
+                    Click "Create Credential" to add a new credential, or "Sync from N8N" to import existing credentials.
+                  </p>
+                  <Button onClick={openCreateDialog} size="sm" variant="outline">
+                    <Plus className="h-4 w-4 mr-2" />
+                    Create your first credential
+                  </Button>
+                </div>
               )}
             </div>
           ) : (
@@ -319,7 +576,7 @@ export function CredentialsPage() {
                     </div>
                   </TableHead>
                   <TableHead
-                    className="cursor-pointer hover:bg-muted/50 max-w-[50%] w-[50%]"
+                    className="cursor-pointer hover:bg-muted/50 max-w-[40%] w-[40%]"
                     onClick={() => handleSort('workflows')}
                   >
                     <div className="flex items-center">
@@ -327,11 +584,11 @@ export function CredentialsPage() {
                       {getSortIcon('workflows')}
                     </div>
                   </TableHead>
-                  <TableHead className="w-[100px]">Actions</TableHead>
+                  <TableHead className="w-[120px]">Actions</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {filteredAndSortedCredentials.map((cred: any) => (
+                {filteredAndSortedCredentials.map((cred: Credential) => (
                   <TableRow key={cred.id}>
                     <TableCell className="font-medium">
                       <div className="flex items-center gap-2">
@@ -352,10 +609,10 @@ export function CredentialsPage() {
                         'N/A'
                       )}
                     </TableCell>
-                    <TableCell className="max-w-[50%]">
+                    <TableCell className="max-w-[40%]">
                       {cred.used_by_workflows && cred.used_by_workflows.length > 0 ? (
                         <div className="flex flex-wrap gap-x-3 gap-y-1">
-                          {cred.used_by_workflows.map((wf: any, index: number) => (
+                          {cred.used_by_workflows.map((wf, index: number) => (
                             <span key={wf.id}>
                               <Link
                                 to={`/workflows/${wf.n8n_workflow_id || wf.id}?environment=${cred.environment?.type || 'dev'}`}
@@ -363,7 +620,7 @@ export function CredentialsPage() {
                               >
                                 {wf.name}
                               </Link>
-                              {index < cred.used_by_workflows.length - 1 && <span className="text-muted-foreground">,</span>}
+                              {index < cred.used_by_workflows!.length - 1 && <span className="text-muted-foreground">,</span>}
                             </span>
                           ))}
                         </div>
@@ -372,17 +629,32 @@ export function CredentialsPage() {
                       )}
                     </TableCell>
                     <TableCell>
-                      {canOpenInN8N(cred) && (
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          onClick={() => openInN8N(cred)}
-                          title="Open in N8N"
-                        >
-                          <ExternalLink className="h-4 w-4 mr-1" />
-                          N8N
-                        </Button>
-                      )}
+                      <DropdownMenu>
+                        <DropdownMenuTrigger asChild>
+                          <Button variant="ghost" size="sm">
+                            <MoreHorizontal className="h-4 w-4" />
+                          </Button>
+                        </DropdownMenuTrigger>
+                        <DropdownMenuContent align="end">
+                          <DropdownMenuItem onClick={() => openEditDialog(cred)}>
+                            <Pencil className="h-4 w-4 mr-2" />
+                            Edit
+                          </DropdownMenuItem>
+                          {canOpenInN8N(cred) && (
+                            <DropdownMenuItem onClick={() => openInN8N(cred)}>
+                              <ExternalLink className="h-4 w-4 mr-2" />
+                              Open in N8N
+                            </DropdownMenuItem>
+                          )}
+                          <DropdownMenuItem
+                            onClick={() => openDeleteDialog(cred)}
+                            className="text-destructive focus:text-destructive"
+                          >
+                            <Trash2 className="h-4 w-4 mr-2" />
+                            Delete
+                          </DropdownMenuItem>
+                        </DropdownMenuContent>
+                      </DropdownMenu>
                     </TableCell>
                   </TableRow>
                 ))}
@@ -398,6 +670,199 @@ export function CredentialsPage() {
           )}
         </CardContent>
       </Card>
+
+      {/* Create Dialog */}
+      <Dialog open={createDialogOpen} onOpenChange={setCreateDialogOpen}>
+        <DialogContent className="max-w-lg">
+          <DialogHeader>
+            <DialogTitle>Create Credential</DialogTitle>
+            <DialogDescription>
+              Add a new credential to your N8N instance. Secrets are encrypted and stored securely in N8N.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4 py-4">
+            <div className="space-y-2">
+              <Label htmlFor="create-name">Name *</Label>
+              <Input
+                id="create-name"
+                value={formName}
+                onChange={(e) => setFormName(e.target.value)}
+                placeholder="My API Credential"
+              />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="create-environment">Environment *</Label>
+              <Select value={formEnvironmentId} onValueChange={setFormEnvironmentId}>
+                <SelectTrigger>
+                  <SelectValue placeholder="Select environment" />
+                </SelectTrigger>
+                <SelectContent>
+                  {environments?.data?.map((env: Environment) => (
+                    <SelectItem key={env.id} value={env.id}>
+                      {env.name} ({env.type})
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="create-type">Type *</Label>
+              <Select value={formType} onValueChange={(v) => { setFormType(v); setFormData({}); }}>
+                <SelectTrigger>
+                  <SelectValue placeholder="Select credential type" />
+                </SelectTrigger>
+                <SelectContent>
+                  {Object.entries(CREDENTIAL_TYPE_FIELDS).map(([key, config]) => (
+                    <SelectItem key={key} value={key}>
+                      {config.name}
+                    </SelectItem>
+                  ))}
+                  <SelectItem value="custom">Other (Custom)</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+
+            {formType && (
+              <div className="space-y-3 border-t pt-4">
+                <Label className="text-sm font-medium">Credential Data</Label>
+                {getTypeFields(formType).map((field) => (
+                  <div key={field.key} className="space-y-1">
+                    <Label htmlFor={`create-${field.key}`} className="text-sm">
+                      {field.label} {field.required && '*'}
+                    </Label>
+                    <div className="relative">
+                      <Input
+                        id={`create-${field.key}`}
+                        type={field.type === 'password' && !showPasswords[field.key] ? 'password' : 'text'}
+                        value={formData[field.key] || ''}
+                        onChange={(e) => setFormData({ ...formData, [field.key]: e.target.value })}
+                        placeholder={field.placeholder}
+                      />
+                      {field.type === 'password' && (
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="sm"
+                          className="absolute right-1 top-1/2 -translate-y-1/2 h-7 w-7 p-0"
+                          onClick={() => setShowPasswords({ ...showPasswords, [field.key]: !showPasswords[field.key] })}
+                        >
+                          {showPasswords[field.key] ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                        </Button>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setCreateDialogOpen(false)}>
+              Cancel
+            </Button>
+            <Button onClick={handleCreate} disabled={createMutation.isPending}>
+              {createMutation.isPending ? 'Creating...' : 'Create'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Edit Dialog */}
+      <Dialog open={editDialogOpen} onOpenChange={setEditDialogOpen}>
+        <DialogContent className="max-w-lg">
+          <DialogHeader>
+            <DialogTitle>Edit Credential</DialogTitle>
+            <DialogDescription>
+              Update the credential name or data. Leave data fields empty to keep existing values.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4 py-4">
+            <div className="space-y-2">
+              <Label htmlFor="edit-name">Name *</Label>
+              <Input
+                id="edit-name"
+                value={formName}
+                onChange={(e) => setFormName(e.target.value)}
+              />
+            </div>
+            <div className="space-y-2">
+              <Label>Type</Label>
+              <Input value={formatNodeType(formType || '')} disabled />
+            </div>
+
+            {formType && (
+              <div className="space-y-3 border-t pt-4">
+                <Label className="text-sm font-medium">Update Credential Data (optional)</Label>
+                <p className="text-xs text-muted-foreground">
+                  Only fill in fields you want to update. Leave blank to keep existing values.
+                </p>
+                {getTypeFields(formType).map((field) => (
+                  <div key={field.key} className="space-y-1">
+                    <Label htmlFor={`edit-${field.key}`} className="text-sm">
+                      {field.label}
+                    </Label>
+                    <div className="relative">
+                      <Input
+                        id={`edit-${field.key}`}
+                        type={field.type === 'password' && !showPasswords[field.key] ? 'password' : 'text'}
+                        value={formData[field.key] || ''}
+                        onChange={(e) => setFormData({ ...formData, [field.key]: e.target.value })}
+                        placeholder={`Leave empty to keep current ${field.label.toLowerCase()}`}
+                      />
+                      {field.type === 'password' && (
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="sm"
+                          className="absolute right-1 top-1/2 -translate-y-1/2 h-7 w-7 p-0"
+                          onClick={() => setShowPasswords({ ...showPasswords, [field.key]: !showPasswords[field.key] })}
+                        >
+                          {showPasswords[field.key] ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                        </Button>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setEditDialogOpen(false)}>
+              Cancel
+            </Button>
+            <Button onClick={handleUpdate} disabled={updateMutation.isPending}>
+              {updateMutation.isPending ? 'Saving...' : 'Save Changes'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Delete Confirmation Dialog */}
+      <AlertDialog open={deleteDialogOpen} onOpenChange={setDeleteDialogOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete Credential</AlertDialogTitle>
+            <AlertDialogDescription>
+              Are you sure you want to delete "{selectedCredential?.name}"? This will remove the credential from N8N.
+              {selectedCredential?.used_by_workflows && selectedCredential.used_by_workflows.length > 0 && (
+                <span className="block mt-2 text-destructive">
+                  Warning: This credential is used by {selectedCredential.used_by_workflows.length} workflow(s).
+                  Deleting it may break those workflows.
+                </span>
+              )}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={handleDelete}
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+              disabled={deleteMutation.isPending}
+            >
+              {deleteMutation.isPending ? 'Deleting...' : 'Delete'}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }
