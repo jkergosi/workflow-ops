@@ -205,11 +205,15 @@ describe('CredentialsPage', () => {
       render(<CredentialsPage />);
 
       await waitFor(() => {
-        expect(screen.getByText(/slack api/i)).toBeInTheDocument();
+        // formatNodeType('slackApi') returns "Slack Api"
+        // Types appear both in table and in the type filter dropdown
+        expect(screen.getAllByText(/slack api/i).length).toBeGreaterThanOrEqual(1);
       });
 
-      expect(screen.getByText(/github api/i)).toBeInTheDocument();
-      expect(screen.getByText(/postgresql/i)).toBeInTheDocument();
+      // formatNodeType('githubApi') returns "Github Api"
+      expect(screen.getAllByText(/github api/i).length).toBeGreaterThanOrEqual(1);
+      // formatNodeType('postgresApi') returns "Postgres Api"
+      expect(screen.getAllByText(/postgres api/i).length).toBeGreaterThanOrEqual(1);
     });
 
     it('should display environment badges', async () => {
@@ -441,7 +445,8 @@ describe('CredentialsPage', () => {
       });
 
       const dialog = screen.getByRole('dialog');
-      expect(within(dialog).getByText(/type/i)).toBeInTheDocument();
+      // "Type" appears as a label in the dialog
+      expect(within(dialog).getAllByText(/type/i).length).toBeGreaterThanOrEqual(1);
     });
 
     it('should close create dialog when clicking Cancel', async () => {
@@ -596,7 +601,9 @@ describe('CredentialsPage', () => {
         expect(screen.getByRole('alertdialog')).toBeInTheDocument();
       });
 
-      expect(screen.getByText(/used by.*workflow/i)).toBeInTheDocument();
+      // The warning text appears in the alert dialog
+      // "used by" appears in both table and warning - use getAllByText
+      expect(screen.getAllByText(/used by.*workflow/i).length).toBeGreaterThanOrEqual(1);
     });
 
     it('should delete credential when confirmed', async () => {

@@ -28,63 +28,65 @@ const mockEnvironments = [
   },
 ];
 
+// Mock snapshots use snake_case because the API client transforms them to camelCase
 const mockSnapshots = [
   {
     id: 'snap-1',
     tenant_id: 'tenant-1',
-    environmentId: 'env-1',
+    environment_id: 'dev', // Match store default 'dev' - API client transforms to environmentId
     type: 'pre_promotion',
-    gitCommitSha: 'abc123def456',
-    createdByUserId: 'admin@test.com',
-    relatedDeploymentId: 'deploy-1',
-    metadataJson: { reason: 'Before promotion to production' },
-    createdAt: '2024-01-15T10:00:00Z',
+    git_commit_sha: 'abc123def456',
+    created_by_user_id: 'admin@test.com',
+    related_deployment_id: 'deploy-1',
+    metadata_json: { reason: 'Before promotion to production' },
+    created_at: '2024-01-15T10:00:00Z',
   },
   {
     id: 'snap-2',
     tenant_id: 'tenant-1',
-    environmentId: 'env-1',
+    environment_id: 'dev',
     type: 'post_promotion',
-    gitCommitSha: 'def456ghi789',
-    createdByUserId: 'admin@test.com',
-    relatedDeploymentId: 'deploy-1',
-    metadataJson: { reason: 'After promotion to production' },
-    createdAt: '2024-01-15T10:05:00Z',
+    git_commit_sha: 'def456ghi789',
+    created_by_user_id: 'admin@test.com',
+    related_deployment_id: 'deploy-1',
+    metadata_json: { reason: 'After promotion to production' },
+    created_at: '2024-01-15T10:05:00Z',
   },
   {
     id: 'snap-3',
     tenant_id: 'tenant-1',
-    environmentId: 'env-1',
+    environment_id: 'dev',
     type: 'manual_backup',
-    gitCommitSha: 'ghi789jkl012',
-    createdByUserId: 'dev@test.com',
-    relatedDeploymentId: null,
-    metadataJson: { reason: 'Manual backup before changes' },
-    createdAt: '2024-01-14T16:00:00Z',
+    git_commit_sha: 'ghi789jkl012',
+    created_by_user_id: 'dev@test.com',
+    related_deployment_id: null,
+    metadata_json: { reason: 'Manual backup before changes' },
+    created_at: '2024-01-14T16:00:00Z',
   },
   {
     id: 'snap-4',
     tenant_id: 'tenant-1',
-    environmentId: 'env-1',
+    environment_id: 'dev',
     type: 'auto_backup',
-    gitCommitSha: 'jkl012mno345',
-    createdByUserId: null,
-    relatedDeploymentId: null,
-    metadataJson: null,
-    createdAt: '2024-01-13T00:00:00Z',
+    git_commit_sha: 'jkl012mno345',
+    created_by_user_id: null,
+    related_deployment_id: null,
+    metadata_json: null,
+    created_at: '2024-01-13T00:00:00Z',
   },
 ];
 
+// Mock snapshot detail uses snake_case because the API client transforms it
 const mockSnapshotDetail = {
   id: 'snap-1',
   tenant_id: 'tenant-1',
-  environmentId: 'env-1',
+  environment_id: 'dev',
   type: 'pre_promotion',
-  gitCommitSha: 'abc123def456',
-  createdByUserId: 'admin@test.com',
-  relatedDeploymentId: 'deploy-1',
-  metadataJson: { reason: 'Before promotion to production' },
-  createdAt: '2024-01-15T10:00:00Z',
+  git_commit_sha: 'abc123def456',
+  created_by_user_id: 'admin@test.com',
+  related_deployment_id: 'deploy-1',
+  metadata_json: { reason: 'Before promotion to production' },
+  created_at: '2024-01-15T10:00:00Z',
 };
 
 describe('SnapshotsPage', () => {
@@ -191,15 +193,13 @@ describe('SnapshotsPage', () => {
     it('should display triggered by user for snapshots', async () => {
       render(<SnapshotsPage />);
 
+      // Wait for snapshots to load (need to wait for environments first)
       await waitFor(() => {
         expect(screen.getByText('Pre-promotion')).toBeInTheDocument();
-      });
+      }, { timeout: 5000 });
 
       // admin@test.com appears for snap-1 and snap-2
-      await waitFor(() => {
-        expect(screen.getAllByText('admin@test.com').length).toBeGreaterThanOrEqual(1);
-      });
-
+      expect(screen.getAllByText('admin@test.com').length).toBeGreaterThanOrEqual(1);
       expect(screen.getByText('dev@test.com')).toBeInTheDocument();
       expect(screen.getByText('System')).toBeInTheDocument(); // For auto_backup with null createdByUserId
     });

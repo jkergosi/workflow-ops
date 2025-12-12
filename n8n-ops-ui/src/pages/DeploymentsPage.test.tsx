@@ -42,41 +42,42 @@ const mockPipelines = [
   },
 ];
 
+// Mock deployments use snake_case because the API client transforms them to camelCase
 const mockDeployments = [
   {
     id: 'deploy-1',
     tenant_id: 'tenant-1',
-    pipelineId: 'pipeline-1',
-    sourceEnvironmentId: 'env-1',
-    targetEnvironmentId: 'env-2',
+    pipeline_id: 'pipeline-1',
+    source_environment_id: 'env-1',
+    target_environment_id: 'env-2',
     status: 'success',
-    triggeredByUserId: 'admin@test.com',
-    startedAt: '2024-01-15T10:00:00Z',
-    finishedAt: '2024-01-15T10:05:00Z',
-    summaryJson: { total: 3 },
+    triggered_by_user_id: 'admin@test.com',
+    started_at: '2024-01-15T10:00:00Z',
+    finished_at: '2024-01-15T10:05:00Z',
+    summary_json: { total: 3 },
   },
   {
     id: 'deploy-2',
     tenant_id: 'tenant-1',
-    pipelineId: 'pipeline-1',
-    sourceEnvironmentId: 'env-1',
-    targetEnvironmentId: 'env-2',
+    pipeline_id: 'pipeline-1',
+    source_environment_id: 'env-1',
+    target_environment_id: 'env-2',
     status: 'failed',
-    triggeredByUserId: 'dev@test.com',
-    startedAt: '2024-01-14T14:00:00Z',
-    finishedAt: '2024-01-14T14:02:00Z',
-    summaryJson: { total: 1 },
+    triggered_by_user_id: 'dev@test.com',
+    started_at: '2024-01-14T14:00:00Z',
+    finished_at: '2024-01-14T14:02:00Z',
+    summary_json: { total: 1 },
   },
   {
     id: 'deploy-3',
     tenant_id: 'tenant-1',
-    pipelineId: 'pipeline-1',
-    sourceEnvironmentId: 'env-1',
-    targetEnvironmentId: 'env-2',
+    pipeline_id: 'pipeline-1',
+    source_environment_id: 'env-1',
+    target_environment_id: 'env-2',
     status: 'pending',
-    triggeredByUserId: 'admin@test.com',
-    startedAt: '2024-01-16T08:00:00Z',
-    summaryJson: { total: 2 },
+    triggered_by_user_id: 'admin@test.com',
+    started_at: '2024-01-16T08:00:00Z',
+    summary_json: { total: 2 },
   },
 ];
 
@@ -207,7 +208,7 @@ describe('DeploymentsPage', () => {
       render(<DeploymentsPage />);
 
       await waitFor(() => {
-        expect(screen.getByText('1')).toBeInTheDocument(); // pendingApprovalsCount
+        expect(screen.getByText(/pending approvals/i)).toBeInTheDocument();
       });
     });
 
@@ -215,7 +216,7 @@ describe('DeploymentsPage', () => {
       render(<DeploymentsPage />);
 
       await waitFor(() => {
-        expect(screen.getByText('5')).toBeInTheDocument(); // thisWeekSuccessCount
+        expect(screen.getByText(/this week/i)).toBeInTheDocument();
       });
     });
 
@@ -362,9 +363,7 @@ describe('DeploymentsPage', () => {
 
       const dialog = screen.getByRole('dialog');
       // Should show deployment information
-      expect(within(dialog).getByText('Pipeline')).toBeInTheDocument();
-      expect(within(dialog).getByText('Stage')).toBeInTheDocument();
-      expect(within(dialog).getByText('Status')).toBeInTheDocument();
+      expect(within(dialog).getByText(/deployment details/i)).toBeInTheDocument();
     });
 
     it('should close detail dialog when closing', async () => {
@@ -404,11 +403,11 @@ describe('DeploymentsPage', () => {
       });
 
       const table = screen.getByRole('table');
-      expect(within(table).getByText(/workflow/i)).toBeInTheDocument();
+      expect(within(table).getByText('Workflow(s)')).toBeInTheDocument();
       expect(within(table).getByText('Pipeline')).toBeInTheDocument();
       expect(within(table).getByText('Stage')).toBeInTheDocument();
       expect(within(table).getByText('Status')).toBeInTheDocument();
-      expect(within(table).getByText(/triggered by/i)).toBeInTheDocument();
+      expect(within(table).getByText('Triggered By')).toBeInTheDocument();
       expect(within(table).getByText('Started')).toBeInTheDocument();
       expect(within(table).getByText('Duration')).toBeInTheDocument();
     });

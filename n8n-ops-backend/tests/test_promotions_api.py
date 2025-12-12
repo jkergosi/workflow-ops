@@ -110,7 +110,14 @@ class TestPromotionsAPIInitiate:
             "pipeline_id": "00000000-0000-0000-0000-000000000001",
             "source_environment_id": "00000000-0000-0000-0000-000000000002",
             "target_environment_id": "00000000-0000-0000-0000-000000000003",
-            "workflow_ids": ["wf-1"],
+            "workflow_selections": [
+                {
+                    "workflow_id": "wf-1",
+                    "workflow_name": "Test Workflow",
+                    "change_type": "changed",
+                    "enabled_in_source": True
+                }
+            ],
         }
 
         with patch("app.api.endpoints.promotions.db_service") as mock_db:
@@ -135,10 +142,17 @@ class TestPromotionsAPIApproval:
             "id": "promo-1",
             "tenant_id": "tenant-1",
             "status": "pending_approval",
+            "pipeline_id": "pipeline-1",
         }
 
         with patch("app.api.endpoints.promotions.db_service") as mock_db:
             mock_db.get_promotion = AsyncMock(return_value=mock_promotion)
+            mock_db.get_pipeline = AsyncMock(return_value={
+                "id": "pipeline-1",
+                "stages": [{
+                    "approvals": {"approval_type": "1 of N"}
+                }]
+            })
             mock_db.update_promotion = AsyncMock(return_value={
                 **mock_promotion,
                 "status": "approved",
@@ -147,12 +161,17 @@ class TestPromotionsAPIApproval:
             with patch("app.api.endpoints.promotions.notification_service") as mock_notify:
                 mock_notify.emit_event = AsyncMock(return_value=None)
 
-                response = client.post(
-                    "/api/v1/promotions/approvals/promo-1/approve",
-                    headers=auth_headers
-                )
+                with patch("app.api.endpoints.promotions.promotion_service") as mock_promo_svc:
+                    mock_promo_svc._create_audit_log = AsyncMock(return_value=None)
 
-                assert response.status_code == 200
+                    # Request body must include action
+                    response = client.post(
+                        "/api/v1/promotions/approvals/promo-1/approve",
+                        json={"action": "approve"},
+                        headers=auth_headers
+                    )
+
+                    assert response.status_code == 200
 
     @pytest.mark.api
     def test_approve_promotion_not_found(self, client: TestClient, auth_headers):
@@ -162,6 +181,7 @@ class TestPromotionsAPIApproval:
 
             response = client.post(
                 "/api/v1/promotions/approvals/non-existent/approve",
+                json={"action": "approve"},
                 headers=auth_headers
             )
 
@@ -181,6 +201,7 @@ class TestPromotionsAPIApproval:
 
             response = client.post(
                 "/api/v1/promotions/approvals/promo-1/approve",
+                json={"action": "approve"},
                 headers=auth_headers
             )
 
