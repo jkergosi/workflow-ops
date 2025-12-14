@@ -42,7 +42,14 @@ import {
   TenantOverridesPage,
   EntitlementsAuditPage,
   CredentialHealthPage,
+  SupportConfigPage,
 } from '@/pages/admin';
+import {
+  SupportHomePage,
+  ReportBugPage,
+  RequestFeaturePage,
+  GetHelpPage,
+} from '@/pages/support';
 import { useEffect } from 'react';
 import { useLocation } from 'react-router-dom';
 import { canAccessRoute, mapBackendRoleToFrontendRole } from '@/lib/permissions';
@@ -178,6 +185,11 @@ function App() {
                 <Route path="/team" element={<RoleProtectedRoute><TeamPage /></RoleProtectedRoute>} />
                 <Route path="/billing" element={<RoleProtectedRoute><BillingPage /></RoleProtectedRoute>} />
                 <Route path="/profile" element={<RoleProtectedRoute><ProfilePage /></RoleProtectedRoute>} />
+                {/* Support Routes */}
+                <Route path="/support" element={<RoleProtectedRoute><SupportHomePage /></RoleProtectedRoute>} />
+                <Route path="/support/bug/new" element={<RoleProtectedRoute><ReportBugPage /></RoleProtectedRoute>} />
+                <Route path="/support/feature/new" element={<RoleProtectedRoute><RequestFeaturePage /></RoleProtectedRoute>} />
+                <Route path="/support/help/new" element={<RoleProtectedRoute><GetHelpPage /></RoleProtectedRoute>} />
                 {/* Admin Routes */}
                 <Route path="/admin/usage" element={<RoleProtectedRoute><UsagePage /></RoleProtectedRoute>} />
                 <Route path="/admin/tenants" element={<RoleProtectedRoute><TenantsPage /></RoleProtectedRoute>} />
@@ -193,6 +205,7 @@ function App() {
                 <Route path="/admin/entitlements/matrix" element={<RoleProtectedRoute><FeatureMatrixPage /></RoleProtectedRoute>} />
                 <Route path="/admin/entitlements/overrides" element={<RoleProtectedRoute><TenantOverridesPage /></RoleProtectedRoute>} />
                 <Route path="/admin/entitlements/audit" element={<RoleProtectedRoute><EntitlementsAuditPage /></RoleProtectedRoute>} />
+                <Route path="/admin/support-config" element={<RoleProtectedRoute><SupportConfigPage /></RoleProtectedRoute>} />
               </Route>
               </Routes>
             </BrowserRouter>

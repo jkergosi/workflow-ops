@@ -1196,6 +1196,31 @@ class DatabaseService:
         )
         return response.data
 
+    # ---------- Support Config ----------
+
+    async def get_support_config(self, tenant_id: str) -> Optional[Dict[str, Any]]:
+        """Get support configuration for a tenant"""
+        try:
+            response = (
+                self.client.table("support_config")
+                .select("*")
+                .eq("tenant_id", tenant_id)
+                .single()
+                .execute()
+            )
+            return response.data
+        except Exception:
+            return None
+
+    async def upsert_support_config(self, tenant_id: str, data: Dict[str, Any]) -> Dict[str, Any]:
+        """Create or update support configuration for a tenant"""
+        data["tenant_id"] = tenant_id
+        response = self.client.table("support_config").upsert(
+            data,
+            on_conflict="tenant_id"
+        ).execute()
+        return response.data[0] if response.data else data
+
 
 # Global instance
 db_service = DatabaseService()

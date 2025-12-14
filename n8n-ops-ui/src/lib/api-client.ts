@@ -1896,6 +1896,106 @@ class ApiClient {
     });
     return { data: response.data };
   }
+
+  // Support endpoints
+  async createSupportRequest(data: {
+    intent_kind: 'bug' | 'feature' | 'task';
+    bug_report?: {
+      title: string;
+      what_happened: string;
+      expected_behavior: string;
+      steps_to_reproduce?: string;
+      severity?: string;
+      frequency?: string;
+      include_diagnostics: boolean;
+      attachments?: Array<{ name: string; url: string; content_type: string }>;
+    };
+    feature_request?: {
+      title: string;
+      problem_goal: string;
+      desired_outcome: string;
+      priority?: string;
+      acceptance_criteria?: string[];
+      who_is_this_for?: string;
+    };
+    help_request?: {
+      title: string;
+      details: string;
+      include_diagnostics: boolean;
+      attachments?: Array<{ name: string; url: string; content_type: string }>;
+    };
+    diagnostics?: Record<string, any>;
+  }): Promise<{ data: { jsm_request_key: string } }> {
+    const response = await this.client.post('/support/requests', data);
+    return { data: response.data };
+  }
+
+  async getSupportUploadUrl(filename: string, contentType: string): Promise<{
+    data: { upload_url: string; public_url: string };
+  }> {
+    const response = await this.client.post('/support/upload-url', {
+      filename,
+      content_type: contentType,
+    });
+    return { data: response.data };
+  }
+
+  // Admin Support Config endpoints
+  async getSupportConfig(): Promise<{
+    data: {
+      tenant_id: string;
+      n8n_webhook_url?: string;
+      n8n_api_key?: string;
+      jsm_portal_url?: string;
+      jsm_cloud_instance?: string;
+      jsm_api_token?: string;
+      jsm_project_key?: string;
+      jsm_bug_request_type_id?: string;
+      jsm_feature_request_type_id?: string;
+      jsm_help_request_type_id?: string;
+      jsm_widget_embed_code?: string;
+      updated_at?: string;
+    };
+  }> {
+    const response = await this.client.get('/admin/support/config');
+    return { data: response.data };
+  }
+
+  async updateSupportConfig(data: {
+    n8n_webhook_url?: string;
+    n8n_api_key?: string;
+    jsm_portal_url?: string;
+    jsm_cloud_instance?: string;
+    jsm_api_token?: string;
+    jsm_project_key?: string;
+    jsm_bug_request_type_id?: string;
+    jsm_feature_request_type_id?: string;
+    jsm_help_request_type_id?: string;
+    jsm_widget_embed_code?: string;
+  }): Promise<{
+    data: {
+      tenant_id: string;
+      n8n_webhook_url?: string;
+      n8n_api_key?: string;
+      jsm_portal_url?: string;
+      jsm_cloud_instance?: string;
+      jsm_api_token?: string;
+      jsm_project_key?: string;
+      jsm_bug_request_type_id?: string;
+      jsm_feature_request_type_id?: string;
+      jsm_help_request_type_id?: string;
+      jsm_widget_embed_code?: string;
+      updated_at?: string;
+    };
+  }> {
+    const response = await this.client.put('/admin/support/config', data);
+    return { data: response.data };
+  }
+
+  async testN8nConnection(): Promise<{ data: { success: boolean; message: string } }> {
+    const response = await this.client.post('/admin/support/test-n8n');
+    return { data: response.data };
+  }
 }
 
 export const apiClient = new ApiClient();

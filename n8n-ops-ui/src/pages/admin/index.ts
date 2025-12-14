@@ -12,3 +12,4 @@ export { FeatureMatrixPage } from './FeatureMatrixPage';
 export { TenantOverridesPage } from './TenantOverridesPage';
 export { EntitlementsAuditPage } from './EntitlementsAuditPage';
 export { CredentialHealthPage } from './CredentialHealthPage';
+export { SupportConfigPage } from './SupportConfigPage';

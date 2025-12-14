@@ -1101,6 +1101,40 @@ export const handlers = [
       { id: 'mapping-1', logicalCredentialId: 'logical-1', environmentId: 'env-1', physicalCredentialId: 'physical-1', provider: 'n8n' },
     ]);
   }),
+
+  // Support endpoints
+  http.post(`${API_BASE}/support/requests`, async () => {
+    return HttpResponse.json({
+      jsm_request_key: 'JSM-12345',
+    });
+  }),
+
+  http.post(`${API_BASE}/support/upload-url`, async () => {
+    return HttpResponse.json({
+      upload_url: 'https://storage.example.com/upload?token=abc123',
+      public_url: 'https://storage.example.com/files/screenshot.png',
+    });
+  }),
+
+  // Admin support config
+  http.get(`${API_BASE}/admin/support/config`, () => {
+    return HttpResponse.json({
+      n8n_webhook_url: 'https://n8n.example.com/webhook/support',
+      jsm_portal_url: 'https://support.example.atlassian.net/servicedesk/customer/portal/1',
+      bug_request_type_id: '10001',
+      feature_request_type_id: '10002',
+      task_request_type_id: '10003',
+    });
+  }),
+
+  http.put(`${API_BASE}/admin/support/config`, async ({ request }) => {
+    const body = await request.json();
+    return HttpResponse.json(body);
+  }),
+
+  http.post(`${API_BASE}/admin/support/test-n8n`, () => {
+    return HttpResponse.json({ success: true, message: 'Connection successful' });
+  }),
 ];
 
 // Error handlers for testing error states

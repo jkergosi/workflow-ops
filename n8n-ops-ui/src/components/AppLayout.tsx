@@ -121,6 +121,12 @@ const navigationSections: NavSection[] = [
     ],
   },
   {
+    title: 'Support',
+    items: [
+      { id: 'support', name: 'Support', href: '/support', icon: HelpCircle },
+    ],
+  },
+  {
     title: 'Admin',
     items: [
       { id: 'tenants', name: 'Tenants', href: '/admin/tenants', icon: Building2, requiredPlan: 'enterprise' },
@@ -134,6 +140,7 @@ const navigationSections: NavSection[] = [
       { id: 'auditLogs', name: 'Audit Logs', href: '/admin/audit-logs', icon: FileText, requiredPlan: 'pro', feature: 'audit_logs_enabled' },
       { id: 'security', name: 'Security', href: '/admin/security', icon: Shield, requiredPlan: 'enterprise', feature: 'sso_saml' },
       { id: 'systemSettings', name: 'System Settings', href: '/admin/settings', icon: Settings },
+      { id: 'supportConfig', name: 'Support Config', href: '/admin/support-config', icon: HelpCircle },
     ],
   },
 ];
