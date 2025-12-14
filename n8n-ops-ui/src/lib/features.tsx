@@ -450,17 +450,21 @@ export function FeaturesProvider({ children }: FeaturesProviderProps) {
 
         // Merge with entitlements from database if available
         if (entitlements?.features) {
+          // Get environment_limits from entitlements and sync to legacy max_environments
+          const envLimits = entitlements.features.environment_limits as number ?? 2;
           setFeatures({
             ...baseFeatures,
             // Map entitlements features to plan features
             snapshots_enabled: entitlements.features.snapshots_enabled as boolean ?? true,
             workflow_ci_cd: entitlements.features.workflow_ci_cd as boolean ?? false,
             workflow_limits: entitlements.features.workflow_limits as number ?? 10,
+            // Sync environment_limits to legacy max_environments for backward compatibility
+            max_environments: envLimits,
             // Map all Phase 2 features from entitlements
             environment_basic: entitlements.features.environment_basic as boolean ?? true,
             environment_health: entitlements.features.environment_health as boolean ?? false,
             environment_diff: entitlements.features.environment_diff as boolean ?? false,
-            environment_limits: entitlements.features.environment_limits as number ?? 2,
+            environment_limits: envLimits,
             workflow_read: entitlements.features.workflow_read as boolean ?? true,
             workflow_push: entitlements.features.workflow_push as boolean ?? true,
             workflow_dirty_check: entitlements.features.workflow_dirty_check as boolean ?? false,
