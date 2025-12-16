@@ -127,12 +127,12 @@ export function DeploymentsPage() {
         <div>
           <h1 className="text-3xl font-bold">Deployments</h1>
           <p className="text-muted-foreground">
-            Track workflow deployments and promote across environments
+            Track workflow deployments across environments
           </p>
         </div>
         <Button onClick={handlePromoteWorkflows}>
           <Rocket className="h-4 w-4 mr-2" />
-          Promote Workflows
+          New Deployment
         </Button>
       </div>
 
@@ -198,7 +198,7 @@ export function DeploymentsPage() {
               <Rocket className="h-12 w-12 mx-auto mb-4 opacity-20" />
               <p>No deployments yet</p>
               <Button variant="link" onClick={handlePromoteWorkflows} className="mt-2">
-                Create your first promotion
+                Create your first deployment
               </Button>
             </div>
           ) : (

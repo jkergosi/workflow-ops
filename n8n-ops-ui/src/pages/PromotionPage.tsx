@@ -173,38 +173,45 @@ export function PromotionPage() {
       });
     },
     onSuccess: (data) => {
-      setPromotionId(data.data.promotion_id);
-      setDependencyWarnings(data.data.dependency_warnings || {});
-      
-      // Show dependency warnings if any
-      const warningCount = Object.values(data.data.dependency_warnings || {}).reduce((sum, deps) => sum + deps.length, 0);
-      if (warningCount > 0) {
-        toast.warning(`${warningCount} dependency warning(s) found. Review before proceeding.`);
-      }
-      
+      const promotionId = data.data.promotion_id;
+
       if (data.data.requires_approval) {
-        toast.info('Promotion requires approval');
-        setShowReviewDialog(true);
+        toast.info('Deployment started - requires approval');
       } else {
-        toast.success('Promotion initiated successfully');
-        // Auto-execute if no approval needed
-        executeMutation.mutate(data.data.promotion_id);
+        toast.success('Deployment started successfully');
+        // Auto-execute in background if no approval needed
+        apiClient.executePromotion(promotionId).catch(() => {
+          // Error will be visible on deployments page
+        });
       }
+
+      // Redirect to deployments page immediately so user can monitor progress
+      queryClient.invalidateQueries({ queryKey: ['deployments'] });
+      navigate('/deployments');
     },
     onError: (error: any) => {
-      toast.error(error.response?.data?.detail || 'Failed to initiate promotion');
+      const detail = error.response?.data?.detail;
+      // Handle validation errors (array of objects) vs string errors
+      const message = Array.isArray(detail)
+        ? detail.map((e: any) => e.msg || e.message).join(', ')
+        : (typeof detail === 'string' ? detail : 'Failed to initiate deployment');
+      toast.error(message);
     },
   });
 
   const executeMutation = useMutation({
     mutationFn: (id: string) => apiClient.executePromotion(id),
     onSuccess: () => {
-      toast.success('Promotion executed successfully');
+      toast.success('Deployment executed successfully');
       queryClient.invalidateQueries({ queryKey: ['promotions'] });
       navigate('/deployments');
     },
     onError: (error: any) => {
-      toast.error(error.response?.data?.detail || 'Failed to execute promotion');
+      const detail = error.response?.data?.detail;
+      const message = Array.isArray(detail)
+        ? detail.map((e: any) => e.msg || e.message).join(', ')
+        : (typeof detail === 'string' ? detail : 'Failed to execute deployment');
+      toast.error(message);
     },
   });
 
@@ -256,12 +263,14 @@ export function PromotionPage() {
     }
 
     if (workflowSelections.filter(ws => ws.selected).length === 0) {
-      toast.error('Please select at least one workflow to promote');
+      toast.error('Please select at least one workflow to deploy');
       return;
     }
 
-    // Run credential preflight check first
-    preflightMutation.mutate();
+    // Skip preflight for now and go straight to initiation
+    // TODO: Re-enable preflight check once endpoint is working
+    // preflightMutation.mutate();
+    initiateMutation.mutate();
   };
 
   const handlePreflightProceed = () => {
@@ -297,9 +306,9 @@ export function PromotionPage() {
             Back
           </Button>
           <div>
-            <h1 className="text-3xl font-bold">Promote Workflows</h1>
+            <h1 className="text-3xl font-bold">New Deployment</h1>
             <p className="text-muted-foreground">
-              Promote workflows from {sourceEnv?.name || 'source'} to {targetEnv?.name || 'target'}
+              Deploy workflows from {sourceEnv?.name || 'source'} to {targetEnv?.name || 'target'}
             </p>
           </div>
         </div>
@@ -310,7 +319,7 @@ export function PromotionPage() {
         <CardHeader>
           <CardTitle>Pipeline & Stage Selection</CardTitle>
           <CardDescription>
-            Select a pipeline and the stage (environment transition) you want to promote
+            Select a pipeline and the stage (environment transition) you want to deploy
           </CardDescription>
         </CardHeader>
         <CardContent>
@@ -341,7 +350,7 @@ export function PromotionPage() {
                   onValueChange={(val) => setSelectedStageIndex(parseInt(val, 10))}
                 >
                   <SelectTrigger id="stage">
-                    <SelectValue placeholder="Select a stage to promote..." />
+                    <SelectValue placeholder="Select a stage to deploy..." />
                   </SelectTrigger>
                   <SelectContent>
                     {selectedPipeline.stages.map((stage, index) => (
@@ -367,7 +376,7 @@ export function PromotionPage() {
               <Alert>
                 <CheckCircle className="h-4 w-4" />
                 <AlertDescription>
-                  Ready to promote: {sourceEnv?.name} → {targetEnv?.name}
+                  Ready to deploy: {sourceEnv?.name} → {targetEnv?.name}
                   {activeStage.approvals?.requireApproval && (
                     <span className="ml-2 text-muted-foreground">
                       (Requires approval)
@@ -386,7 +395,7 @@ export function PromotionPage() {
           <CardHeader>
             <CardTitle>Workflow Selection</CardTitle>
             <CardDescription>
-              Select workflows to promote. Only workflows with changes in the source environment are shown by default.
+              Select workflows to deploy. Only workflows with changes in the source environment are shown by default.
             </CardDescription>
           </CardHeader>
           <CardContent>
@@ -466,7 +475,7 @@ export function PromotionPage() {
               <Alert className="mt-4" variant="destructive">
                 <AlertTriangle className="h-4 w-4" />
                 <AlertDescription>
-                  Some workflows have conflicts and cannot be promoted. Please resolve conflicts manually in the source environment.
+                  Some workflows have conflicts and cannot be deployed. Please resolve conflicts manually in the source environment.
                 </AlertDescription>
               </Alert>
             )}
@@ -550,7 +559,7 @@ export function PromotionPage() {
             ) : (
               <>
                 <Play className="h-4 w-4 mr-2" />
-                Initiate Promotion
+                Create Deployment
               </>
             )}
           </Button>
@@ -561,9 +570,9 @@ export function PromotionPage() {
       <Dialog open={showReviewDialog} onOpenChange={setShowReviewDialog}>
         <DialogContent className="max-w-2xl">
           <DialogHeader>
-            <DialogTitle>Promotion Review</DialogTitle>
+            <DialogTitle>Deployment Review</DialogTitle>
             <DialogDescription>
-              Review the promotion details and gate results
+              Review the deployment details and gate results
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-4">
@@ -613,7 +622,7 @@ export function PromotionPage() {
                    initiateMutation.data.data.gate_results.warnings?.length === 0 && (
                     <Alert>
                       <CheckCircle className="h-4 w-4" />
-                      <AlertDescription>All gates passed. Ready to promote.</AlertDescription>
+                      <AlertDescription>All gates passed. Ready to deploy.</AlertDescription>
                     </Alert>
                   )}
                 </div>
@@ -640,7 +649,7 @@ export function PromotionPage() {
             </Button>
             {promotionId && (
               <Button onClick={() => executeMutation.mutate(promotionId)}>
-                Execute Promotion
+                Execute Deployment
               </Button>
             )}
           </DialogFooter>

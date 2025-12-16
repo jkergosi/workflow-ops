@@ -1020,7 +1020,7 @@ export interface PromotionInitiateRequest {
   pipelineId: string;
   sourceEnvironmentId: string;
   targetEnvironmentId: string;
-  workflowIds?: string[];
+  workflowSelections: WorkflowSelection[];
   notes?: string;
 }
 

@@ -734,8 +734,23 @@ class ApiClient {
   }
 
   // Promotion endpoints
-  async initiatePromotion(request: PromotionInitiateRequest): Promise<{ data: PromotionInitiateResponse }> {
-    const response = await this.client.post<PromotionInitiateResponse>('/promotions/initiate', request);
+  async initiatePromotion(request: PromotionInitiateRequest): Promise<{ data: any }> {
+    // Transform camelCase to snake_case for backend
+    const payload = {
+      pipeline_id: request.pipelineId,
+      source_environment_id: request.sourceEnvironmentId,
+      target_environment_id: request.targetEnvironmentId,
+      workflow_selections: request.workflowSelections?.map(ws => ({
+        workflow_id: ws.workflowId,
+        workflow_name: ws.workflowName,
+        change_type: ws.changeType,
+        enabled_in_source: ws.enabledInSource,
+        enabled_in_target: ws.enabledInTarget,
+        selected: ws.selected,
+        requires_overwrite: ws.requiresOverwrite,
+      })) || [],
+    };
+    const response = await this.client.post('/promotions/initiate', payload);
     return { data: response.data };
   }
 

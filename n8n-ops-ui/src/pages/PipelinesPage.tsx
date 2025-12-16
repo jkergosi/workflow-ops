@@ -133,9 +133,9 @@ export function PipelinesPage() {
 
       <Card>
         <CardHeader>
-          <CardTitle>Promotion Pipelines</CardTitle>
+          <CardTitle>Deployment Pipelines</CardTitle>
           <CardDescription>
-            Manage pipelines that define how workflows are promoted between environments
+            Manage pipelines that define how workflows are deployed between environments
           </CardDescription>
         </CardHeader>
         <CardContent>
