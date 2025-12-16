@@ -925,6 +925,22 @@ class ApiClient {
     return { data: response.data };
   }
 
+  async createSnapshot(request: {
+    environment_id: string;
+    reason?: string;
+    notes?: string;
+  }): Promise<{ data: Snapshot }> {
+    const response = await this.client.post('/snapshots/', request);
+    return { data: this._transformSnapshot(response.data) };
+  }
+
+  async compareSnapshots(snapshotId1: string, snapshotId2: string): Promise<{ data: SnapshotComparison }> {
+    const response = await this.client.get(`/snapshots/compare`, {
+      params: { snapshot1: snapshotId1, snapshot2: snapshotId2 }
+    });
+    return { data: response.data };
+  }
+
   // Helper method to transform snapshot data
   private _transformSnapshot(s: any): Snapshot {
     return {

@@ -77,7 +77,32 @@ export interface Snapshot {
   metadataJson?: {
     reason?: string;
     workflowsCount?: number;
+    notes?: string;
     [key: string]: any;
+  };
+}
+
+// Snapshot comparison types
+export type WorkflowDiffStatus = 'added' | 'removed' | 'modified' | 'unchanged';
+
+export interface WorkflowDiff {
+  workflowId: string;
+  workflowName: string;
+  status: WorkflowDiffStatus;
+  snapshot1Version?: any;
+  snapshot2Version?: any;
+  changes?: string[];
+}
+
+export interface SnapshotComparison {
+  snapshot1: Snapshot;
+  snapshot2: Snapshot;
+  workflows: WorkflowDiff[];
+  summary: {
+    added: number;
+    removed: number;
+    modified: number;
+    unchanged: number;
   };
 }
 

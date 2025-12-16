@@ -6,6 +6,10 @@ import { useSearchParams, Link } from 'react-router-dom';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
+import { Textarea } from '@/components/ui/textarea';
+import { Checkbox } from '@/components/ui/checkbox';
 import {
   Table,
   TableBody,
@@ -35,14 +39,15 @@ import {
   Dialog,
   DialogContent,
   DialogDescription,
+  DialogFooter,
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog';
-import { Camera, History, RotateCcw, Loader2, Eye } from 'lucide-react';
+import { Camera, History, RotateCcw, Loader2, Eye, Plus, GitCompare, ArrowRight, ArrowDown, Check, X, Minus } from 'lucide-react';
 import { toast } from 'sonner';
 import { apiClient } from '@/lib/api-client';
 import { useAppStore } from '@/store/use-app-store';
-import type { Snapshot } from '@/types';
+import type { Snapshot, SnapshotComparison } from '@/types';
 
 export function SnapshotsPage() {
   const queryClient = useQueryClient();
@@ -51,6 +56,17 @@ export function SnapshotsPage() {
   const [selectedSnapshot, setSelectedSnapshot] = useState<Snapshot | null>(null);
   const [restoreSnapshot, setRestoreSnapshot] = useState<Snapshot | null>(null);
   const [detailDialogOpen, setDetailDialogOpen] = useState(false);
+  
+  // Create snapshot state
+  const [createDialogOpen, setCreateDialogOpen] = useState(false);
+  const [createReason, setCreateReason] = useState('');
+  const [createNotes, setCreateNotes] = useState('');
+  
+  // Comparison state
+  const [compareMode, setCompareMode] = useState(false);
+  const [selectedForCompare, setSelectedForCompare] = useState<string[]>([]);
+  const [comparisonResult, setComparisonResult] = useState<SnapshotComparison | null>(null);
+  const [compareDialogOpen, setCompareDialogOpen] = useState(false);
 
   // Get snapshot ID from URL if present
   const snapshotIdFromUrl = searchParams.get('snapshot');
@@ -102,6 +118,67 @@ export function SnapshotsPage() {
       toast.error(error.response?.data?.detail || 'Failed to restore snapshot');
     },
   });
+
+  // Create snapshot mutation
+  const createMutation = useMutation({
+    mutationFn: (data: { environment_id: string; reason?: string; notes?: string }) =>
+      apiClient.createSnapshot(data),
+    onSuccess: (response) => {
+      toast.success('Snapshot created successfully');
+      queryClient.invalidateQueries({ queryKey: ['snapshots'] });
+      setCreateDialogOpen(false);
+      setCreateReason('');
+      setCreateNotes('');
+    },
+    onError: (error: any) => {
+      toast.error(error.response?.data?.detail || 'Failed to create snapshot');
+    },
+  });
+
+  // Compare snapshots mutation
+  const compareMutation = useMutation({
+    mutationFn: ({ id1, id2 }: { id1: string; id2: string }) =>
+      apiClient.compareSnapshots(id1, id2),
+    onSuccess: (response) => {
+      setComparisonResult(response.data);
+      setCompareDialogOpen(true);
+    },
+    onError: (error: any) => {
+      toast.error(error.response?.data?.detail || 'Failed to compare snapshots');
+    },
+  });
+
+  const handleCreateSnapshot = () => {
+    if (!currentEnvironmentId) {
+      toast.error('Please select an environment first');
+      return;
+    }
+    createMutation.mutate({
+      environment_id: currentEnvironmentId,
+      reason: createReason || undefined,
+      notes: createNotes || undefined,
+    });
+  };
+
+  const handleToggleCompareSelection = (snapshotId: string) => {
+    setSelectedForCompare((prev) => {
+      if (prev.includes(snapshotId)) {
+        return prev.filter((id) => id !== snapshotId);
+      }
+      if (prev.length >= 2) {
+        return [prev[1], snapshotId];
+      }
+      return [...prev, snapshotId];
+    });
+  };
+
+  const handleCompare = () => {
+    if (selectedForCompare.length !== 2) {
+      toast.error('Please select exactly 2 snapshots to compare');
+      return;
+    }
+    compareMutation.mutate({ id1: selectedForCompare[0], id2: selectedForCompare[1] });
+  };
 
   const handleViewDetails = (snapshot: Snapshot) => {
     setSelectedSnapshot(snapshot);
@@ -161,6 +238,53 @@ export function SnapshotsPage() {
           <p className="text-muted-foreground">
             Version control and rollback for your workflows
           </p>
+        </div>
+        <div className="flex items-center gap-2">
+          {compareMode ? (
+            <>
+              <Badge variant="secondary" className="mr-2">
+                {selectedForCompare.length}/2 selected
+              </Badge>
+              <Button
+                variant="outline"
+                onClick={() => {
+                  setCompareMode(false);
+                  setSelectedForCompare([]);
+                }}
+              >
+                Cancel
+              </Button>
+              <Button
+                onClick={handleCompare}
+                disabled={selectedForCompare.length !== 2 || compareMutation.isPending}
+              >
+                {compareMutation.isPending ? (
+                  <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                ) : (
+                  <GitCompare className="h-4 w-4 mr-2" />
+                )}
+                Compare
+              </Button>
+            </>
+          ) : (
+            <>
+              <Button
+                variant="outline"
+                onClick={() => setCompareMode(true)}
+                disabled={snapshotsList.length < 2}
+              >
+                <GitCompare className="h-4 w-4 mr-2" />
+                Compare
+              </Button>
+              <Button
+                onClick={() => setCreateDialogOpen(true)}
+                disabled={!currentEnvironmentId}
+              >
+                <Plus className="h-4 w-4 mr-2" />
+                Create Snapshot
+              </Button>
+            </>
+          )}
         </div>
       </div>
 
@@ -224,6 +348,7 @@ export function SnapshotsPage() {
             <Table>
               <TableHeader>
                 <TableRow>
+                  {compareMode && <TableHead className="w-[50px]">Select</TableHead>}
                   <TableHead>Created At</TableHead>
                   <TableHead>Type</TableHead>
                   <TableHead>Triggered By</TableHead>
@@ -234,7 +359,18 @@ export function SnapshotsPage() {
               </TableHeader>
               <TableBody>
                 {snapshotsList.map((snapshot) => (
-                  <TableRow key={snapshot.id}>
+                  <TableRow 
+                    key={snapshot.id}
+                    className={selectedForCompare.includes(snapshot.id) ? 'bg-primary/5' : ''}
+                  >
+                    {compareMode && (
+                      <TableCell>
+                        <Checkbox
+                          checked={selectedForCompare.includes(snapshot.id)}
+                          onCheckedChange={() => handleToggleCompareSelection(snapshot.id)}
+                        />
+                      </TableCell>
+                    )}
                     <TableCell className="text-muted-foreground">
                       {new Date(snapshot.createdAt).toLocaleString()}
                     </TableCell>
@@ -391,6 +527,160 @@ export function SnapshotsPage() {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+
+      {/* Create Snapshot Dialog */}
+      <Dialog open={createDialogOpen} onOpenChange={setCreateDialogOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Create Snapshot</DialogTitle>
+            <DialogDescription>
+              Create a manual backup of all workflows in {currentEnvironmentId ? getEnvironmentName(currentEnvironmentId) : 'the selected environment'}.
+              This will export all workflows to GitHub.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4 py-4">
+            <div className="space-y-2">
+              <Label htmlFor="reason">Reason (optional)</Label>
+              <Input
+                id="reason"
+                placeholder="e.g., Before major refactoring"
+                value={createReason}
+                onChange={(e) => setCreateReason(e.target.value)}
+              />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="notes">Notes (optional)</Label>
+              <Textarea
+                id="notes"
+                placeholder="Additional notes about this snapshot..."
+                value={createNotes}
+                onChange={(e) => setCreateNotes(e.target.value)}
+                rows={3}
+              />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setCreateDialogOpen(false)}>
+              Cancel
+            </Button>
+            <Button onClick={handleCreateSnapshot} disabled={createMutation.isPending}>
+              {createMutation.isPending ? (
+                <>
+                  <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                  Creating...
+                </>
+              ) : (
+                <>
+                  <Camera className="h-4 w-4 mr-2" />
+                  Create Snapshot
+                </>
+              )}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Snapshot Comparison Dialog */}
+      <Dialog open={compareDialogOpen} onOpenChange={setCompareDialogOpen}>
+        <DialogContent className="max-w-4xl max-h-[80vh] overflow-auto">
+          <DialogHeader>
+            <DialogTitle>Snapshot Comparison</DialogTitle>
+            <DialogDescription>
+              Comparing changes between two snapshots
+            </DialogDescription>
+          </DialogHeader>
+          {comparisonResult && (
+            <div className="space-y-6">
+              {/* Snapshot Info */}
+              <div className="grid grid-cols-2 gap-4">
+                <div className="p-3 bg-muted rounded-md">
+                  <p className="text-xs text-muted-foreground mb-1">Older Snapshot</p>
+                  <p className="font-medium">{new Date(comparisonResult.snapshot1.createdAt).toLocaleString()}</p>
+                  <Badge variant="outline" className="mt-1">
+                    {formatSnapshotType(comparisonResult.snapshot1.type)}
+                  </Badge>
+                </div>
+                <div className="p-3 bg-muted rounded-md">
+                  <p className="text-xs text-muted-foreground mb-1">Newer Snapshot</p>
+                  <p className="font-medium">{new Date(comparisonResult.snapshot2.createdAt).toLocaleString()}</p>
+                  <Badge variant="outline" className="mt-1">
+                    {formatSnapshotType(comparisonResult.snapshot2.type)}
+                  </Badge>
+                </div>
+              </div>
+
+              {/* Summary Stats */}
+              <div className="flex items-center gap-4 p-3 bg-muted/50 rounded-md">
+                <div className="flex items-center gap-1">
+                  <Plus className="h-4 w-4 text-green-500" />
+                  <span className="text-sm">{comparisonResult.summary.added} added</span>
+                </div>
+                <div className="flex items-center gap-1">
+                  <Minus className="h-4 w-4 text-red-500" />
+                  <span className="text-sm">{comparisonResult.summary.removed} removed</span>
+                </div>
+                <div className="flex items-center gap-1">
+                  <ArrowRight className="h-4 w-4 text-yellow-500" />
+                  <span className="text-sm">{comparisonResult.summary.modified} modified</span>
+                </div>
+                <div className="flex items-center gap-1">
+                  <Check className="h-4 w-4 text-muted-foreground" />
+                  <span className="text-sm">{comparisonResult.summary.unchanged} unchanged</span>
+                </div>
+              </div>
+
+              {/* Workflow Changes */}
+              <div className="space-y-2">
+                <h4 className="font-medium">Workflow Changes</h4>
+                {comparisonResult.workflows.length === 0 ? (
+                  <p className="text-muted-foreground text-sm">No differences found between snapshots.</p>
+                ) : (
+                  <div className="space-y-2">
+                    {comparisonResult.workflows.map((wf) => (
+                      <div
+                        key={wf.workflowId}
+                        className={`p-3 rounded-md border ${
+                          wf.status === 'added'
+                            ? 'border-green-200 bg-green-50 dark:border-green-800 dark:bg-green-950'
+                            : wf.status === 'removed'
+                            ? 'border-red-200 bg-red-50 dark:border-red-800 dark:bg-red-950'
+                            : wf.status === 'modified'
+                            ? 'border-yellow-200 bg-yellow-50 dark:border-yellow-800 dark:bg-yellow-950'
+                            : 'border-border'
+                        }`}
+                      >
+                        <div className="flex items-center justify-between">
+                          <span className="font-medium">{wf.workflowName}</span>
+                          <Badge
+                            variant={
+                              wf.status === 'added'
+                                ? 'default'
+                                : wf.status === 'removed'
+                                ? 'destructive'
+                                : wf.status === 'modified'
+                                ? 'secondary'
+                                : 'outline'
+                            }
+                          >
+                            {wf.status}
+                          </Badge>
+                        </div>
+                        {wf.changes && wf.changes.length > 0 && (
+                          <ul className="mt-2 text-sm text-muted-foreground list-disc list-inside">
+                            {wf.changes.map((change, i) => (
+                              <li key={i}>{change}</li>
+                            ))}
+                          </ul>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
