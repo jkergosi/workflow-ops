@@ -607,14 +607,14 @@ class DatabaseService:
 
     # Pipeline operations
     async def get_pipelines(self, tenant_id: str) -> List[Dict[str, Any]]:
-        """Get all pipelines for a tenant"""
-        response = self.client.table("pipelines").select("*").eq("tenant_id", tenant_id).order("created_at", desc=True).execute()
+        """Get all active pipelines for a tenant (excludes soft-deleted)"""
+        response = self.client.table("pipelines").select("*").eq("tenant_id", tenant_id).eq("is_active", True).order("created_at", desc=True).execute()
         return response.data
 
     async def get_pipeline(self, pipeline_id: str, tenant_id: str) -> Optional[Dict[str, Any]]:
-        """Get a specific pipeline"""
-        response = self.client.table("pipelines").select("*").eq("id", pipeline_id).eq("tenant_id", tenant_id).single().execute()
-        return response.data
+        """Get a specific active pipeline (excludes soft-deleted)"""
+        response = self.client.table("pipelines").select("*").eq("id", pipeline_id).eq("tenant_id", tenant_id).eq("is_active", True).execute()
+        return response.data[0] if response.data else None
 
     async def create_pipeline(self, pipeline_data: Dict[str, Any]) -> Dict[str, Any]:
         """Create a new pipeline"""

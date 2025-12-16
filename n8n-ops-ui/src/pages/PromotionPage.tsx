@@ -1,7 +1,7 @@
 // @ts-nocheck
 // TODO: Fix TypeScript errors in this file
 import { useState, useMemo, useEffect } from 'react';
-import { useSearchParams, useNavigate } from 'react-router-dom';
+import { useNavigate } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -41,13 +41,10 @@ import { CredentialPreflightDialog } from '@/components/promotion/CredentialPref
 
 export function PromotionPage() {
   const navigate = useNavigate();
-  const [searchParams] = useSearchParams();
   const queryClient = useQueryClient();
-  
-  const sourceEnvId = searchParams.get('source');
-  const targetEnvId = searchParams.get('target');
 
   const [selectedPipelineId, setSelectedPipelineId] = useState<string>('');
+  const [selectedStageIndex, setSelectedStageIndex] = useState<number>(-1);
   const [workflowSelections, setWorkflowSelections] = useState<WorkflowSelection[]>([]);
   const [showReviewDialog, setShowReviewDialog] = useState(false);
   const [promotionId, setPromotionId] = useState<string | null>(null);
@@ -72,6 +69,16 @@ export function PromotionPage() {
     return pipelines?.data?.find(p => p.id === selectedPipelineId);
   }, [pipelines, selectedPipelineId]);
 
+  // Get the active stage from the selected pipeline and stage index
+  const activeStage = useMemo(() => {
+    if (!selectedPipeline || selectedStageIndex < 0) return null;
+    return selectedPipeline.stages[selectedStageIndex] || null;
+  }, [selectedPipeline, selectedStageIndex]);
+
+  // Derive source and target environment IDs from the selected stage
+  const sourceEnvId = activeStage?.sourceEnvironmentId || null;
+  const targetEnvId = activeStage?.targetEnvironmentId || null;
+
   const sourceEnv = useMemo(() => {
     return environments?.data?.find(e => e.id === sourceEnvId);
   }, [environments, sourceEnvId]);
@@ -80,16 +87,78 @@ export function PromotionPage() {
     return environments?.data?.find(e => e.id === targetEnvId);
   }, [environments, targetEnvId]);
 
-  const activeStage = useMemo(() => {
-    if (!selectedPipeline || !sourceEnvId || !targetEnvId) return null;
-    return selectedPipeline.stages.find(
-      s => s.sourceEnvironmentId === sourceEnvId && s.targetEnvironmentId === targetEnvId
-    );
-  }, [selectedPipeline, sourceEnvId, targetEnvId]);
+  // Reset stage selection when pipeline changes
+  useEffect(() => {
+    setSelectedStageIndex(-1);
+    setWorkflowSelections([]);
+  }, [selectedPipelineId]);
 
-  // Note: Workflow comparison would be done server-side during initiation
-  // For now, using mock data - in production, this would be fetched from the backend
-  // after initiating promotion or via a separate endpoint
+  // Helper to get environment name by ID
+  const getEnvName = (envId: string) => {
+    return environments?.data?.find(e => e.id === envId)?.name || 'Unknown';
+  };
+
+  // Load workflows from source environment when stage is selected
+  useEffect(() => {
+    const loadWorkflows = async () => {
+      if (!sourceEnvId || !targetEnvId || !sourceEnv) {
+        setWorkflowSelections([]);
+        return;
+      }
+
+      setIsLoadingWorkflows(true);
+      try {
+        // Fetch workflows from source environment
+        const sourceWorkflows = await apiClient.getWorkflows(sourceEnvId);
+
+        // Fetch workflows from target environment for comparison
+        let targetWorkflows: any[] = [];
+        try {
+          const targetResponse = await apiClient.getWorkflows(targetEnvId);
+          targetWorkflows = targetResponse.data || [];
+        } catch {
+          // Target might not have workflows yet, that's ok
+        }
+
+        // Create a map of target workflows by name for comparison
+        const targetWorkflowMap = new Map(
+          targetWorkflows.map(w => [w.name, w])
+        );
+
+        // Transform to WorkflowSelection format
+        const selections: WorkflowSelection[] = (sourceWorkflows.data || []).map(workflow => {
+          const targetWorkflow = targetWorkflowMap.get(workflow.name);
+          let changeType: WorkflowChangeType = 'new';
+
+          if (targetWorkflow) {
+            // Workflow exists in target - check if it's changed
+            // For now, simple check - in production you'd compare hashes/content
+            changeType = 'changed';
+          }
+
+          return {
+            workflowId: workflow.id,
+            workflowName: workflow.name,
+            changeType,
+            enabledInSource: workflow.active || false,
+            enabledInTarget: targetWorkflow?.active,
+            selected: changeType !== 'conflict',
+            requiresOverwrite: !!targetWorkflow,
+          };
+        });
+
+        setWorkflowSelections(selections);
+      } catch (error) {
+        console.error('Failed to load workflows:', error);
+        toast.error('Failed to load workflows from source environment');
+        setWorkflowSelections([]);
+      } finally {
+        setIsLoadingWorkflows(false);
+      }
+    };
+
+    loadWorkflows();
+  }, [sourceEnvId, targetEnvId, sourceEnv]);
 
   const initiateMutation = useMutation({
     mutationFn: () => {
@@ -207,9 +276,9 @@ export function PromotionPage() {
 
   const getChangeTypeBadge = (changeType: WorkflowChangeType) => {
     const variants: Record<WorkflowChangeType, { variant: 'default' | 'secondary' | 'destructive' | 'outline'; label: string }> = {
-      new: { variant: 'default', label: 'New in Dev' },
-      changed: { variant: 'default', label: 'Changed in Dev' },
-      staging_hotfix: { variant: 'secondary', label: 'Staging Hotfix' },
+      new: { variant: 'default', label: 'New to Target' },
+      changed: { variant: 'secondary', label: 'Will Update' },
+      staging_hotfix: { variant: 'destructive', label: 'Target Hotfix' },
       conflict: { variant: 'destructive', label: 'Conflict' },
       unchanged: { variant: 'outline', label: 'Unchanged' },
     };
@@ -239,9 +308,9 @@ export function PromotionPage() {
       {/* Pipeline Selection */}
       <Card>
         <CardHeader>
-          <CardTitle>Pipeline Selection</CardTitle>
+          <CardTitle>Pipeline & Stage Selection</CardTitle>
           <CardDescription>
-            Select a pipeline that defines the promotion rules for this environment transition
+            Select a pipeline and the stage (environment transition) you want to promote
           </CardDescription>
         </CardHeader>
         <CardContent>
@@ -264,26 +333,46 @@ export function PromotionPage() {
               </Select>
             </div>
 
-            {activeStage && (
-              <Alert>
+            {selectedPipeline && selectedPipeline.stages.length > 0 && (
+              <div className="space-y-2">
+                <Label htmlFor="stage">Promotion Stage</Label>
+                <Select
+                  value={selectedStageIndex >= 0 ? String(selectedStageIndex) : ''}
+                  onValueChange={(val) => setSelectedStageIndex(parseInt(val, 10))}
+                >
+                  <SelectTrigger id="stage">
+                    <SelectValue placeholder="Select a stage to promote..." />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {selectedPipeline.stages.map((stage, index) => (
+                      <SelectItem key={index} value={String(index)}>
+                        {getEnvName(stage.sourceEnvironmentId)} → {getEnvName(stage.targetEnvironmentId)}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+            )}
+
+            {selectedPipeline && selectedPipeline.stages.length === 0 && (
+              <Alert variant="destructive">
                 <AlertTriangle className="h-4 w-4" />
                 <AlertDescription>
-                  Active stage: {sourceEnv?.name} → {targetEnv?.name}
-                  {activeStage.approvals.requireApproval && (
-                    <span className="ml-2 text-muted-foreground">
-                      (Requires approval)
-                    </span>
-                  )}
+                  This pipeline has no stages configured. Please edit the pipeline to add stages.
                 </AlertDescription>
               </Alert>
             )}
 
-            {!activeStage && selectedPipelineId && (
-              <Alert variant="destructive">
-                <AlertTriangle className="h-4 w-4" />
+            {activeStage && (
+              <Alert>
+                <CheckCircle className="h-4 w-4" />
                 <AlertDescription>
-                  No active stage found for {sourceEnv?.name} → {targetEnv?.name} in this pipeline.
-                  Please configure a pipeline with this environment transition.
+                  Ready to promote: {sourceEnv?.name} → {targetEnv?.name}
+                  {activeStage.approvals?.requireApproval && (
+                    <span className="ml-2 text-muted-foreground">
+                      (Requires approval)
+                    </span>
+                  )}
                 </AlertDescription>
               </Alert>
             )}
@@ -344,7 +433,7 @@ export function PromotionPage() {
                         onCheckedChange={(checked) =>
                           handleWorkflowToggle(workflow.workflowId, checked === true)
                         }
-                        disabled={workflow.changeType === 'conflict' || (workflow.changeType === 'staging_hotfix' && !activeStage.policyFlags.allowOverwritingHotfixes)}
+                        disabled={workflow.changeType === 'conflict' || (workflow.changeType === 'staging_hotfix' && !activeStage?.policyFlags?.allowOverwritingHotfixes)}
                       />
                     </TableCell>
                     <TableCell className="font-medium">{workflow.workflowName}</TableCell>
@@ -382,7 +471,7 @@ export function PromotionPage() {
               </Alert>
             )}
 
-            {workflowSelections.some(ws => ws.changeType === 'staging_hotfix' && !activeStage.policyFlags.allowOverwritingHotfixes) && (
+            {workflowSelections.some(ws => ws.changeType === 'staging_hotfix' && !activeStage?.policyFlags?.allowOverwritingHotfixes) && (
               <Alert className="mt-4">
                 <AlertTriangle className="h-4 w-4" />
                 <AlertDescription>

@@ -567,14 +567,59 @@ class ApiClient {
   }
 
   // Pipeline endpoints
+  private transformPipelineResponse(p: any): Pipeline {
+    return {
+      id: p.id,
+      tenantId: p.tenant_id,
+      name: p.name,
+      description: p.description,
+      isActive: p.is_active,
+      environmentIds: p.environment_ids || [],
+      stages: (p.stages || []).map((s: any) => ({
+        sourceEnvironmentId: s.source_environment_id,
+        targetEnvironmentId: s.target_environment_id,
+        gates: s.gates ? {
+          requireCleanDrift: s.gates.require_clean_drift,
+          runPreFlightValidation: s.gates.run_pre_flight_validation,
+          credentialsExistInTarget: s.gates.credentials_exist_in_target,
+          nodesSupportedInTarget: s.gates.nodes_supported_in_target,
+          webhooksAvailable: s.gates.webhooks_available,
+          targetEnvironmentHealthy: s.gates.target_environment_healthy,
+          maxAllowedRiskLevel: s.gates.max_allowed_risk_level,
+        } : undefined,
+        approvals: s.approvals ? {
+          requireApproval: s.approvals.require_approval,
+          approverRole: s.approvals.approver_role,
+          approverGroup: s.approvals.approver_group,
+          requiredApprovals: s.approvals.required_approvals,
+        } : undefined,
+        schedule: s.schedule ? {
+          restrictPromotionTimes: s.schedule.restrict_promotion_times,
+          allowedDays: s.schedule.allowed_days,
+          startTime: s.schedule.start_time,
+          endTime: s.schedule.end_time,
+        } : undefined,
+        policyFlags: s.policy_flags ? {
+          allowPlaceholderCredentials: s.policy_flags.allow_placeholder_credentials,
+          allowOverwritingHotfixes: s.policy_flags.allow_overwriting_hotfixes,
+          allowForcePromotionOnConflicts: s.policy_flags.allow_force_promotion_on_conflicts,
+        } : undefined,
+      })),
+      lastModifiedBy: p.last_modified_by,
+      lastModifiedAt: p.last_modified_at,
+      createdAt: p.created_at,
+      updatedAt: p.updated_at,
+    };
+  }
+
   async getPipelines(): Promise<{ data: Pipeline[] }> {
-    const response = await this.client.get<Pipeline[]>('/pipelines');
-    return { data: response.data };
+    const response = await this.client.get<any[]>('/pipelines');
+    return { data: response.data.map((p) => this.transformPipelineResponse(p)) };
   }
 
   async getPipeline(id: string): Promise<{ data: Pipeline }> {
-    const response = await this.client.get<Pipeline>(`/pipelines/${id}`);
-    return { data: response.data };
+    const response = await this.client.get<any>(`/pipelines/${id}`);
+    return { data: this.transformPipelineResponse(response.data) };
   }
 
   async createPipeline(pipeline: {
