@@ -2066,17 +2066,17 @@ export function WorkflowDetailPage() {
                   <select
                     value={recommendationFilter}
                     onChange={(e) => setRecommendationFilter(e.target.value)}
-                    className="px-3 py-1.5 text-sm border rounded-md bg-background"
+                    className="px-3 py-1.5 text-sm border rounded-md bg-background text-foreground"
                   >
-                    <option value="all">All Categories</option>
-                    <option value="reliability">Reliability</option>
-                    <option value="performance">Performance</option>
-                    <option value="cost">Cost</option>
-                    <option value="security">Security</option>
-                    <option value="maintainability">Maintainability</option>
-                    <option value="governance">Governance</option>
-                    <option value="drift">Drift</option>
-                    <option value="optimization">Optimization</option>
+                    <option value="all" className="bg-background text-foreground">All Categories</option>
+                    <option value="reliability" className="bg-background text-foreground">Reliability</option>
+                    <option value="performance" className="bg-background text-foreground">Performance</option>
+                    <option value="cost" className="bg-background text-foreground">Cost</option>
+                    <option value="security" className="bg-background text-foreground">Security</option>
+                    <option value="maintainability" className="bg-background text-foreground">Maintainability</option>
+                    <option value="governance" className="bg-background text-foreground">Governance</option>
+                    <option value="drift" className="bg-background text-foreground">Drift</option>
+                    <option value="optimization" className="bg-background text-foreground">Optimization</option>
                   </select>
                 </div>
 

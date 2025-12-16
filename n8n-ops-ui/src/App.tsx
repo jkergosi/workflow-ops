@@ -66,17 +66,25 @@ const queryClient = new QueryClient({
 
 // Protected Route Component with Onboarding Check
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
-  const { isAuthenticated, isLoading, needsOnboarding } = useAuth();
+  const { isAuthenticated, isLoading, initComplete, needsOnboarding } = useAuth();
   const navigate = useNavigate();
+  const currentPath = window.location.pathname;
+
+  // Debug logging
+  console.log('[ProtectedRoute] Render:', { currentPath, isAuthenticated, isLoading, initComplete, needsOnboarding });
 
   useEffect(() => {
     // If user needs onboarding and not already on onboarding page, redirect
-    if (!isLoading && needsOnboarding && window.location.pathname !== '/onboarding') {
+    if (!isLoading && initComplete && needsOnboarding && window.location.pathname !== '/onboarding') {
+      console.log('[ProtectedRoute] Redirecting to onboarding');
       navigate('/onboarding', { replace: true });
     }
-  }, [isLoading, needsOnboarding, navigate]);
+  }, [isLoading, initComplete, needsOnboarding, navigate]);
 
-  if (isLoading) {
+  // Wait for both loading to complete AND initialization to be done
+  // This prevents redirects during the brief moment between state updates
+  if (isLoading || !initComplete) {
+    console.log('[ProtectedRoute] Showing loading spinner');
     return (
       <div className="min-h-screen flex items-center justify-center">
         <div className="text-center">
@@ -90,11 +98,12 @@ function ProtectedRoute({ children }: { children: React.ReactNode }) {
   // Check if user is authenticated (login completed)
   // isAuthenticated is true when user is logged in AND has completed onboarding
   // Only redirect if we're not already on login or onboarding page to prevent loops
-  const currentPath = window.location.pathname;
   if (!isAuthenticated && !needsOnboarding && currentPath !== '/login' && currentPath !== '/onboarding') {
+    console.log('[ProtectedRoute] Not authenticated, redirecting to login');
     return <Navigate to="/login" replace />;
   }
 
+  console.log('[ProtectedRoute] Rendering children');
   return <>{children}</>;
 }
 
@@ -104,13 +113,24 @@ function RoleProtectedRoute({ children }: { children: React.ReactNode }) {
   const location = useLocation();
   const navigate = useNavigate();
 
+  const userRole = user ? mapBackendRoleToFrontendRole(user.role) : null;
+  const canAccess = user ? canAccessRoute(location.pathname, userRole!) : true;
+
+  console.log('[RoleProtectedRoute] Render:', {
+    pathname: location.pathname,
+    hasUser: !!user,
+    userRole,
+    canAccess
+  });
+
   useEffect(() => {
     if (user) {
-      const userRole = mapBackendRoleToFrontendRole(user.role);
+      const role = mapBackendRoleToFrontendRole(user.role);
       const pathname = location.pathname;
-      
+
       // Check if user can access this route
-      if (!canAccessRoute(pathname, userRole)) {
+      if (!canAccessRoute(pathname, role)) {
+        console.log('[RoleProtectedRoute] Redirecting to dashboard - unauthorized');
         // Redirect to dashboard if unauthorized
         navigate('/', { replace: true });
       }
@@ -119,13 +139,12 @@ function RoleProtectedRoute({ children }: { children: React.ReactNode }) {
 
   // If no user, let ProtectedRoute handle it
   if (!user) {
+    console.log('[RoleProtectedRoute] No user, rendering children');
     return <>{children}</>;
   }
 
-  const userRole = mapBackendRoleToFrontendRole(user.role);
-  const canAccess = canAccessRoute(location.pathname, userRole);
-
   if (!canAccess) {
+    console.log('[RoleProtectedRoute] Cannot access, showing redirect spinner');
     // Show loading while redirecting
     return (
       <div className="min-h-screen flex items-center justify-center">
@@ -137,6 +156,7 @@ function RoleProtectedRoute({ children }: { children: React.ReactNode }) {
     );
   }
 
+  console.log('[RoleProtectedRoute] Rendering children');
   return <>{children}</>;
 }
 

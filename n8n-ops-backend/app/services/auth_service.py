@@ -226,6 +226,14 @@ async def get_current_user(
             user = user_response.data[0]
             tenant = user.get("tenants")
 
+            # If join didn't return tenant, fetch it separately
+            if not tenant and user.get("tenant_id"):
+                tenant_response = db_service.client.table("tenants").select("*").eq(
+                    "id", user["tenant_id"]
+                ).execute()
+                if tenant_response.data and len(tenant_response.data) > 0:
+                    tenant = tenant_response.data[0]
+
             return {
                 "user": {
                     "id": user["id"],
@@ -251,7 +259,7 @@ async def get_current_user(
     try:
         # Get first user from database
         user_response = db_service.client.table("users").select("*, tenants(*)").order("created_at").limit(1).execute()
-        
+
         if not user_response.data or len(user_response.data) == 0:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
@@ -260,6 +268,14 @@ async def get_current_user(
 
         user = user_response.data[0]
         tenant = user.get("tenants")
+
+        # If join didn't return tenant, fetch it separately
+        if not tenant and user.get("tenant_id"):
+            tenant_response = db_service.client.table("tenants").select("*").eq(
+                "id", user["tenant_id"]
+            ).execute()
+            if tenant_response.data and len(tenant_response.data) > 0:
+                tenant = tenant_response.data[0]
 
         return {
             "user": {
@@ -315,6 +331,13 @@ async def get_current_user_optional(
             if user_response.data and len(user_response.data) > 0:
                 user = user_response.data[0]
                 tenant = user.get("tenants")
+                # If join didn't return tenant, fetch it separately
+                if not tenant and user.get("tenant_id"):
+                    tenant_response = db_service.client.table("tenants").select("*").eq(
+                        "id", user["tenant_id"]
+                    ).execute()
+                    if tenant_response.data and len(tenant_response.data) > 0:
+                        tenant = tenant_response.data[0]
                 return {
                     "user": {
                         "id": user["id"],
@@ -338,6 +361,13 @@ async def get_current_user_optional(
         if user_response.data and len(user_response.data) > 0:
             user = user_response.data[0]
             tenant = user.get("tenants")
+            # If join didn't return tenant, fetch it separately
+            if not tenant and user.get("tenant_id"):
+                tenant_response = db_service.client.table("tenants").select("*").eq(
+                    "id", user["tenant_id"]
+                ).execute()
+                if tenant_response.data and len(tenant_response.data) > 0:
+                    tenant = tenant_response.data[0]
             return {
                 "user": {
                     "id": user["id"],

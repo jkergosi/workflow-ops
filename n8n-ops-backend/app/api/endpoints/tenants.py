@@ -1073,9 +1073,9 @@ async def get_tenant_usage(tenant_id: str):
 
         # Define default limits by plan
         default_limits = {
-            "free": {"workflows": 10, "environments": 2, "users": 3, "executions": 1000},
-            "pro": {"workflows": 200, "environments": 10, "users": 25, "executions": 50000},
-            "agency": {"workflows": 500, "environments": 25, "users": 100, "executions": 200000},
+            "free": {"workflows": 10, "environments": 1, "users": 3, "executions": 1000},
+            "pro": {"workflows": 200, "environments": 3, "users": 25, "executions": 50000},
+            "agency": {"workflows": 500, "environments": -1, "users": 100, "executions": 200000},
             "enterprise": {"workflows": -1, "environments": -1, "users": -1, "executions": -1},
         }
 

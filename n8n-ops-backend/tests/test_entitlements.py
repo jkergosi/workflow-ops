@@ -499,7 +499,7 @@ class TestPhase2Features:
         assert "environment_diff" in features
         assert features["environment_diff"] is False
         assert "environment_limits" in features
-        assert features["environment_limits"] == 2
+        assert features["environment_limits"] == 1
 
         # Workflow features
         assert "workflow_read" in features

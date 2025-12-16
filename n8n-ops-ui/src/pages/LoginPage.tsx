@@ -11,10 +11,13 @@ export function LoginPage() {
 
   // Redirect if already authenticated
   useEffect(() => {
+    console.log('[LoginPage] useEffect check:', { isLoading, isAuthenticated, needsOnboarding });
     if (!isLoading && isAuthenticated) {
       if (needsOnboarding) {
+        console.log('[LoginPage] Redirecting to onboarding');
         navigate('/onboarding', { replace: true });
       } else {
+        console.log('[LoginPage] Redirecting to dashboard');
         navigate('/', { replace: true });
       }
     }

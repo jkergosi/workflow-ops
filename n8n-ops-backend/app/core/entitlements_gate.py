@@ -77,6 +77,51 @@ def require_workflow_limit():
     return limit_dependency
 
 
+def require_environment_limit():
+    """
+    FastAPI dependency to enforce environment limit before creation.
+
+    Usage:
+        @router.post("/")
+        async def create_environment(
+            ...,
+            user_info: dict = Depends(require_environment_limit())
+        ):
+            ...
+    """
+    async def limit_dependency(user_info: dict = Depends(get_current_user)):
+        tenant = user_info.get("tenant")
+        if not tenant:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Authentication required"
+            )
+
+        tenant_id = tenant["id"]
+        can_add, message, current, limit = await entitlements_service.can_add_environment(tenant_id)
+
+        if not can_add:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail={
+                    "error": "environment_limit_reached",
+                    "current_count": current,
+                    "limit": limit,
+                    "message": message,
+                }
+            )
+
+        return {
+            **user_info,
+            "environment_limit": {
+                "current": current,
+                "limit": limit,
+            }
+        }
+
+    return limit_dependency
+
+
 class EntitlementsChecker:
     """
     Class-based entitlements checker for more complex scenarios.

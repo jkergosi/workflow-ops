@@ -166,11 +166,11 @@ export function ProfilePage() {
                     id="role"
                     value={formData.role}
                     onChange={(e) => setFormData({ ...formData, role: e.target.value as 'admin' | 'developer' | 'viewer' })}
-                    className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background file:border-0 file:bg-transparent file:text-sm file:font-medium placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
+                    className="flex h-10 w-full rounded-md border border-input bg-background text-foreground px-3 py-2 text-sm ring-offset-background file:border-0 file:bg-transparent file:text-sm file:font-medium placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
                   >
-                    <option value="admin">Admin</option>
-                    <option value="developer">Developer</option>
-                    <option value="viewer">Viewer</option>
+                    <option value="admin" className="bg-background text-foreground">Admin</option>
+                    <option value="developer" className="bg-background text-foreground">Developer</option>
+                    <option value="viewer" className="bg-background text-foreground">Viewer</option>
                   </select>
                 ) : (
                   <div className="flex items-center gap-2">

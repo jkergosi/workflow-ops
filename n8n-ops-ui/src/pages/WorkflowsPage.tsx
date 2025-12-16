@@ -592,9 +592,9 @@ export function WorkflowsPage() {
                 onChange={(e) => setSelectedStatus(e.target.value)}
                 className="flex h-9 w-full rounded-md border border-input bg-background text-foreground px-3 py-1 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
               >
-                <option value="">All Status</option>
-                <option value="active">Active</option>
-                <option value="inactive">Inactive</option>
+                <option value="" className="bg-background text-foreground">All Status</option>
+                <option value="active" className="bg-background text-foreground">Active</option>
+                <option value="inactive" className="bg-background text-foreground">Inactive</option>
               </select>
             </div>
 
@@ -609,10 +609,10 @@ export function WorkflowsPage() {
                 disabled={availableEnvironments.length === 0}
               >
                 {availableEnvironments.length === 0 ? (
-                  <option value="">No environments available</option>
+                  <option value="" className="bg-background text-foreground">No environments available</option>
                 ) : (
                   availableEnvironments.map((env) => (
-                    <option key={env.id} value={env.type}>
+                    <option key={env.id} value={env.type} className="bg-background text-foreground">
                       {env.name} ({env.type})
                     </option>
                   ))
@@ -794,10 +794,10 @@ export function WorkflowsPage() {
                     }}
                     className="h-8 w-20 rounded-md border border-input bg-background text-foreground px-2 py-1 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                   >
-                    <option value={10}>10</option>
-                    <option value={25}>25</option>
-                    <option value={50}>50</option>
-                    <option value={100}>100</option>
+                    <option value={10} className="bg-background text-foreground">10</option>
+                    <option value={25} className="bg-background text-foreground">25</option>
+                    <option value={50} className="bg-background text-foreground">50</option>
+                    <option value={100} className="bg-background text-foreground">100</option>
                   </select>
                 </div>
                 <div className="text-sm text-muted-foreground">
@@ -933,8 +933,8 @@ export function WorkflowsPage() {
                 onChange={(e) => setEditForm({ ...editForm, active: e.target.value === 'active' })}
                 className="flex h-9 w-full rounded-md border border-input bg-background text-foreground px-3 py-1 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
               >
-                <option value="active">Active</option>
-                <option value="inactive">Inactive</option>
+                <option value="active" className="bg-background text-foreground">Active</option>
+                <option value="inactive" className="bg-background text-foreground">Inactive</option>
               </select>
             </div>
 

@@ -234,14 +234,14 @@ export function SettingsPage() {
                     }
                     className="flex h-9 w-full rounded-md border border-input bg-background text-foreground px-3 py-1 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                   >
-                    <option value="UTC">UTC</option>
-                    <option value="America/New_York">Eastern Time</option>
-                    <option value="America/Chicago">Central Time</option>
-                    <option value="America/Denver">Mountain Time</option>
-                    <option value="America/Los_Angeles">Pacific Time</option>
-                    <option value="Europe/London">London</option>
-                    <option value="Europe/Paris">Paris</option>
-                    <option value="Asia/Tokyo">Tokyo</option>
+                    <option value="UTC" className="bg-background text-foreground">UTC</option>
+                    <option value="America/New_York" className="bg-background text-foreground">Eastern Time</option>
+                    <option value="America/Chicago" className="bg-background text-foreground">Central Time</option>
+                    <option value="America/Denver" className="bg-background text-foreground">Mountain Time</option>
+                    <option value="America/Los_Angeles" className="bg-background text-foreground">Pacific Time</option>
+                    <option value="Europe/London" className="bg-background text-foreground">London</option>
+                    <option value="Europe/Paris" className="bg-background text-foreground">Paris</option>
+                    <option value="Asia/Tokyo" className="bg-background text-foreground">Tokyo</option>
                   </select>
                 </div>
               </div>
@@ -617,9 +617,9 @@ export function SettingsPage() {
                   onChange={(e) => setEmailConfig({ ...emailConfig, provider: e.target.value as any })}
                   className="flex h-9 w-full rounded-md border border-input bg-background text-foreground px-3 py-1 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                 >
-                  <option value="smtp">SMTP</option>
-                  <option value="sendgrid">SendGrid</option>
-                  <option value="aws_ses">AWS SES</option>
+                  <option value="smtp" className="bg-background text-foreground">SMTP</option>
+                  <option value="sendgrid" className="bg-background text-foreground">SendGrid</option>
+                  <option value="aws_ses" className="bg-background text-foreground">AWS SES</option>
                 </select>
               </div>
 

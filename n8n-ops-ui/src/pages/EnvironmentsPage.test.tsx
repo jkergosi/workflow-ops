@@ -383,7 +383,7 @@ describe('EnvironmentsPage', () => {
             entitlements: {
               plan_name: 'free',
               features: {
-                max_environments: { enabled: true, limit: 2 },
+                max_environments: { enabled: true, limit: 1 },
               },
             },
           });

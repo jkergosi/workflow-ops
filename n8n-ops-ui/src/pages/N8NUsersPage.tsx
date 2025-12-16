@@ -217,11 +217,11 @@ export function N8NUsersPage() {
             <select
               value={selectedEnvironment}
               onChange={(e) => setSelectedEnvironment(e.target.value as EnvironmentType)}
-              className="flex h-9 w-[180px] rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+              className="flex h-9 w-[180px] rounded-md border border-input bg-background px-3 py-1 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
             >
-              <option value="dev">All Environments</option>
+              <option value="dev" className="bg-background text-foreground">All Environments</option>
               {environments?.data?.map((env: any) => (
-                <option key={env.id} value={env.type}>
+                <option key={env.id} value={env.type} className="bg-background text-foreground">
                   {env.name}
                 </option>
               ))}
@@ -230,11 +230,11 @@ export function N8NUsersPage() {
             <select
               value={selectedRole}
               onChange={(e) => setSelectedRole(e.target.value)}
-              className="flex h-9 w-[140px] rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+              className="flex h-9 w-[140px] rounded-md border border-input bg-background px-3 py-1 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
             >
-              <option value="all">All Roles</option>
+              <option value="all" className="bg-background text-foreground">All Roles</option>
               {allRoles.map((role) => (
-                <option key={role} value={role}>
+                <option key={role} value={role} className="bg-background text-foreground">
                   {role}
                 </option>
               ))}
@@ -243,11 +243,11 @@ export function N8NUsersPage() {
             <select
               value={selectedStatus}
               onChange={(e) => setSelectedStatus(e.target.value)}
-              className="flex h-9 w-[140px] rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+              className="flex h-9 w-[140px] rounded-md border border-input bg-background px-3 py-1 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
             >
-              <option value="all">All Status</option>
-              <option value="active">Active</option>
-              <option value="pending">Pending</option>
+              <option value="all" className="bg-background text-foreground">All Status</option>
+              <option value="active" className="bg-background text-foreground">Active</option>
+              <option value="pending" className="bg-background text-foreground">Pending</option>
             </select>
           </div>
 

@@ -70,7 +70,7 @@ export interface PlanFeatures {
 const PLAN_FEATURES: Record<string, PlanFeatures> = {
   free: {
     // Legacy
-    max_environments: 2,
+    max_environments: 1,
     max_team_members: 3,
     max_workflows_per_env: 50,
     github_sync: false,
@@ -87,7 +87,7 @@ const PLAN_FEATURES: Record<string, PlanFeatures> = {
     environment_basic: true,
     environment_health: false,
     environment_diff: false,
-    environment_limits: 2,
+    environment_limits: 1,
     // Phase 2 Workflows
     workflow_read: true,
     workflow_push: true,
@@ -124,7 +124,7 @@ const PLAN_FEATURES: Record<string, PlanFeatures> = {
   },
   pro: {
     // Legacy
-    max_environments: 10,
+    max_environments: 3,
     max_team_members: 25,
     max_workflows_per_env: 500,
     github_sync: true,
@@ -141,7 +141,7 @@ const PLAN_FEATURES: Record<string, PlanFeatures> = {
     environment_basic: true,
     environment_health: true,
     environment_diff: true,
-    environment_limits: 10,
+    environment_limits: 3,
     // Phase 2 Workflows
     workflow_read: true,
     workflow_push: true,
@@ -178,7 +178,7 @@ const PLAN_FEATURES: Record<string, PlanFeatures> = {
   },
   agency: {
     // Legacy
-    max_environments: 50,
+    max_environments: 'unlimited',
     max_team_members: 100,
     max_workflows_per_env: 1000,
     github_sync: true,
@@ -195,7 +195,7 @@ const PLAN_FEATURES: Record<string, PlanFeatures> = {
     environment_basic: true,
     environment_health: true,
     environment_diff: true,
-    environment_limits: 50,
+    environment_limits: 9999,
     // Phase 2 Workflows
     workflow_read: true,
     workflow_push: true,
@@ -448,10 +448,20 @@ export function FeaturesProvider({ children }: FeaturesProviderProps) {
         // Start with base plan features
         const baseFeatures = PLAN_FEATURES[userPlan] || PLAN_FEATURES.free;
 
+        // Get environment_limits from entitlements - prioritize entitlements over baseFeatures
+        let envLimits = 1; // Default fallback
+        if (entitlements?.features?.environment_limits !== undefined && entitlements.features.environment_limits !== null) {
+          envLimits = entitlements.features.environment_limits as number;
+          console.log('[Features] Using environment_limits from entitlements:', envLimits);
+        } else if (baseFeatures.max_environments && baseFeatures.max_environments !== 'unlimited') {
+          envLimits = baseFeatures.max_environments as number;
+          console.log('[Features] Using environment_limits from baseFeatures:', envLimits);
+        }
+        console.log('[Features] Entitlements:', entitlements);
+        console.log('[Features] Plan:', userPlan, 'envLimits:', envLimits, 'baseFeatures.max_environments:', baseFeatures.max_environments);
+
         // Merge with entitlements from database if available
         if (entitlements?.features) {
-          // Get environment_limits from entitlements and sync to legacy max_environments
-          const envLimits = entitlements.features.environment_limits as number ?? 2;
           setFeatures({
             ...baseFeatures,
             // Map entitlements features to plan features
@@ -495,15 +505,32 @@ export function FeaturesProvider({ children }: FeaturesProviderProps) {
             deployments: entitlements.features.workflow_ci_cd as boolean ?? false,
           });
         } else {
-          setFeatures(baseFeatures);
+          setFeatures({
+            ...baseFeatures,
+            max_environments: envLimits,
+            environment_limits: envLimits,
+          });
         }
 
-        // Mock usage data
-        setUsage({
-          environments: { current: 1, max: baseFeatures.max_environments || 2 },
-          team_members: { current: 1, max: baseFeatures.max_team_members || 3 },
-          workflows: {},
-        });
+        // Load actual usage data
+        try {
+          const { api } = await import('./api');
+          const envsResponse = await api.getEnvironments();
+          const envCount = envsResponse?.data?.length || 0;
+          
+          setUsage({
+            environments: { current: envCount, max: envLimits },
+            team_members: { current: 1, max: baseFeatures.max_team_members || 3 },
+            workflows: {},
+          });
+        } catch (error) {
+          console.warn('Failed to load environment count, using defaults:', error);
+          setUsage({
+            environments: { current: 0, max: envLimits },
+            team_members: { current: 1, max: baseFeatures.max_team_members || 3 },
+            workflows: {},
+          });
+        }
       } catch (error) {
         console.error('Failed to load features:', error);
       } finally {

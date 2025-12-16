@@ -329,9 +329,9 @@ export function NotificationsPage() {
                 }
                 className="flex h-9 w-full rounded-md border border-input bg-background text-foreground px-3 py-1 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
               >
-                <option value="email">Email</option>
-                <option value="slack">Slack</option>
-                <option value="webhook">Webhook</option>
+                <option value="email" className="bg-background text-foreground">Email</option>
+                <option value="slack" className="bg-background text-foreground">Slack</option>
+                <option value="webhook" className="bg-background text-foreground">Webhook</option>
               </select>
             </div>
             <div className="space-y-2">
@@ -381,12 +381,12 @@ export function NotificationsPage() {
                 id="rule-event"
                 className="flex h-9 w-full rounded-md border border-input bg-background text-foreground px-3 py-1 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
               >
-                <option value="system.critical">System Critical</option>
-                <option value="system.warning">System Warning</option>
-                <option value="tenant.created">Tenant Created</option>
-                <option value="tenant.deleted">Tenant Deleted</option>
-                <option value="billing.subscription_changed">Subscription Changed</option>
-                <option value="api.error_rate_high">High API Error Rate</option>
+                <option value="system.critical" className="bg-background text-foreground">System Critical</option>
+                <option value="system.warning" className="bg-background text-foreground">System Warning</option>
+                <option value="tenant.created" className="bg-background text-foreground">Tenant Created</option>
+                <option value="tenant.deleted" className="bg-background text-foreground">Tenant Deleted</option>
+                <option value="billing.subscription_changed" className="bg-background text-foreground">Subscription Changed</option>
+                <option value="api.error_rate_high" className="bg-background text-foreground">High API Error Rate</option>
               </select>
             </div>
             <div className="space-y-2">

@@ -53,6 +53,14 @@ FEATURE_DISPLAY_NAMES = {
     "enterprise_limits": "Enterprise Limits",
 }
 
+# Default environment limits by plan (1, 3, or unlimited)
+PLAN_ENVIRONMENT_LIMITS = {
+    "free": 1,
+    "pro": 3,
+    "agency": 9999,  # Unlimited
+    "enterprise": 9999,  # Unlimited
+}
+
 # Minimum plan required for each feature (for upgrade messages)
 FEATURE_REQUIRED_PLANS = {
     # Phase 1 features
@@ -141,7 +149,10 @@ class EntitlementsService:
 
             # Load plan features
             plan_id = tenant_plan.get("plan_id")
+            plan_name = tenant_plan.get("plan_name")
             plan_features = await self._get_plan_features(plan_id)
+            
+            logger.info(f"Tenant {tenant_id} on plan {plan_name} (id: {plan_id}) has {len(plan_features)} plan features")
 
             # Build base entitlements from plan
             features = {}
@@ -154,8 +165,13 @@ class EntitlementsService:
 
                 if feature_type == "flag":
                     features[feature_name] = value.get("enabled", False)
+                    if feature_name == "workflow_ci_cd":
+                        logger.info(f"Found workflow_ci_cd feature for plan {plan_name}: enabled={value.get('enabled', False)}")
                 elif feature_type == "limit":
                     features[feature_name] = value.get("value", 0)
+            
+            if "workflow_ci_cd" not in features:
+                logger.warning(f"workflow_ci_cd feature not found in plan_features for plan {plan_name} (id: {plan_id})")
 
             # Phase 3: Apply tenant-specific overrides
             overrides = await self._get_tenant_overrides(tenant_id)
@@ -174,9 +190,14 @@ class EntitlementsService:
             if overrides_applied:
                 logger.info(f"Applied {len(overrides_applied)} overrides for tenant {tenant_id}: {overrides_applied}")
 
+            # Always use the correct environment limits based on plan name
+            # This ensures consistent limits (1 for free, 3 for pro, unlimited for agency/enterprise)
+            plan_name = tenant_plan.get("plan_name", "free")
+            features["environment_limits"] = PLAN_ENVIRONMENT_LIMITS.get(plan_name, 1)
+
             result = {
                 "plan_id": plan_id,
-                "plan_name": tenant_plan.get("plan_name", "free"),
+                "plan_name": plan_name,
                 "entitlements_version": tenant_plan.get("entitlements_version", 1),
                 "features": features,
                 "overrides_applied": overrides_applied  # Track which features were overridden
@@ -337,6 +358,27 @@ class EntitlementsService:
         current_count = await self.get_workflow_count(tenant_id)
         await self.enforce_limit(tenant_id, "workflow_limits", current_count)
 
+    async def get_environment_count(self, tenant_id: str) -> int:
+        """Get current environment count for a tenant."""
+        try:
+            response = db_service.client.table("environments").select(
+                "id", count="exact"
+            ).eq("tenant_id", tenant_id).execute()
+            return response.count or 0
+        except Exception as e:
+            logger.error(f"Failed to get environment count: {e}")
+            return 0
+
+    async def can_add_environment(self, tenant_id: str) -> Tuple[bool, str, int, int]:
+        """Check if tenant can add another environment."""
+        current_count = await self.get_environment_count(tenant_id)
+        return await self.check_limit(tenant_id, "environment_limits", current_count)
+
+    async def enforce_environment_limit(self, tenant_id: str) -> None:
+        """Enforce environment limit before creating new environment."""
+        current_count = await self.get_environment_count(tenant_id)
+        await self.enforce_limit(tenant_id, "environment_limits", current_count)
+
     # Private helper methods
 
     async def _get_tenant_plan(self, tenant_id: str) -> Optional[Dict[str, Any]]:
@@ -344,38 +386,57 @@ class EntitlementsService:
         try:
             response = db_service.client.table("tenant_plans").select(
                 "*, plan:plan_id(id, name, display_name)"
-            ).eq("tenant_id", tenant_id).single().execute()
+            ).eq("tenant_id", tenant_id).order("created_at", desc=True).limit(1).execute()
 
-            if response.data:
-                plan = response.data.get("plan", {})
-                return {
-                    "plan_id": plan.get("id"),
-                    "plan_name": plan.get("name"),
-                    "plan_display_name": plan.get("display_name"),
-                    "entitlements_version": response.data.get("entitlements_version", 1)
-                }
+            if response.data and len(response.data) > 0:
+                tp = response.data[0]
+                plan = tp.get("plan", {})
+                if not plan and tp.get("plan_id"):
+                    plan_response = db_service.client.table("plans").select("*").eq("id", tp.get("plan_id")).single().execute()
+                    if plan_response.data:
+                        plan = plan_response.data
+                
+                if plan:
+                    return {
+                        "plan_id": plan.get("id"),
+                        "plan_name": plan.get("name"),
+                        "plan_display_name": plan.get("display_name"),
+                        "entitlements_version": tp.get("entitlements_version", 1)
+                    }
             return None
-        except Exception:
+        except Exception as e:
+            logger.error(f"Failed to get tenant plan for {tenant_id}: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
             return None
 
     async def _get_plan_features(self, plan_id: str) -> list:
         """Get all features for a plan with their values."""
         try:
             response = db_service.client.table("plan_features").select(
-                "value, feature:feature_id(name, type)"
+                "value, feature_id, feature:feature_id(name, type)"
             ).eq("plan_id", plan_id).execute()
 
             result = []
             for pf in response.data or []:
                 feature = pf.get("feature", {})
-                result.append({
-                    "feature_name": feature.get("name"),
-                    "feature_type": feature.get("type"),
-                    "value": pf.get("value", {})
-                })
+                # If join didn't work, fetch feature separately
+                if not feature and pf.get("feature_id"):
+                    feature_response = db_service.client.table("features").select("*").eq("id", pf.get("feature_id")).single().execute()
+                    if feature_response.data:
+                        feature = feature_response.data
+                
+                if feature:
+                    result.append({
+                        "feature_name": feature.get("name"),
+                        "feature_type": feature.get("type"),
+                        "value": pf.get("value", {})
+                    })
             return result
         except Exception as e:
-            logger.error(f"Failed to get plan features: {e}")
+            logger.error(f"Failed to get plan features for plan {plan_id}: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
             return []
 
     async def _get_tenant_overrides(self, tenant_id: str) -> List[Dict[str, Any]]:
@@ -439,7 +500,7 @@ class EntitlementsService:
                 "environment_basic": True,
                 "environment_health": False,
                 "environment_diff": False,
-                "environment_limits": 2,
+                "environment_limits": 1,
                 # Workflow features
                 "workflow_read": True,
                 "workflow_push": True,

@@ -441,3 +441,119 @@ async def clear_entitlements_cache():
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to clear cache: {str(e)}"
         )
+
+
+@router.get("/debug/{tenant_id}")
+async def debug_tenant_entitlements(tenant_id: str):
+    """
+    Debug endpoint to inspect tenant entitlements configuration.
+    Shows tenant plan assignment, plan features, and computed entitlements.
+    """
+    try:
+        # Get tenant plan assignment
+        tenant_plan_response = db_service.client.table("tenant_plans").select(
+            "*, plan:plan_id(id, name, display_name)"
+        ).eq("tenant_id", tenant_id).execute()
+        
+        tenant_plan_data = None
+        plan_id = None
+        plan_name = None
+        if tenant_plan_response.data and len(tenant_plan_response.data) > 0:
+            tp = tenant_plan_response.data[0]
+            plan = tp.get("plan", {})
+            tenant_plan_data = {
+                "plan_id": plan.get("id"),
+                "plan_name": plan.get("name"),
+                "plan_display_name": plan.get("display_name"),
+                "entitlements_version": tp.get("entitlements_version", 1),
+                "is_active": tp.get("is_active", True),
+            }
+            plan_id = plan.get("id")
+            plan_name = plan.get("name")
+
+        # Get all plans to find pro plan
+        plans_response = db_service.client.table("plans").select("*").execute()
+        plans = {p["name"]: p for p in (plans_response.data or [])}
+        pro_plan_id = plans.get("pro", {}).get("id") if plans.get("pro") else None
+
+        # Get workflow_ci_cd feature
+        feature_response = db_service.client.table("features").select("*").eq(
+            "name", "workflow_ci_cd"
+        ).execute()
+        workflow_ci_cd_feature = feature_response.data[0] if feature_response.data else None
+
+        # Get plan features for the tenant's plan
+        plan_features_data = []
+        if plan_id:
+            pf_response = db_service.client.table("plan_features").select(
+                "*, feature:feature_id(id, name, type, display_name)"
+            ).eq("plan_id", plan_id).execute()
+            plan_features_data = pf_response.data or []
+
+        # Get plan features for pro plan (for comparison)
+        pro_plan_features = []
+        if pro_plan_id:
+            pf_pro_response = db_service.client.table("plan_features").select(
+                "*, feature:feature_id(id, name, type, display_name)"
+            ).eq("plan_id", pro_plan_id).execute()
+            pro_plan_features = pf_pro_response.data or []
+
+        # Get tenant overrides
+        overrides_response = db_service.client.table("tenant_feature_overrides").select(
+            "*, feature:feature_id(id, name, type)"
+        ).eq("tenant_id", tenant_id).eq("is_active", True).execute()
+        overrides = overrides_response.data or []
+
+        # Get computed entitlements
+        computed_entitlements = await entitlements_service.get_tenant_entitlements(tenant_id)
+        workflow_ci_cd_enabled = computed_entitlements.get("features", {}).get("workflow_ci_cd", False)
+
+        return {
+            "tenant_id": tenant_id,
+            "tenant_plan": tenant_plan_data,
+            "pro_plan_id": pro_plan_id,
+            "workflow_ci_cd_feature": {
+                "id": workflow_ci_cd_feature.get("id"),
+                "name": workflow_ci_cd_feature.get("name"),
+                "type": workflow_ci_cd_feature.get("type"),
+            } if workflow_ci_cd_feature else None,
+            "current_plan_features": [
+                {
+                    "feature_id": pf.get("feature", {}).get("id"),
+                    "feature_name": pf.get("feature", {}).get("name"),
+                    "feature_type": pf.get("feature", {}).get("type"),
+                    "value": pf.get("value"),
+                }
+                for pf in plan_features_data
+            ],
+            "pro_plan_features": [
+                {
+                    "feature_id": pf.get("feature", {}).get("id"),
+                    "feature_name": pf.get("feature", {}).get("name"),
+                    "feature_type": pf.get("feature", {}).get("type"),
+                    "value": pf.get("value"),
+                }
+                for pf in pro_plan_features
+            ],
+            "tenant_overrides": [
+                {
+                    "feature_id": ov.get("feature", {}).get("id"),
+                    "feature_name": ov.get("feature", {}).get("name"),
+                    "value": ov.get("value"),
+                    "expires_at": ov.get("expires_at"),
+                }
+                for ov in overrides
+            ],
+            "computed_entitlements": {
+                "plan_name": computed_entitlements.get("plan_name"),
+                "workflow_ci_cd_enabled": workflow_ci_cd_enabled,
+                "all_features": computed_entitlements.get("features", {}),
+            },
+        }
+
+    except Exception as e:
+        import traceback
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Debug failed: {str(e)}\n{traceback.format_exc()}"
+        )

@@ -26,17 +26,25 @@ import {
 } from '@/components/ui/table';
 import { api } from '@/lib/api';
 import { useAppStore } from '@/store/use-app-store';
-import { Plus, Server, RefreshCw, Edit, Database, Download, Trash2, RefreshCcw, RotateCcw, AlertTriangle, Sparkles, CheckCircle2, AlertCircle } from 'lucide-react';
+import { useAuth } from '@/lib/auth';
+import { Plus, Server, RefreshCw, Edit, Database, Download, Trash2, RefreshCcw, RotateCcw, CheckCircle2, AlertCircle } from 'lucide-react';
 import { toast } from 'sonner';
 import type { Environment, EnvironmentType } from '@/types';
 import { useFeatures } from '@/lib/features';
+import { useEffect } from 'react';
 
 export function EnvironmentsPage() {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
+  const { refreshEntitlements } = useAuth();
   const setSelectedEnvironment = useAppStore((state) => state.setSelectedEnvironment);
   const [editingEnv, setEditingEnv] = useState<Environment | null>(null);
   const [isAddMode, setIsAddMode] = useState(false);
+  
+  // Refresh entitlements on mount to ensure we have latest values
+  useEffect(() => {
+    refreshEntitlements();
+  }, [refreshEntitlements]);
   const [testingInDialog, setTestingInDialog] = useState(false);
   const [backupDialogOpen, setBackupDialogOpen] = useState(false);
   const [downloadDialogOpen, setDownloadDialogOpen] = useState(false);
@@ -108,7 +116,7 @@ export function EnvironmentsPage() {
   const downloadMutation = useMutation({
     mutationFn: async (environment: Environment) => {
       // Call our backend API to download all workflows as zip
-      const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000';
+      const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:3000/api/v1';
       const response = await fetch(`${API_BASE_URL}/api/v1/workflows/download?environment_id=${environment.id}`, {
         method: 'GET',
       });
@@ -377,10 +385,16 @@ export function EnvironmentsPage() {
   };
 
   // Use the new features system for limits
-  const { features, planName } = useFeatures();
+  const { features } = useFeatures();
   const environmentCount = environments?.data?.length || 0;
   const maxEnvironments = features?.max_environments;
   const atLimit = maxEnvironments !== 'unlimited' && environmentCount >= (maxEnvironments || 1);
+  
+  // Debug logging
+  console.log('[EnvironmentsPage] environmentCount:', environmentCount);
+  console.log('[EnvironmentsPage] maxEnvironments:', maxEnvironments);
+  console.log('[EnvironmentsPage] features:', features);
+  console.log('[EnvironmentsPage] atLimit:', atLimit);
 
   return (
     <div className="space-y-6">
@@ -403,29 +417,6 @@ export function EnvironmentsPage() {
         </div>
       </div>
 
-      {/* Limit warning */}
-      {atLimit && (
-        <Card className="border-amber-200 bg-amber-50 dark:border-amber-800 dark:bg-amber-950">
-          <CardContent className="pt-6">
-            <div className="flex items-start gap-3">
-              <AlertTriangle className="h-5 w-5 text-amber-600 dark:text-amber-400 flex-shrink-0 mt-0.5" />
-              <div className="flex-1">
-                <p className="text-sm text-amber-800 dark:text-amber-200">
-                  <strong>Environment limit reached.</strong> You're using all {maxEnvironments} environment{maxEnvironments !== 1 ? 's' : ''} available on the {planName} plan.
-                </p>
-                <Button
-                  variant="link"
-                  className="p-0 h-auto text-amber-700 dark:text-amber-300"
-                  onClick={() => navigate('/billing')}
-                >
-                  <Sparkles className="h-4 w-4 mr-1" />
-                  Upgrade for more environments
-                </Button>
-              </div>
-            </div>
-          </CardContent>
-        </Card>
-      )}
 
       <Card>
         <CardHeader>

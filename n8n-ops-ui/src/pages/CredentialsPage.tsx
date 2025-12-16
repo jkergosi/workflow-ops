@@ -155,7 +155,7 @@ export function CredentialsPage() {
   // Fetch all credentials
   const { data: credentials, isLoading, refetch } = useQuery({
     queryKey: ['credentials', selectedEnvironment],
-    queryFn: () => api.getCredentials(selectedEnvironment === 'dev' ? undefined : selectedEnvironment),
+    queryFn: () => api.getCredentials(selectedEnvironment === 'all' ? undefined : selectedEnvironment),
   });
 
   // Fetch environments for filter and create dialog
@@ -215,7 +215,9 @@ export function CredentialsPage() {
   const syncMutation = useMutation({
     mutationFn: async () => {
       const envsToSync = environments?.data?.filter((env: Environment) =>
-        selectedEnvironment === 'dev' || env.type === selectedEnvironment
+        selectedEnvironment === 'all' ||
+        env.type === selectedEnvironment ||
+        env.id === selectedEnvironment
       ) || [];
 
       const results = [];
@@ -258,7 +260,9 @@ export function CredentialsPage() {
     resetForm();
     // Set default environment if one is selected
     if (environments?.data?.length) {
-      const defaultEnv = environments.data.find((e: Environment) => e.type === selectedEnvironment) || environments.data[0];
+      const defaultEnv =
+        environments.data.find((e: Environment) => e.type === selectedEnvironment || e.id === selectedEnvironment) ||
+        environments.data[0];
       setFormEnvironmentId(defaultEnv.id);
     }
     setCreateDialogOpen(true);
@@ -497,13 +501,13 @@ export function CredentialsPage() {
             </div>
 
             <select
-              value={selectedEnvironment || 'dev'}
+              value={selectedEnvironment || 'all'}
               onChange={(e) => setSelectedEnvironment(e.target.value as EnvironmentType)}
               className="flex h-9 w-[180px] rounded-md border border-input bg-background text-foreground px-3 py-1 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
             >
-              <option value="dev">All Environments</option>
+              <option value="all" className="bg-background text-foreground">All Environments</option>
               {environments?.data?.map((env: Environment) => (
-                <option key={env.id} value={env.type}>
+                <option key={env.id} value={env.type || env.id} className="bg-background text-foreground">
                   {env.name}
                 </option>
               ))}
@@ -514,9 +518,9 @@ export function CredentialsPage() {
               onChange={(e) => setSelectedType(e.target.value)}
               className="flex h-9 w-[180px] rounded-md border border-input bg-background text-foreground px-3 py-1 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
             >
-              <option value="all">All Types</option>
+              <option value="all" className="bg-background text-foreground">All Types</option>
               {allTypes.map((type) => (
-                <option key={type} value={type}>
+                <option key={type} value={type} className="bg-background text-foreground">
                   {formatNodeType(type)}
                 </option>
               ))}

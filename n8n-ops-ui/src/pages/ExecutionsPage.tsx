@@ -376,9 +376,9 @@ export function ExecutionsPage() {
                 onChange={(e) => setSelectedWorkflow(e.target.value)}
                 className="flex h-9 w-full rounded-md border border-input bg-background text-foreground px-3 py-1 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
               >
-                <option value="">All Workflows</option>
+                <option value="" className="bg-background text-foreground">All Workflows</option>
                 {uniqueWorkflows.map((workflow) => (
-                  <option key={workflow.id} value={workflow.id}>
+                  <option key={workflow.id} value={workflow.id} className="bg-background text-foreground">
                     {workflow.name}
                   </option>
                 ))}
@@ -394,11 +394,11 @@ export function ExecutionsPage() {
                 onChange={(e) => setSelectedStatus(e.target.value)}
                 className="flex h-9 w-full rounded-md border border-input bg-background text-foreground px-3 py-1 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
               >
-                <option value="">All Status</option>
-                <option value="success">Success</option>
-                <option value="error">Error</option>
-                <option value="running">Running</option>
-                <option value="waiting">Waiting</option>
+                <option value="" className="bg-background text-foreground">All Status</option>
+                <option value="success" className="bg-background text-foreground">Success</option>
+                <option value="error" className="bg-background text-foreground">Error</option>
+                <option value="running" className="bg-background text-foreground">Running</option>
+                <option value="waiting" className="bg-background text-foreground">Waiting</option>
               </select>
             </div>
 
@@ -411,9 +411,9 @@ export function ExecutionsPage() {
                 onChange={(e) => setSelectedEnvironment(e.target.value as EnvironmentType)}
                 className="flex h-9 w-full rounded-md border border-input bg-background text-foreground px-3 py-1 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
               >
-                <option value="dev">Development</option>
-                <option value="staging">Staging</option>
-                <option value="production">Production</option>
+                <option value="dev" className="bg-background text-foreground">Development</option>
+                <option value="staging" className="bg-background text-foreground">Staging</option>
+                <option value="production" className="bg-background text-foreground">Production</option>
               </select>
             </div>
           </div>
@@ -524,10 +524,10 @@ export function ExecutionsPage() {
                       }}
                       className="h-8 w-20 rounded-md border border-input bg-background text-foreground px-2 py-1 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                     >
-                      <option value={10}>10</option>
-                      <option value={25}>25</option>
-                      <option value={50}>50</option>
-                      <option value={100}>100</option>
+                      <option value={10} className="bg-background text-foreground">10</option>
+                      <option value={25} className="bg-background text-foreground">25</option>
+                      <option value={50} className="bg-background text-foreground">50</option>
+                      <option value={100} className="bg-background text-foreground">100</option>
                     </select>
                   </div>
                   <div className="text-sm text-muted-foreground">

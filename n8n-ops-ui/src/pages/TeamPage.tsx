@@ -397,9 +397,9 @@ export function TeamPage() {
                 onChange={(e) => setInviteForm({ ...inviteForm, role: e.target.value as any })}
                 className="flex h-9 w-full rounded-md border border-input bg-background text-foreground px-3 py-1 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
               >
-                <option value="viewer">Viewer - Read-only access</option>
-                <option value="developer">Developer - Can manage workflows</option>
-                <option value="admin">Admin - Full access</option>
+                <option value="viewer" className="bg-background text-foreground">Viewer - Read-only access</option>
+                <option value="developer" className="bg-background text-foreground">Developer - Can manage workflows</option>
+                <option value="admin" className="bg-background text-foreground">Admin - Full access</option>
               </select>
             </div>
           </div>
@@ -474,9 +474,9 @@ export function TeamPage() {
                 onChange={(e) => setEditForm({ ...editForm, role: e.target.value as any })}
                 className="flex h-9 w-full rounded-md border border-input bg-background text-foreground px-3 py-1 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
               >
-                <option value="viewer">Viewer</option>
-                <option value="developer">Developer</option>
-                <option value="admin">Admin</option>
+                <option value="viewer" className="bg-background text-foreground">Viewer</option>
+                <option value="developer" className="bg-background text-foreground">Developer</option>
+                <option value="admin" className="bg-background text-foreground">Admin</option>
               </select>
             </div>
 
@@ -488,9 +488,9 @@ export function TeamPage() {
                 onChange={(e) => setEditForm({ ...editForm, status: e.target.value as any })}
                 className="flex h-9 w-full rounded-md border border-input bg-background text-foreground px-3 py-1 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
               >
-                <option value="active">Active</option>
-                <option value="pending">Pending</option>
-                <option value="inactive">Inactive</option>
+                <option value="active" className="bg-background text-foreground">Active</option>
+                <option value="pending" className="bg-background text-foreground">Pending</option>
+                <option value="inactive" className="bg-background text-foreground">Inactive</option>
               </select>
             </div>
           </div>

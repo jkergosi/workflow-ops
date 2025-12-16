@@ -281,9 +281,9 @@ export function TagsPage() {
                 onChange={(e) => setSelectedEnvironment(e.target.value as EnvironmentType)}
                 className="flex h-9 w-full rounded-md border border-input bg-background text-foreground px-3 py-1 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
               >
-                <option value="dev">Development</option>
-                <option value="staging">Staging</option>
-                <option value="production">Production</option>
+                <option value="dev" className="bg-background text-foreground">Development</option>
+                <option value="staging" className="bg-background text-foreground">Staging</option>
+                <option value="production" className="bg-background text-foreground">Production</option>
               </select>
             </div>
           </div>
@@ -390,10 +390,10 @@ export function TagsPage() {
                       }}
                       className="h-8 w-20 rounded-md border border-input bg-background text-foreground px-2 py-1 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                     >
-                      <option value={10}>10</option>
-                      <option value={25}>25</option>
-                      <option value={50}>50</option>
-                      <option value={100}>100</option>
+                      <option value={10} className="bg-background text-foreground">10</option>
+                      <option value={25} className="bg-background text-foreground">25</option>
+                      <option value={50} className="bg-background text-foreground">50</option>
+                      <option value={100} className="bg-background text-foreground">100</option>
                     </select>
                   </div>
                   <div className="text-sm text-muted-foreground">

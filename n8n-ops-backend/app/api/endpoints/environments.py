@@ -13,9 +13,8 @@ from app.services.database import db_service
 from app.services.provider_registry import ProviderRegistry
 from app.services.n8n_client import N8NClient  # Keep for direct connection testing
 from app.services.github_service import GitHubService
-from app.services.feature_service import feature_service
-from app.core.feature_gate import require_environment_limit
-from app.core.entitlements_gate import require_entitlement
+from app.services.entitlements_service import entitlements_service
+from app.core.entitlements_gate import require_entitlement, require_environment_limit
 from app.api.endpoints.admin_audit import create_audit_log
 
 router = APIRouter()
@@ -49,12 +48,12 @@ async def get_environments(
 async def get_environment_limits():
     """Get environment limits and current usage for the tenant"""
     try:
-        can_add, message, current, max_allowed = await feature_service.can_add_environment(MOCK_TENANT_ID)
+        can_add, message, current, max_allowed = await entitlements_service.can_add_environment(MOCK_TENANT_ID)
         return {
             "can_add": can_add,
             "message": message,
             "current": current,
-            "max": max_allowed if max_allowed != float('inf') else "unlimited"
+            "max": max_allowed if max_allowed >= 9999 else max_allowed  # 9999 = unlimited
         }
     except Exception as e:
         raise HTTPException(
