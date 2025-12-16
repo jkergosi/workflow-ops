@@ -82,7 +82,7 @@ class ApiClient {
   private client: AxiosInstance;
 
   constructor() {
-    const baseURL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:3000/api/v1';
+    const baseURL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:4000/api/v1';
     this.client = axios.create({
       baseURL,
       headers: {
@@ -849,6 +849,10 @@ class ApiClient {
         pendingApprovalsCount: response.data.pending_approvals_count || 0,
       },
     };
+  }
+
+  async deleteDeployment(deploymentId: string): Promise<void> {
+    await this.client.delete(`/deployments/${deploymentId}`);
   }
 
   async getDeployment(deploymentId: string): Promise<{ data: DeploymentDetail }> {

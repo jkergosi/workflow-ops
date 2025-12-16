@@ -3,6 +3,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from app.core.config import settings
 from app.api.endpoints import environments, workflows, executions, tags, billing, teams, n8n_users, tenants, auth, restore, promotions, dev, credentials, pipelines, deployments, snapshots, observability, notifications, admin_entitlements, admin_audit, admin_billing, admin_usage, admin_credentials, admin_providers, support, admin_support
+from app.services.background_job_service import background_job_service
+from datetime import datetime, timedelta
 import logging
 import traceback
 
@@ -192,6 +194,60 @@ async def root():
 @app.get("/health")
 async def health_check():
     return {"status": "healthy"}
+
+
+@app.on_event("startup")
+async def startup_event():
+    """
+    Cleanup stale background jobs and deployments on startup.
+    This handles cases where the server crashed or restarted while jobs were running.
+    """
+    try:
+        logger.info("Cleaning up stale background jobs on startup...")
+        cleanup_result = await background_job_service.cleanup_stale_jobs(max_runtime_hours=24)
+        logger.info(
+            f"Startup cleanup complete: {cleanup_result['cleaned_count']} jobs cleaned "
+            f"({cleanup_result['stale_running']} running, {cleanup_result['stale_pending']} pending)"
+        )
+        
+        # Also cleanup stale deployments directly (in case job cleanup didn't catch them)
+        try:
+            from app.services.database import db_service
+            from app.schemas.deployment import DeploymentStatus
+            from datetime import timedelta
+            
+            # Use 1 hour threshold instead of 24 hours - deployments shouldn't run that long
+            cutoff_time = datetime.utcnow() - timedelta(hours=1)
+            stale_deployments = (
+                db_service.client.table("deployments")
+                .select("*")
+                .eq("tenant_id", "00000000-0000-0000-0000-000000000000")
+                .eq("status", DeploymentStatus.RUNNING.value)
+                .lt("started_at", cutoff_time.isoformat())
+                .execute()
+            )
+            
+            if stale_deployments.data:
+                logger.info(f"Found {len(stale_deployments.data)} stale deployments to clean up")
+                for dep in stale_deployments.data:
+                    dep_id = dep.get("id")
+                    try:
+                        await db_service.update_deployment(dep_id, {
+                            "status": "failed",
+                            "finished_at": datetime.utcnow().isoformat(),
+                            "summary_json": {
+                                "error": "Deployment timed out after running for more than 1 hour. Background job may have crashed or server restarted.",
+                                "timeout_hours": 1
+                            }
+                        })
+                        logger.info(f"Marked stale deployment {dep_id} as failed")
+                    except Exception as dep_error:
+                        logger.error(f"Failed to mark stale deployment {dep_id} as failed: {str(dep_error)}")
+        except Exception as dep_cleanup_error:
+            logger.error(f"Failed to cleanup stale deployments: {str(dep_cleanup_error)}", exc_info=True)
+            
+    except Exception as e:
+        logger.error(f"Failed to cleanup stale jobs on startup: {str(e)}", exc_info=True)
 
 
 @app.exception_handler(Exception)

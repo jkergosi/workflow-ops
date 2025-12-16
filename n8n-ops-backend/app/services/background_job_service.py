@@ -253,6 +253,123 @@ class BackgroundJobService:
         
         return await BackgroundJobService.update_job_status(job_id, BackgroundJobStatus.RUNNING, progress=progress)
 
+    @staticmethod
+    async def cleanup_stale_jobs(
+        max_runtime_hours: int = 24,
+        tenant_id: Optional[str] = None
+    ) -> Dict[str, int]:
+        """
+        Clean up stale jobs that have been running too long.
+        This should be called on startup and periodically to handle cases where
+        the server crashed or restarted while jobs were running.
+        
+        Args:
+            max_runtime_hours: Maximum hours a job should run before being marked as failed
+            tenant_id: Optional tenant ID to filter by (None = all tenants)
+            
+        Returns:
+            Dictionary with counts of cleaned up jobs
+        """
+        from datetime import timedelta
+        
+        cutoff_time = datetime.utcnow() - timedelta(hours=max_runtime_hours)
+        cutoff_iso = cutoff_time.isoformat()
+        
+        # Find jobs that are still running but started too long ago
+        query = (
+            db_service.client.table("background_jobs")
+            .select("*")
+            .eq("status", BackgroundJobStatus.RUNNING)
+            .lt("started_at", cutoff_iso)
+        )
+        
+        if tenant_id:
+            query = query.eq("tenant_id", tenant_id)
+        
+        result = query.execute()
+        stale_jobs = result.data or []
+        
+        cleaned_count = 0
+        failed_count = 0
+        
+        for job in stale_jobs:
+            job_id = job.get("id")
+            try:
+                # Mark as failed with timeout error
+                await BackgroundJobService.update_job_status(
+                    job_id=job_id,
+                    status=BackgroundJobStatus.FAILED,
+                    error_message=f"Job timed out after running for more than {max_runtime_hours} hours. Server may have restarted or the task crashed.",
+                    error_details={
+                        "timeout_hours": max_runtime_hours,
+                        "started_at": job.get("started_at"),
+                        "marked_stale_at": datetime.utcnow().isoformat()
+                    }
+                )
+                
+                # Also update associated deployment if this is a promotion job
+                if job.get("resource_type") == "promotion" and job.get("result", {}).get("deployment_id"):
+                    deployment_id = job.get("result", {}).get("deployment_id")
+                    try:
+                        from app.services.database import db_service as db_svc
+                        await db_svc.update_deployment(deployment_id, {
+                            "status": "failed",
+                            "finished_at": datetime.utcnow().isoformat(),
+                            "summary_json": {
+                                "error": f"Deployment timed out after running for more than {max_runtime_hours} hours",
+                                "timeout_hours": max_runtime_hours
+                            }
+                        })
+                        logger.info(f"Marked associated deployment {deployment_id} as failed due to stale job")
+                    except Exception as dep_error:
+                        logger.error(f"Failed to update deployment {deployment_id} for stale job: {str(dep_error)}")
+                
+                cleaned_count += 1
+                failed_count += 1
+                logger.warning(f"Marked stale job {job_id} as failed (running for >{max_runtime_hours}h)")
+            except Exception as e:
+                logger.error(f"Failed to mark stale job {job_id} as failed: {str(e)}")
+        
+        # Also handle jobs that are pending but were created too long ago (likely never started)
+        pending_cutoff = datetime.utcnow() - timedelta(hours=1)  # 1 hour for pending jobs
+        pending_query = (
+            db_service.client.table("background_jobs")
+            .select("*")
+            .eq("status", BackgroundJobStatus.PENDING)
+            .lt("created_at", pending_cutoff.isoformat())
+        )
+        
+        if tenant_id:
+            pending_query = pending_query.eq("tenant_id", tenant_id)
+        
+        pending_result = pending_query.execute()
+        stale_pending = pending_result.data or []
+        
+        for job in stale_pending:
+            job_id = job.get("id")
+            try:
+                await BackgroundJobService.update_job_status(
+                    job_id=job_id,
+                    status=BackgroundJobStatus.FAILED,
+                    error_message="Job was pending for more than 1 hour and never started. Server may have restarted before the task could run.",
+                    error_details={
+                        "created_at": job.get("created_at"),
+                        "marked_stale_at": datetime.utcnow().isoformat()
+                    }
+                )
+                cleaned_count += 1
+                failed_count += 1
+                logger.warning(f"Marked stale pending job {job_id} as failed")
+            except Exception as e:
+                logger.error(f"Failed to mark stale pending job {job_id} as failed: {str(e)}")
+        
+        return {
+            "cleaned_count": cleaned_count,
+            "failed_count": failed_count,
+            "stale_running": len(stale_jobs),
+            "stale_pending": len(stale_pending)
+        }
+
 
 # Singleton instance
 background_job_service = BackgroundJobService()

@@ -400,15 +400,34 @@ async def sync_environment(
                 detail="Environment not found"
             )
 
+        # DEBUG: Log what we got from the database
+        print(f"SYNC DEBUG - Environment keys: {list(environment.keys())}", flush=True)
+        print(f"SYNC DEBUG - n8n_base_url: {environment.get('n8n_base_url', 'MISSING')}", flush=True)
+        print(f"SYNC DEBUG - n8n_api_key present: {bool(environment.get('n8n_api_key'))}", flush=True)
+        print(f"SYNC DEBUG - n8n_api_key value (first 10 chars): {str(environment.get('n8n_api_key', ''))[:10]}...", flush=True)
+
         # Create provider adapter for this environment
-        adapter = ProviderRegistry.get_adapter_for_environment(environment)
+        print(f"SYNC DEBUG - About to create adapter", flush=True)
+        try:
+            adapter = ProviderRegistry.get_adapter_for_environment(environment)
+            print(f"SYNC DEBUG - Adapter created: {type(adapter)}", flush=True)
+        except Exception as e:
+            print(f"SYNC DEBUG - Adapter creation failed: {type(e).__name__}: {str(e)}", flush=True)
+            raise
 
         # Test connection first
-        is_connected = await adapter.test_connection()
+        print(f"SYNC DEBUG - About to test connection", flush=True)
+        try:
+            is_connected = await adapter.test_connection()
+            print(f"SYNC DEBUG - test_connection returned: {is_connected}", flush=True)
+        except Exception as e:
+            print(f"SYNC DEBUG - test_connection exception: {type(e).__name__}: {str(e)}", flush=True)
+            is_connected = False
+
         if not is_connected:
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail="Cannot connect to provider instance. Please check environment configuration."
+                detail=f"Cannot connect to provider instance. Debug: base_url={environment.get('n8n_base_url', 'MISSING')}, api_key_present={bool(environment.get('n8n_api_key'))}"
             )
 
         sync_results = {

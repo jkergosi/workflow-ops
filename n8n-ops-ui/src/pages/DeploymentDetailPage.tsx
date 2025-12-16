@@ -112,6 +112,34 @@ export function DeploymentDetailPage() {
     return `${minutes}m ${remainingSeconds}s`;
   };
 
+  const deleteMutation = useMutation({
+    mutationFn: (deploymentId: string) => apiClient.deleteDeployment(deploymentId),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['deployments'] });
+      toast.success('Deployment deleted successfully');
+      setDeleteDialogOpen(false);
+      navigate('/deployments');
+    },
+    onError: (error: any) => {
+      toast.error(error?.response?.data?.detail || 'Failed to delete deployment');
+    },
+  });
+
+  const canDeleteDeployment = () => {
+    if (!deployment) return false;
+    return deployment.status !== 'running';
+  };
+
+  const handleDeleteClick = () => {
+    setDeleteDialogOpen(true);
+  };
+
+  const handleConfirmDelete = () => {
+    if (deployment) {
+      deleteMutation.mutate(deployment.id);
+    }
+  };
+
   if (isLoading) {
     return (
       <div className="flex items-center justify-center h-64">

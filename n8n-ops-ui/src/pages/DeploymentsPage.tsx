@@ -1,5 +1,6 @@
 // @ts-nocheck
 // TODO: Fix TypeScript errors in this file
+import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
@@ -31,6 +32,9 @@ import {
 
 export function DeploymentsPage() {
   const navigate = useNavigate();
+  const queryClient = useQueryClient();
+  const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
+  const [deploymentToDelete, setDeploymentToDelete] = useState<Deployment | null>(null);
 
   const { data: deploymentsData, isLoading } = useQuery({
     queryKey: ['deployments'],
@@ -116,6 +120,31 @@ export function DeploymentsPage() {
 
   const handlePromoteWorkflows = () => {
     navigate('/promote');
+  };
+
+  const deleteMutation = useMutation({
+    mutationFn: (deploymentId: string) => apiClient.deleteDeployment(deploymentId),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['deployments'] });
+      toast.success('Deployment deleted successfully');
+      setDeleteDialogOpen(false);
+      setDeploymentToDelete(null);
+    },
+    onError: (error: any) => {
+      toast.error(error?.response?.data?.detail || 'Failed to delete deployment');
+    },
+  });
+
+  const handleDeleteClick = (e: React.MouseEvent, deployment: Deployment) => {
+    e.stopPropagation();
+    setDeploymentToDelete(deployment);
+    setDeleteDialogOpen(true);
+  };
+
+  const handleConfirmDelete = () => {
+    if (deploymentToDelete) {
+      deleteMutation.mutate(deploymentToDelete.id);
+    }
   };
 
   return (
@@ -209,6 +238,7 @@ export function DeploymentsPage() {
                   <TableHead>Triggered By</TableHead>
                   <TableHead>Started</TableHead>
                   <TableHead>Duration</TableHead>
+                  <TableHead>Actions</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -257,6 +287,21 @@ export function DeploymentsPage() {
                       </TableCell>
                       <TableCell className="text-sm text-muted-foreground">
                         {formatDuration(deployment.startedAt, deployment.finishedAt)}
+                      </TableCell>
+                      <TableCell onClick={(e) => e.stopPropagation()}>
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="icon"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleDeleteClick(e, deployment);
+                          }}
+                          disabled={deployment.status === 'running'}
+                          className="h-8 w-8"
+                        >
+                          <Trash2 className="h-4 w-4" />
+                        </Button>
                       </TableCell>
                     </TableRow>
                   );

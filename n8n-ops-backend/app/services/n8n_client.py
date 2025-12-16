@@ -38,16 +38,90 @@ class N8NClient:
             return response.json()
 
     async def create_workflow(self, workflow_data: Dict[str, Any]) -> Dict[str, Any]:
-        """Create a new workflow in N8N"""
+        """Create a new workflow in N8N - only sends required fields"""
+        import json
+        
+        # Clean data - only include fields that N8N API accepts
+        cleaned_data = {}
+        
+        # Required fields
+        if "name" in workflow_data:
+            cleaned_data["name"] = workflow_data["name"]
+        if "nodes" in workflow_data:
+            cleaned_data["nodes"] = workflow_data["nodes"]
+        if "connections" in workflow_data:
+            cleaned_data["connections"] = workflow_data["connections"]
+        if "settings" in workflow_data:
+            cleaned_data["settings"] = workflow_data["settings"]
+        # Optional: staticData if provided
+        if "staticData" in workflow_data and workflow_data["staticData"]:
+            cleaned_data["staticData"] = workflow_data["staticData"]
+        
+        # DO NOT include 'id', 'active', 'shared', 'tags', 'createdAt', 'updatedAt', etc.
+        
+        # Validate and clean the data before sending
+        import json
+        try:
+            # Test JSON serialization first
+            json_str = json.dumps(cleaned_data, default=str, ensure_ascii=False)
+        except (TypeError, ValueError) as json_error:
+            error_msg = f"Workflow data is not JSON serializable: {str(json_error)}"
+            print(f"ERROR: {error_msg}")
+            print(f"ERROR: Data keys: {list(cleaned_data.keys())}")
+            raise ValueError(error_msg) from json_error
+        
         async with httpx.AsyncClient() as client:
-            response = await client.post(
-                f"{self.base_url}/api/v1/workflows",
-                headers=self.headers,
-                json=workflow_data,
-                timeout=30.0
-            )
-            response.raise_for_status()
-            return response.json()
+            try:
+                # Use the pre-serialized JSON string approach to avoid Windows errno 22 issues
+                # httpx will handle the json parameter, but we've validated it's serializable
+                response = await client.post(
+                    f"{self.base_url}/api/v1/workflows",
+                    headers=self.headers,
+                    json=cleaned_data,
+                    timeout=30.0
+                )
+                response.raise_for_status()
+                return response.json()
+            except httpx.HTTPStatusError as e:
+                error_msg = f"n8n create_workflow returned {e.response.status_code}"
+                print(f"ERROR: {error_msg}")
+                print(f"ERROR: Response text: {e.response.text[:500] if e.response.text else 'No response text'}")
+                try:
+                    print(f"ERROR: What we sent (first 1000 chars): {json_str[:1000]}")
+                except:
+                    print(f"ERROR: Could not serialize sent data for logging")
+                raise
+            except OSError as e:
+                # Windows-specific error handling for errno 22
+                if hasattr(e, 'errno') and e.errno == 22:
+                    error_msg = f"Windows errno 22 (Invalid argument) - possibly invalid characters or data in workflow"
+                    print(f"ERROR: {error_msg}")
+                    print(f"ERROR: Exception: {str(e)}")
+                    print(f"ERROR: Workflow name: {cleaned_data.get('name', 'unknown')}")
+                    print(f"ERROR: Number of nodes: {len(cleaned_data.get('nodes', []))}")
+                    print(f"ERROR: Number of connections: {len(str(cleaned_data.get('connections', {})))}")
+                    # Try to identify problematic data
+                    try:
+                        for i, node in enumerate(cleaned_data.get('nodes', [])[:5]):  # Check first 5 nodes
+                            try:
+                                node_json = json.dumps(node, default=str, ensure_ascii=False)
+                                if len(node_json) > 2000:
+                                    print(f"ERROR: Node {i} ({node.get('name', 'unnamed')}) is very large: {len(node_json)} chars")
+                            except Exception as node_error:
+                                print(f"ERROR: Node {i} cannot be serialized: {node_error}")
+                    except Exception as node_error:
+                        print(f"ERROR: Could not inspect nodes: {node_error}")
+                    raise ValueError(error_msg) from e
+                raise
+            except Exception as e:
+                error_msg = f"Unexpected error in create_workflow: {str(e)}"
+                print(f"ERROR: {error_msg}")
+                print(f"ERROR: Exception type: {type(e).__name__}")
+                if hasattr(e, 'errno'):
+                    print(f"ERROR: errno: {e.errno}")
+                import traceback
+                traceback.print_exc()
+                raise
 
     async def update_workflow(self, workflow_id: str, workflow_data: Dict[str, Any]) -> Dict[str, Any]:
         """Update an existing workflow - only sends required fields: name, nodes, connections, settings"""
@@ -141,15 +215,22 @@ class N8NClient:
 
     async def test_connection(self) -> bool:
         """Test if the N8N instance is reachable and credentials are valid"""
+        print(f"N8NClient.test_connection - base_url: {self.base_url}", flush=True)
+        print(f"N8NClient.test_connection - api_key (first 10): {self.api_key[:10] if self.api_key else 'NONE'}...", flush=True)
+        print(f"N8NClient.test_connection - api_key length: {len(self.api_key) if self.api_key else 0}", flush=True)
         try:
             async with httpx.AsyncClient() as client:
+                url = f"{self.base_url}/api/v1/workflows"
+                print(f"N8NClient.test_connection - requesting: {url}", flush=True)
                 response = await client.get(
-                    f"{self.base_url}/api/v1/workflows",
+                    url,
                     headers=self.headers,
                     timeout=10.0
                 )
+                print(f"N8NClient.test_connection - status: {response.status_code}", flush=True)
                 return response.status_code == 200
-        except Exception:
+        except Exception as e:
+            print(f"N8NClient.test_connection - exception: {type(e).__name__}: {str(e)}", flush=True)
             return False
 
     async def get_executions(self, limit: int = 100) -> List[Dict[str, Any]]:

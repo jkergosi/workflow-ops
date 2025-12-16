@@ -170,9 +170,33 @@ async def _execute_promotion_background(
             progress={"current": 0, "total": total_workflows, "percentage": 0, "message": "Starting promotion execution"}
         )
 
-        # Create n8n clients
-        source_client = N8NClient(source_env.get("base_url"), source_env.get("api_key"))
-        target_client = N8NClient(target_env.get("base_url"), target_env.get("api_key"))
+        # Create n8n clients - use correct field names from environment
+        source_base_url = source_env.get("n8n_base_url") or source_env.get("base_url")
+        source_api_key = source_env.get("n8n_api_key") or source_env.get("api_key")
+        target_base_url = target_env.get("n8n_base_url") or target_env.get("base_url")
+        target_api_key = target_env.get("n8n_api_key") or target_env.get("api_key")
+        
+        if not source_base_url or not source_api_key:
+            raise ValueError(f"Source environment missing required fields: base_url={source_base_url}, api_key={'***' if source_api_key else None}")
+        if not target_base_url or not target_api_key:
+            raise ValueError(f"Target environment missing required fields: base_url={target_base_url}, api_key={'***' if target_api_key else None}")
+        
+        logger.info(f"[Job {job_id}] Creating N8N clients - Source: {source_base_url}, Target: {target_base_url}")
+        source_client = N8NClient(source_base_url, source_api_key)
+        target_client = N8NClient(target_base_url, target_api_key)
+        
+        # Test connections before proceeding
+        logger.info(f"[Job {job_id}] Testing source environment connection...")
+        source_connected = await source_client.test_connection()
+        if not source_connected:
+            raise ValueError(f"Failed to connect to source environment at {source_base_url}")
+        logger.info(f"[Job {job_id}] Source environment connection successful")
+        
+        logger.info(f"[Job {job_id}] Testing target environment connection...")
+        target_connected = await target_client.test_connection()
+        if not target_connected:
+            raise ValueError(f"Failed to connect to target environment at {target_base_url}")
+        logger.info(f"[Job {job_id}] Target environment connection successful")
 
         # Transfer each workflow
         created_count = 0
@@ -198,7 +222,7 @@ async def _execute_promotion_background(
                 )
 
                 # Fetch workflow from source
-                logger.info(f"[Job {job_id}] Fetching workflow {workflow_id} ({workflow_name}) from source environment {source_env.get('name', source_env.get('id'))}")
+                logger.info(f"[Job {job_id}] Fetching workflow {workflow_id} ({workflow_name}) from source environment {source_env.get('n8n_name', source_env.get('id'))}")
                 source_workflow = await source_client.get_workflow(workflow_id)
                 
                 if not source_workflow:
@@ -216,8 +240,9 @@ async def _execute_promotion_background(
                 logger.info(f"[Job {job_id}] Prepared workflow data for {workflow_name}: {len(workflow_data.get('nodes', []))} nodes")
 
                 # Try to find existing workflow in target by name
-                logger.info(f"[Job {job_id}] Checking for existing workflow '{workflow_name}' in target environment {target_env.get('name', target_env.get('id'))}")
+                logger.info(f"[Job {job_id}] Checking for existing workflow '{workflow_name}' in target environment {target_env.get('n8n_name', target_env.get('id'))}")
                 target_workflows = await target_client.get_workflows()
+                logger.info(f"[Job {job_id}] Found {len(target_workflows)} existing workflows in target environment")
                 existing_workflow = next(
                     (w for w in target_workflows if w.get("name") == workflow_name),
                     None
@@ -239,8 +264,21 @@ async def _execute_promotion_background(
                     change_type = "new"
 
             except Exception as e:
-                logger.error(f"Failed to transfer workflow {workflow_name}: {str(e)}")
+                import traceback
+                error_traceback = traceback.format_exc()
                 error_message = str(e)
+                
+                # Log detailed error information
+                logger.error(f"[Job {job_id}] Failed to transfer workflow {workflow_name}: {error_message}")
+                logger.error(f"[Job {job_id}] Error type: {type(e).__name__}")
+                if hasattr(e, 'errno') and e.errno == 22:
+                    logger.error(f"[Job {job_id}] Windows errno 22 (Invalid argument) - check for invalid characters in workflow data")
+                logger.error(f"[Job {job_id}] Traceback: {error_traceback}")
+                
+                # Truncate error message if too long for database
+                if len(error_message) > 500:
+                    error_message = error_message[:500] + "..."
+                
                 status_result = WorkflowStatus.FAILED
                 failed_count += 1
 
@@ -465,6 +503,8 @@ async def execute_promotion(
         )
 
         # Start background execution task
+        # FastAPI BackgroundTasks.add_task() supports async functions directly
+        # Pass the async function directly - FastAPI will handle it
         background_tasks.add_task(
             _execute_promotion_background,
             job_id=job_id,
@@ -475,6 +515,8 @@ async def execute_promotion(
             target_env=target_env,
             selected_workflows=selected_workflows
         )
+        
+        logger.info(f"[Job {job_id}] Background task added for promotion {promotion_id}, deployment {deployment_id}")
 
         # Return immediately with job info
         return {

@@ -4,8 +4,23 @@ FastAPI backend for N8N Ops platform.
 
 ## Running
 
+### Quick Start Scripts (Windows PowerShell)
+
+```powershell
+# Start backend
+.\start-backend.ps1
+
+# Stop backend
+.\stop-backend.ps1
+
+# Restart backend
+.\restart-backend.ps1
+```
+
+### Manual Start
+
 ```bash
-python -m uvicorn app.main:app --reload --port <BACKEND_PORT>
+python -m uvicorn app.main:app --reload --host 0.0.0.0 --port <BACKEND_PORT>
 ```
 
 Check port in `../.env.local` (default: 4000 for main worktree).

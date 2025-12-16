@@ -1,4 +1,5 @@
-from fastapi import APIRouter, HTTPException, status, Query, Depends, Request
+from fastapi import APIRouter, HTTPException, Query, Depends, Request
+from fastapi import status as http_status
 from typing import Optional, List
 from datetime import datetime, timedelta
 from app.services.database import db_service
@@ -14,6 +15,9 @@ from app.core.entitlements_gate import require_entitlement
 from app.services.background_job_service import background_job_service
 from app.services.auth_service import get_current_user
 from app.api.endpoints.admin_audit import create_audit_log
+import logging
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -41,7 +45,17 @@ async def get_deployments(
     """
     try:
         # Build query - exclude deleted deployments by default
-        query = db_service.client.table("deployments").select("*").eq("tenant_id", MOCK_TENANT_ID).is_("deleted_at", "null")
+        # Note: deleted_at column may not exist if migration hasn't run yet
+        query = db_service.client.table("deployments").select("*").eq("tenant_id", MOCK_TENANT_ID)
+        
+        # Try to filter by deleted_at, but handle gracefully if column doesn't exist
+        # We'll catch the error when executing if the column doesn't exist
+        try:
+            # Test if column exists by trying to add the filter
+            query = query.is_("deleted_at", "null")
+        except Exception:
+            # Column doesn't exist yet, skip the filter
+            pass
 
         if status:
             query = query.eq("status", status.value)
@@ -57,7 +71,31 @@ async def get_deployments(
             query = query.lte("started_at", to_date.isoformat())
 
         # Get total count
-        count_result = query.execute()
+        # Handle case where deleted_at column doesn't exist (migration may not have run)
+        try:
+            count_result = query.execute()
+        except Exception as db_error:
+            # If error is about missing column (PostgreSQL error code 42703), rebuild query without deleted_at filter
+            error_str = str(db_error)
+            if "deleted_at" in error_str or "42703" in error_str or "column" in error_str.lower():
+                # Rebuild query without deleted_at filter
+                query = db_service.client.table("deployments").select("*").eq("tenant_id", MOCK_TENANT_ID)
+                if status:
+                    query = query.eq("status", status.value)
+                if pipeline_id:
+                    query = query.eq("pipeline_id", pipeline_id)
+                if environment_id:
+                    query = query.or_(
+                        f"source_environment_id.eq.{environment_id},target_environment_id.eq.{environment_id}"
+                    )
+                if from_date:
+                    query = query.gte("started_at", from_date.isoformat())
+                if to_date:
+                    query = query.lte("started_at", to_date.isoformat())
+                count_result = query.execute()
+            else:
+                raise
+        
         total = len(count_result.data) if count_result.data else 0
 
         # Apply pagination
@@ -67,6 +105,41 @@ async def get_deployments(
 
         result = query.execute()
         deployments_data = result.data or []
+        
+        # Check for stale running deployments and mark them as failed
+        # This runs on every GET request to catch stale deployments during polling
+        for dep_data in deployments_data:
+            if dep_data.get("status") == DeploymentStatus.RUNNING.value:
+                started_at_str = dep_data.get("started_at")
+                if started_at_str:
+                    try:
+                        started_at = datetime.fromisoformat(started_at_str.replace('Z', '+00:00')) if isinstance(started_at_str, str) else started_at_str
+                        if hasattr(started_at, 'tzinfo') and started_at.tzinfo is not None:
+                            started_at_naive = started_at.replace(tzinfo=None)
+                        else:
+                            started_at_naive = started_at
+                        hours_running = (datetime.utcnow() - started_at_naive).total_seconds() / 3600
+                        
+                        # If running for more than 1 hour, mark as failed
+                        if hours_running > 1:
+                            dep_id = dep_data.get("id")
+                            logger.warning(f"Detected stale deployment {dep_id} running for {hours_running:.2f} hours, marking as failed")
+                            try:
+                                await db_service.update_deployment(dep_id, {
+                                    "status": "failed",
+                                    "finished_at": datetime.utcnow().isoformat(),
+                                    "summary_json": {
+                                        "error": f"Deployment timed out after running for {hours_running:.2f} hours. Background job may have crashed or server restarted.",
+                                        "timeout_hours": hours_running
+                                    }
+                                })
+                                # Update the data in the response
+                                dep_data["status"] = "failed"
+                                dep_data["finished_at"] = datetime.utcnow().isoformat()
+                            except Exception as update_error:
+                                logger.error(f"Failed to mark stale deployment {dep_id} as failed: {str(update_error)}")
+                    except Exception as check_error:
+                        logger.error(f"Failed to check deployment staleness: {str(check_error)}")
 
         # Calculate this week success count
         week_ago = datetime.utcnow() - timedelta(days=7)
@@ -99,7 +172,7 @@ async def get_deployments(
 
     except Exception as e:
         raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            status_code=http_status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to fetch deployments: {str(e)}",
         )
 
@@ -114,19 +187,35 @@ async def get_deployment(
     """
     try:
         # Get deployment - exclude deleted deployments
-        deployment_result = (
+        # Note: deleted_at column may not exist if migration hasn't run yet
+        query = (
             db_service.client.table("deployments")
             .select("*")
             .eq("id", deployment_id)
             .eq("tenant_id", MOCK_TENANT_ID)
-            .is_("deleted_at", "null")
-            .single()
-            .execute()
         )
+        
+        # Try to filter by deleted_at, but handle gracefully if column doesn't exist
+        try:
+            query = query.is_("deleted_at", "null")
+            deployment_result = query.single().execute()
+        except Exception as db_error:
+            # If error is about missing column, rebuild query without deleted_at filter
+            error_str = str(db_error)
+            if "deleted_at" in error_str or "42703" in error_str or "column" in error_str.lower():
+                query = (
+                    db_service.client.table("deployments")
+                    .select("*")
+                    .eq("id", deployment_id)
+                    .eq("tenant_id", MOCK_TENANT_ID)
+                )
+                deployment_result = query.single().execute()
+            else:
+                raise
 
         if not deployment_result.data:
             raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
+                status_code=http_status.HTTP_404_NOT_FOUND,
                 detail=f"Deployment {deployment_id} not found",
             )
 
@@ -143,10 +232,46 @@ async def get_deployment(
             DeploymentWorkflowResponse(**wf) for wf in (workflows_result.data or [])
         ]
         
-        # If deployment is running, try to get job status for more details
-        # Find the promotion associated with this deployment and get its job
+        # If deployment is running, check if it's stale and verify job status
         job_status = None
         if deployment.status == DeploymentStatus.RUNNING.value:
+            # Check if deployment has been running too long (>1 hour)
+            started_at_str = deployment.started_at
+            if started_at_str:
+                try:
+                    started_at = datetime.fromisoformat(started_at_str.replace('Z', '+00:00')) if isinstance(started_at_str, str) else started_at_str
+                    if hasattr(started_at, 'tzinfo') and started_at.tzinfo is not None:
+                        started_at_naive = started_at.replace(tzinfo=None)
+                    else:
+                        started_at_naive = started_at
+                    hours_running = (datetime.utcnow() - started_at_naive).total_seconds() / 3600
+                    
+                    # If running for more than 1 hour, mark as failed
+                    if hours_running > 1:
+                        logger.warning(f"Deployment {deployment_id} has been running for {hours_running:.2f} hours, marking as failed")
+                        await db_service.update_deployment(deployment_id, {
+                            "status": "failed",
+                            "finished_at": datetime.utcnow().isoformat(),
+                            "summary_json": {
+                                "error": f"Deployment timed out after running for {hours_running:.2f} hours. Background job may have crashed or server restarted.",
+                                "timeout_hours": hours_running
+                            }
+                        })
+                        # Refresh deployment data
+                        deployment_result = (
+                            db_service.client.table("deployments")
+                            .select("*")
+                            .eq("id", deployment_id)
+                            .eq("tenant_id", MOCK_TENANT_ID)
+                            .single()
+                            .execute()
+                        )
+                        if deployment_result.data:
+                            deployment = DeploymentResponse(**deployment_result.data)
+                except Exception as stale_check_error:
+                    logger.error(f"Failed to check if deployment {deployment_id} is stale: {str(stale_check_error)}")
+            
+            # Try to get job status for more details
             try:
                 # Find promotion that matches this deployment
                 promotion_result = (
@@ -173,6 +298,27 @@ async def get_deployment(
                             "progress": job.get("progress", {}),
                             "error_message": job.get("error_message")
                         }
+                        
+                        # If job is failed/completed but deployment is still running, update deployment
+                        if job.get("status") in ["failed", "completed"] and deployment.status == DeploymentStatus.RUNNING.value:
+                            logger.warning(f"Deployment {deployment_id} is running but job is {job.get('status')}, updating deployment status")
+                            final_status = "failed" if job.get("status") == "failed" else "success"
+                            await db_service.update_deployment(deployment_id, {
+                                "status": final_status,
+                                "finished_at": datetime.utcnow().isoformat(),
+                                "summary_json": job.get("result", {}).get("summary", {})
+                            })
+                            # Refresh deployment data
+                            deployment_result = (
+                                db_service.client.table("deployments")
+                                .select("*")
+                                .eq("id", deployment_id)
+                                .eq("tenant_id", MOCK_TENANT_ID)
+                                .single()
+                                .execute()
+                            )
+                            if deployment_result.data:
+                                deployment = DeploymentResponse(**deployment_result.data)
             except Exception:
                 # If we can't get job status, continue without it
                 pass
@@ -214,12 +360,12 @@ async def get_deployment(
         raise
     except Exception as e:
             raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                status_code=http_status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail=f"Failed to fetch deployment: {str(e)}",
             )
 
 
-@router.delete("/{deployment_id}")
+@router.delete("/{deployment_id}", status_code=http_status.HTTP_204_NO_CONTENT)
 async def delete_deployment(
     deployment_id: str,
     request: Request,
@@ -231,7 +377,8 @@ async def delete_deployment(
     
     Restrictions:
     - Cannot delete running deployments
-    - Cannot delete deployments less than 7 days old
+    - Successful deployments must be at least 1 day old (for audit trail)
+    - Failed/canceled deployments can be deleted immediately
     """
     try:
         # Get deployment
@@ -246,7 +393,7 @@ async def delete_deployment(
 
         if not deployment_result.data:
             raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
+                status_code=http_status.HTTP_404_NOT_FOUND,
                 detail=f"Deployment {deployment_id} not found",
             )
 
@@ -255,27 +402,41 @@ async def delete_deployment(
         # Check if already deleted
         if deployment.get("deleted_at"):
             raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
+                status_code=http_status.HTTP_400_BAD_REQUEST,
                 detail="Deployment is already deleted"
             )
 
         # Check restrictions
         if deployment.get("status") == DeploymentStatus.RUNNING.value:
             raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
+                status_code=http_status.HTTP_400_BAD_REQUEST,
                 detail="Cannot delete a running deployment"
             )
 
-        # Check age restriction (7 days)
-        started_at = deployment.get("started_at")
-        if started_at:
-            started_datetime = datetime.fromisoformat(started_at.replace('Z', '+00:00')) if isinstance(started_at, str) else started_at
-            age_days = (datetime.utcnow() - started_datetime.replace(tzinfo=None)).days if hasattr(started_datetime, 'tzinfo') else (datetime.utcnow() - started_datetime).days
-            if age_days < 7:
-                raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail=f"Cannot delete deployments less than 7 days old (deployment is {age_days} days old)"
-                )
+        # Age restriction: Only apply to successful deployments
+        # Failed/canceled deployments can be deleted immediately
+        deployment_status = deployment.get("status")
+        if deployment_status == DeploymentStatus.SUCCESS.value:
+            # For successful deployments, require 1 day minimum age for audit trail
+            created_at_str = deployment.get("created_at")
+            if created_at_str:
+                created_at = datetime.fromisoformat(created_at_str.replace('Z', '+00:00')) if isinstance(created_at_str, str) else created_at_str
+                # Handle timezone-aware datetime
+                if hasattr(created_at, 'tzinfo') and created_at.tzinfo is not None:
+                    created_at_naive = created_at.replace(tzinfo=None)
+                else:
+                    created_at_naive = created_at
+                age_days = (datetime.utcnow() - created_at_naive).days
+                min_age_days = 1  # Reduced from 7 to 1 day for successful deployments
+                if age_days < min_age_days:
+                    raise HTTPException(
+                        status_code=http_status.HTTP_400_BAD_REQUEST,
+                        detail=f"Cannot delete successful deployments less than {min_age_days} day old. This deployment is {age_days} days old."
+                    )
+            else:
+                # If created_at is missing, allow deletion (shouldn't happen, but be permissive)
+                logger.warning(f"Deployment {deployment_id} missing created_at field, allowing deletion")
+        # Failed and canceled deployments can be deleted immediately (no age restriction)
 
         # Get user info
         user = user_info.get("user", {})
@@ -296,7 +457,7 @@ async def delete_deployment(
 
         if not deleted_deployment:
             raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                status_code=http_status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail="Failed to delete deployment"
             )
 
@@ -331,23 +492,21 @@ async def delete_deployment(
                 user_agent=user_agent,
                 metadata={
                     "deleted_at": deleted_deployment.get("deleted_at"),
-                    "age_days": age_days if started_at else None
+                    "age_days": age_days if created_at_str else None,
+                    "created_at": created_at_str
                 }
             )
         except Exception as audit_error:
             logger.warning(f"Failed to create audit log for deployment deletion: {str(audit_error)}")
 
-        return {
-            "success": True,
-            "message": "Deployment deleted successfully",
-            "deployment_id": deployment_id
-        }
+        # Return 204 No Content (no response body)
+        return None
 
     except HTTPException:
         raise
     except Exception as e:
         raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            status_code=http_status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to delete deployment: {str(e)}",
         )
 
