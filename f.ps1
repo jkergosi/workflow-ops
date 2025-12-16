@@ -1,9 +1,58 @@
-# =====================================
-# Worktree Menu – Option A (Refined)
-# =====================================
+<#
+=====================================================
+Worktree Menu Script (Interactive + Headless)
 
+INTERACTIVE MODE
+----------------
+Run with no parameters:
+  .\worktree_menu.ps1
+
+HEADLESS MODE (no prompts, automation-safe)
+-------------------------------------------
+Required:
+  -Feature  M | 1 | 2 | 3 | 4
+  -Action   S | F | D
+
+Action-specific parameters:
+
+Start:
+  .\worktree_menu.ps1 -Feature 2 -Action S
+
+Finish:
+  .\worktree_menu.ps1 -Feature 3 -Action F -Message "Commit message"
+
+  Optional:
+    -AllowEmpty   Allow commit when no changes exist
+
+Destroy:
+  .\worktree_menu.ps1 -Feature 4 -Action D -Yes
+
+HELP
+----
+  .\worktree_menu.ps1 -Help
+
+Exit codes:
+  0 = success
+  1 = invalid usage or failure
+=====================================================
+#>
+
+param (
+    [ValidateSet("M","1","2","3","4")]
+    [string]$Feature,
+
+    [ValidateSet("S","F","D")]
+    [string]$Action,
+
+    [string]$Message,
+
+    [switch]$Yes,
+    [switch]$AllowEmpty,
+    [switch]$Help
+)
+
+# ---------- CONFIG ----------
 $WorktreeRoot = "F:\web\AllThings\_projects\n8n-ops-trees"
-
 $FeatureOrder = @("M", "1", "2", "3", "4")
 
 $Features = @{
@@ -14,22 +63,19 @@ $Features = @{
     "4" = "f4"
 }
 
-# ---------- Helpers ----------
+# ---------- HELP ----------
+if ($Help) {
+    Get-Help $MyInvocation.MyCommand.Path -Detailed
+    exit 0
+}
+
+# ---------- HELPERS ----------
 function Get-WorktreePath($name) {
     Join-Path $WorktreeRoot $name
 }
 
 function Test-WorktreeExists($name) {
     Test-Path (Get-WorktreePath $name)
-}
-
-function Require-Worktree($name) {
-    if (-not (Test-WorktreeExists $name)) {
-        Write-Host "Worktree '$name' does not exist." -ForegroundColor Red
-        Read-Host "Press ENTER to continue"
-        return $false
-    }
-    return $true
 }
 
 function Invoke-Git {
@@ -46,7 +92,69 @@ function Get-GitDirty($path) {
     return -not [string]::IsNullOrWhiteSpace($out)
 }
 
-# ---------- Menus ----------
+# ---------- HEADLESS MODE ----------
+if ($Feature -or $Action) {
+
+    if (-not ($Feature -and $Action)) {
+        Write-Error "Both -Feature and -Action are required for headless mode."
+        exit 1
+    }
+
+    $name = $Features[$Feature]
+    $path = Get-WorktreePath $name
+
+    switch ($Action) {
+
+        "S" {
+            if (-not (Test-WorktreeExists $name)) {
+                Push-Location $WorktreeRoot
+                git worktree add $name
+                Pop-Location
+            }
+            exit 0
+        }
+
+        "F" {
+            if (-not $Message) {
+                Write-Error "-Message is required for Finish."
+                exit 1
+            }
+
+            if (-not (Test-WorktreeExists $name)) {
+                Write-Error "Worktree does not exist."
+                exit 1
+            }
+
+            if (-not (Get-GitDirty $path) -and -not $AllowEmpty) {
+                Write-Error "No changes to commit."
+                exit 1
+            }
+
+            Invoke-Git $path add -A
+            Invoke-Git $path commit -m $Message
+            exit 0
+        }
+
+        "D" {
+            if (-not $Yes) {
+                Write-Error "-Yes is required to destroy a worktree."
+                exit 1
+            }
+
+            if (-not (Test-WorktreeExists $name)) {
+                Write-Error "Worktree does not exist."
+                exit 1
+            }
+
+            Push-Location $WorktreeRoot
+            git worktree remove $name
+            Pop-Location
+            exit 0
+        }
+    }
+}
+
+# ---------- INTERACTIVE MODE ----------
 function Show-FeatureMenu {
     Clear-Host
     Write-Host "Select FEATURE:`n"
@@ -85,27 +193,21 @@ function Show-ActionMenu($name) {
     Write-Host "  Q  Quit`n"
 }
 
-# ---------- Actions ----------
 function Start-Feature($name) {
     if (-not (Test-WorktreeExists $name)) {
-        Write-Host "Creating worktree '$name'..."
         Push-Location $WorktreeRoot
         git worktree add $name
         Pop-Location
     }
-
-    Write-Host "Started feature '$name'."
-    Read-Host "Press ENTER to continue"
+    Read-Host "Started. Press ENTER"
 }
 
 function Finish-Feature($name) {
-    if (-not (Require-Worktree $name)) { return }
-
     $path = Get-WorktreePath $name
 
     if (-not (Get-GitDirty $path)) {
         Write-Host "No changes to commit."
-        Read-Host "Press ENTER to continue"
+        Read-Host "Press ENTER"
         return
     }
 
@@ -114,27 +216,6 @@ function Finish-Feature($name) {
     Write-Host ""
     Invoke-Git $path diff --stat
 
-    while ($true) {
-        Write-Host ""
-        Write-Host "V  View full diff"
-        Write-Host "C  Commit"
-        Write-Host "B  Back"
-        $choice = (Read-Host ">").Trim().ToUpper()
-
-        if ($choice -eq "V") {
-            Invoke-Git $path diff --color=always | more
-            continue
-        }
-
-        if ($choice -eq "B") {
-            return
-        }
-
-        if ($choice -eq "C") {
-            break
-        }
-    }
-
     do {
         $msg = Read-Host "Commit message"
     } while ([string]::IsNullOrWhiteSpace($msg))
@@ -142,38 +223,31 @@ function Finish-Feature($name) {
     Invoke-Git $path add -A
     Invoke-Git $path commit -m $msg
 
-    Write-Host "`nCreated commit:"
     Invoke-Git $path log -1 --oneline
-
-    Read-Host "`nPress ENTER to continue"
+    Read-Host "Press ENTER"
 }
 
 function Destroy-Feature($name) {
-    if (-not (Require-Worktree $name)) { return }
-
-    $confirm = Read-Host "Type YES to destroy worktree '$name'"
+    $confirm = Read-Host "Type YES to destroy"
     if ($confirm -ne "YES") { return }
 
     Push-Location $WorktreeRoot
     git worktree remove $name
     Pop-Location
-
-    Write-Host "Destroyed '$name'."
-    Read-Host "Press ENTER to continue"
+    Read-Host "Destroyed. Press ENTER"
 }
 
 function List-Worktrees {
     Clear-Host
-    Write-Host "Worktrees:`n"
     foreach ($key in $FeatureOrder) {
         $name   = $Features[$key]
         $exists = if (Test-WorktreeExists $name) { "Yes" } else { "No" }
         Write-Host ("  {0,-2} {1,-7} Exists: {2}" -f $key, $name, $exists)
     }
-    Read-Host "`nPress ENTER to return"
+    Read-Host "Press ENTER"
 }
 
-# ---------- Main Loop ----------
+# ---------- INTERACTIVE LOOP ----------
 while ($true) {
     Show-FeatureMenu
     $key = (Read-Host ">").Trim().ToUpper()
@@ -183,17 +257,14 @@ while ($true) {
     if (-not $Features.ContainsKey($key)) { continue }
 
     $name = $Features[$key]
+    Show-ActionMenu $name
+    $action = (Read-Host ">").Trim().ToUpper()
 
-    while ($true) {
-        Show-ActionMenu $name
-        $action = (Read-Host ">").Trim().ToUpper()
-
-        switch ($action) {
-            "S" { Start-Feature  $name; break }
-            "F" { Finish-Feature $name; break }
-            "D" { Destroy-Feature $name; break }
-            "B" { break }
-            "Q" { exit }
-        }
+    switch ($action) {
+        "S" { Start-Feature  $name }
+        "F" { Finish-Feature $name }
+        "D" { Destroy-Feature $name }
+        "B" { continue }
+        "Q" { exit }
     }
 }
