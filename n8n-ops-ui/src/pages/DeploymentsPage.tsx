@@ -1,6 +1,5 @@
 // @ts-nocheck
 // TODO: Fix TypeScript errors in this file
-import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
@@ -14,22 +13,12 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table';
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogHeader,
-  DialogTitle,
-} from '@/components/ui/dialog';
 import { apiClient } from '@/lib/api-client';
 import { Rocket, ArrowRight, Clock, CheckCircle, AlertCircle, XCircle, Loader2 } from 'lucide-react';
-import type { Deployment, DeploymentDetail } from '@/types';
-import { Link } from 'react-router-dom';
+import type { Deployment } from '@/types';
 
 export function DeploymentsPage() {
   const navigate = useNavigate();
-  const [selectedDeployment, setSelectedDeployment] = useState<DeploymentDetail | null>(null);
-  const [detailDialogOpen, setDetailDialogOpen] = useState(false);
 
   const { data: deploymentsData, isLoading } = useQuery({
     queryKey: ['deployments'],
@@ -44,13 +33,6 @@ export function DeploymentsPage() {
   const { data: pipelines } = useQuery({
     queryKey: ['pipelines'],
     queryFn: () => apiClient.getPipelines(),
-  });
-
-  // Fetch deployment detail when selected
-  const { data: deploymentDetail } = useQuery({
-    queryKey: ['deployment', selectedDeployment?.id],
-    queryFn: () => apiClient.getDeployment(selectedDeployment!.id),
-    enabled: !!selectedDeployment,
   });
 
   const deployments = deploymentsData?.data?.deployments || [];
@@ -111,10 +93,8 @@ export function DeploymentsPage() {
     return `${minutes}m ${remainingSeconds}s`;
   };
 
-  const handleRowClick = async (deployment: Deployment) => {
-    const detail = await apiClient.getDeployment(deployment.id);
-    setSelectedDeployment(detail.data);
-    setDetailDialogOpen(true);
+  const handleRowClick = (deployment: Deployment) => {
+    navigate(`/deployments/${deployment.id}`);
   };
 
   const handlePromoteWorkflows = () => {
@@ -228,20 +208,9 @@ export function DeploymentsPage() {
                       onClick={() => handleRowClick(deployment)}
                     >
                       <TableCell className="font-medium">
-                        {workflowCount === 1 ? (
-                          workflowName
-                        ) : (
-                          <Link
-                            to="#"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              handleRowClick(deployment);
-                            }}
-                            className="text-primary hover:underline"
-                          >
-                            {workflowName}
-                          </Link>
-                        )}
+                        <span className="text-primary hover:underline">
+                          {workflowName}
+                        </span>
                       </TableCell>
                       <TableCell>{getPipelineName(deployment.pipelineId)}</TableCell>
                       <TableCell>
@@ -280,142 +249,6 @@ export function DeploymentsPage() {
           )}
         </CardContent>
       </Card>
-
-      {/* Deployment Detail Dialog */}
-      <Dialog open={detailDialogOpen} onOpenChange={setDetailDialogOpen}>
-        <DialogContent className="max-w-4xl max-h-[90vh] overflow-y-auto">
-          <DialogHeader>
-            <DialogTitle>Deployment Details</DialogTitle>
-            <DialogDescription>
-              View detailed information about this deployment
-            </DialogDescription>
-          </DialogHeader>
-
-          {deploymentDetail?.data && (
-            <div className="space-y-6">
-              {/* Top Section */}
-              <div className="grid grid-cols-2 gap-4">
-                <div>
-                  <p className="text-sm font-medium text-muted-foreground">Pipeline</p>
-                  <p className="text-base">{getPipelineName(deploymentDetail.data.pipelineId)}</p>
-                </div>
-                <div>
-                  <p className="text-sm font-medium text-muted-foreground">Stage</p>
-                  <div className="flex items-center gap-2">
-                    <Badge variant="outline">
-                      {getEnvironmentName(deploymentDetail.data.sourceEnvironmentId)}
-                    </Badge>
-                    <ArrowRight className="h-3 w-3" />
-                    <Badge variant="outline">
-                      {getEnvironmentName(deploymentDetail.data.targetEnvironmentId)}
-                    </Badge>
-                  </div>
-                </div>
-                <div>
-                  <p className="text-sm font-medium text-muted-foreground">Status</p>
-                  <div className="flex items-center gap-2">
-                    {getStatusIcon(deploymentDetail.data.status)}
-                    <Badge variant={getStatusVariant(deploymentDetail.data.status)}>
-                      {deploymentDetail.data.status}
-                    </Badge>
-                  </div>
-                </div>
-                <div>
-                  <p className="text-sm font-medium text-muted-foreground">Triggered By</p>
-                  <p className="text-base">{deploymentDetail.data.triggeredByUserId}</p>
-                </div>
-                <div>
-                  <p className="text-sm font-medium text-muted-foreground">Started</p>
-                  <p className="text-base">
-                    {new Date(deploymentDetail.data.startedAt).toLocaleString()}
-                  </p>
-                </div>
-                {deploymentDetail.data.finishedAt && (
-                  <div>
-                    <p className="text-sm font-medium text-muted-foreground">Finished</p>
-                    <p className="text-base">
-                      {new Date(deploymentDetail.data.finishedAt).toLocaleString()}
-                    </p>
-                  </div>
-                )}
-              </div>
-
-              {/* Middle Section - Snapshots */}
-              <div className="grid grid-cols-2 gap-4">
-                <div>
-                  <p className="text-sm font-medium text-muted-foreground mb-2">Pre Snapshot</p>
-                  {deploymentDetail.data.preSnapshotId ? (
-                    <Link
-                      to={`/snapshots?snapshot=${deploymentDetail.data.preSnapshotId}`}
-                      className="text-primary hover:underline"
-                    >
-                      {deploymentDetail.data.preSnapshotId.substring(0, 8)}...
-                    </Link>
-                  ) : (
-                    <p className="text-sm text-muted-foreground">—</p>
-                  )}
-                </div>
-                <div>
-                  <p className="text-sm font-medium text-muted-foreground mb-2">Post Snapshot</p>
-                  {deploymentDetail.data.postSnapshotId ? (
-                    <Link
-                      to={`/snapshots?snapshot=${deploymentDetail.data.postSnapshotId}`}
-                      className="text-primary hover:underline"
-                    >
-                      {deploymentDetail.data.postSnapshotId.substring(0, 8)}...
-                    </Link>
-                  ) : (
-                    <p className="text-sm text-muted-foreground">—</p>
-                  )}
-                </div>
-              </div>
-
-              {/* Workflows Table */}
-              <div>
-                <p className="text-sm font-medium text-muted-foreground mb-2">Workflows</p>
-                <Table>
-                  <TableHeader>
-                    <TableRow>
-                      <TableHead>Workflow Name</TableHead>
-                      <TableHead>Change Type</TableHead>
-                      <TableHead>Status</TableHead>
-                      <TableHead>Error</TableHead>
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {deploymentDetail.data.workflows.map((workflow) => (
-                      <TableRow key={workflow.id}>
-                        <TableCell className="font-medium">
-                          {workflow.workflowNameAtTime}
-                        </TableCell>
-                        <TableCell>
-                          <Badge variant="outline">{workflow.changeType}</Badge>
-                        </TableCell>
-                        <TableCell>
-                          <Badge
-                            variant={
-                              workflow.status === 'success'
-                                ? 'default'
-                                : workflow.status === 'failed'
-                                ? 'destructive'
-                                : 'outline'
-                            }
-                          >
-                            {workflow.status}
-                          </Badge>
-                        </TableCell>
-                        <TableCell className="text-sm text-muted-foreground">
-                          {workflow.errorMessage || '—'}
-                        </TableCell>
-                      </TableRow>
-                    ))}
-                  </TableBody>
-                </Table>
-              </div>
-            </div>
-          )}
-        </DialogContent>
-      </Dialog>
     </div>
   );
 }

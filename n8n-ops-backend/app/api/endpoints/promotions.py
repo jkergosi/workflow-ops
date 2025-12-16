@@ -1,7 +1,8 @@
 """
 Promotions API endpoints for pipeline-aware environment promotion
 """
-from fastapi import APIRouter, HTTPException, status, Depends
+from fastapi import APIRouter, HTTPException, status, Depends, BackgroundTasks
+import asyncio
 from typing import List, Optional
 from datetime import datetime
 from uuid import uuid4
@@ -137,15 +138,156 @@ async def initiate_promotion(
         )
 
 
+async def _run_promotion_transfer(
+    promotion_id: str,
+    deployment_id: str,
+    promotion: dict,
+    source_env: dict,
+    target_env: dict,
+    selected_workflows: list
+):
+    """
+    Background task to transfer workflows from source to target n8n instance.
+    This runs asynchronously after the API returns.
+    """
+    from app.services.n8n_client import N8NClient
+    from app.schemas.deployment import DeploymentStatus, WorkflowChangeType, WorkflowStatus
+
+    try:
+        # Create n8n clients
+        source_client = N8NClient(source_env.get("base_url"), source_env.get("api_key"))
+        target_client = N8NClient(target_env.get("base_url"), target_env.get("api_key"))
+
+        # Transfer each workflow
+        created_count = 0
+        updated_count = 0
+        failed_count = 0
+        skipped_count = 0
+
+        for ws in selected_workflows:
+            workflow_id = ws.get("workflow_id")
+            workflow_name = ws.get("workflow_name")
+            change_type = ws.get("change_type", "new")
+            error_message = None
+            status_result = WorkflowStatus.SUCCESS
+
+            try:
+                # Fetch workflow from source
+                logger.info(f"Fetching workflow {workflow_id} from source")
+                source_workflow = await source_client.get_workflow(workflow_id)
+
+                # Prepare workflow data for target (remove source-specific fields)
+                workflow_data = {
+                    "name": source_workflow.get("name"),
+                    "nodes": source_workflow.get("nodes", []),
+                    "connections": source_workflow.get("connections", {}),
+                    "settings": source_workflow.get("settings", {}),
+                    "staticData": source_workflow.get("staticData"),
+                }
+
+                # Try to find existing workflow in target by name
+                target_workflows = await target_client.get_workflows()
+                existing_workflow = next(
+                    (w for w in target_workflows if w.get("name") == workflow_name),
+                    None
+                )
+
+                if existing_workflow:
+                    # Update existing workflow
+                    logger.info(f"Updating workflow {workflow_name} in target")
+                    await target_client.update_workflow(existing_workflow.get("id"), workflow_data)
+                    updated_count += 1
+                    change_type = "changed"
+                else:
+                    # Create new workflow
+                    logger.info(f"Creating workflow {workflow_name} in target")
+                    await target_client.create_workflow(workflow_data)
+                    created_count += 1
+                    change_type = "new"
+
+            except Exception as e:
+                logger.error(f"Failed to transfer workflow {workflow_name}: {str(e)}")
+                error_message = str(e)
+                status_result = WorkflowStatus.FAILED
+                failed_count += 1
+
+            # Record workflow result
+            change_type_map = {
+                "new": WorkflowChangeType.CREATED,
+                "changed": WorkflowChangeType.UPDATED,
+                "staging_hotfix": WorkflowChangeType.UPDATED,
+                "conflict": WorkflowChangeType.SKIPPED,
+                "unchanged": WorkflowChangeType.UNCHANGED,
+            }
+            wf_change_type = change_type_map.get(change_type, WorkflowChangeType.UPDATED)
+
+            workflow_record = {
+                "deployment_id": deployment_id,
+                "workflow_id": workflow_id,
+                "workflow_name_at_time": workflow_name,
+                "change_type": wf_change_type.value,
+                "status": status_result.value,
+                "error_message": error_message,
+            }
+            await db_service.create_deployment_workflow(workflow_record)
+
+        # Calculate final summary
+        summary_json = {
+            "total": len(selected_workflows),
+            "created": created_count,
+            "updated": updated_count,
+            "deleted": 0,
+            "failed": failed_count,
+            "skipped": skipped_count,
+        }
+
+        # Determine final status
+        final_status = DeploymentStatus.SUCCESS if failed_count == 0 else DeploymentStatus.FAILED
+
+        # Update deployment with results
+        await db_service.update_deployment(deployment_id, {
+            "status": final_status.value,
+            "finished_at": datetime.utcnow().isoformat(),
+            "summary_json": summary_json,
+        })
+
+        # Update promotion as completed
+        promotion_status = "completed" if failed_count == 0 else "failed"
+        await db_service.update_promotion(promotion_id, MOCK_TENANT_ID, {
+            "status": promotion_status,
+            "completed_at": datetime.utcnow().isoformat()
+        })
+
+        logger.info(f"Promotion {promotion_id} completed: {created_count} created, {updated_count} updated, {failed_count} failed")
+
+    except Exception as e:
+        logger.error(f"Background promotion transfer failed: {str(e)}")
+        # Update promotion and deployment status to failed
+        try:
+            await db_service.update_promotion(promotion_id, MOCK_TENANT_ID, {
+                "status": "failed",
+                "completed_at": datetime.utcnow().isoformat()
+            })
+            await db_service.update_deployment(deployment_id, {
+                "status": "failed",
+                "finished_at": datetime.utcnow().isoformat(),
+                "summary_json": {"total": len(selected_workflows), "created": 0, "updated": 0, "deleted": 0, "failed": len(selected_workflows), "skipped": 0, "error": str(e)},
+            })
+        except Exception as update_error:
+            logger.error(f"Failed to update promotion/deployment status: {str(update_error)}")
+
+
 @router.post("/execute/{promotion_id}")
 async def execute_promotion(
     promotion_id: str,
     _: None = Depends(require_entitlement("workflow_ci_cd"))
 ):
     """
-    Execute a promotion - simplified version that creates deployment record.
-    TODO: Add actual workflow transfer once n8n connections are configured.
+    Execute a promotion - creates deployment and starts background transfer.
+    Returns immediately with deployment_id for tracking.
     """
+    from app.schemas.deployment import DeploymentStatus
+
     try:
         # Get promotion record
         promotion = await db_service.get_promotion(promotion_id, MOCK_TENANT_ID)
@@ -165,74 +307,55 @@ async def execute_promotion(
         # Update status to running
         await db_service.update_promotion(promotion_id, MOCK_TENANT_ID, {"status": "running"})
 
-        # Create Deployment record
-        from app.schemas.deployment import DeploymentStatus, WorkflowChangeType, WorkflowStatus
-        from uuid import uuid4
+        # Get source and target environments
+        source_env = await db_service.get_environment(promotion.get("source_environment_id"), MOCK_TENANT_ID)
+        target_env = await db_service.get_environment(promotion.get("target_environment_id"), MOCK_TENANT_ID)
 
-        deployment_id = str(uuid4())
+        if not source_env or not target_env:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Source or target environment not found"
+            )
+
+        # Get selected workflows
         workflow_selections = promotion.get("workflow_selections", [])
         selected_workflows = [ws for ws in workflow_selections if ws.get("selected")]
 
-        # Calculate summary
-        summary_json = {
-            "total": len(selected_workflows),
-            "created": len([ws for ws in selected_workflows if ws.get("change_type") == "new"]),
-            "updated": len([ws for ws in selected_workflows if ws.get("change_type") in ["changed", "staging_hotfix"]]),
-            "deleted": 0,
-            "failed": 0,
-            "skipped": 0,
-        }
-
+        # Create deployment record
+        deployment_id = str(uuid4())
         deployment_data = {
             "id": deployment_id,
             "tenant_id": MOCK_TENANT_ID,
             "pipeline_id": promotion.get("pipeline_id"),
             "source_environment_id": promotion.get("source_environment_id"),
             "target_environment_id": promotion.get("target_environment_id"),
-            "status": DeploymentStatus.SUCCESS.value,  # Mark as success for now
+            "status": DeploymentStatus.RUNNING.value,
             "triggered_by_user_id": promotion.get("created_by") or "00000000-0000-0000-0000-000000000000",
             "approved_by_user_id": None,
             "started_at": datetime.utcnow().isoformat(),
-            "finished_at": datetime.utcnow().isoformat(),
+            "finished_at": None,
             "pre_snapshot_id": None,
             "post_snapshot_id": None,
-            "summary_json": summary_json,
+            "summary_json": {"total": len(selected_workflows), "created": 0, "updated": 0, "deleted": 0, "failed": 0, "skipped": 0},
         }
         await db_service.create_deployment(deployment_data)
 
-        # Create deployment_workflow records for each selected workflow
-        for ws in selected_workflows:
-            change_type_map = {
-                "new": WorkflowChangeType.CREATED,
-                "changed": WorkflowChangeType.UPDATED,
-                "staging_hotfix": WorkflowChangeType.UPDATED,
-                "conflict": WorkflowChangeType.SKIPPED,
-                "unchanged": WorkflowChangeType.UNCHANGED,
-            }
-            change_type = change_type_map.get(ws.get("change_type"), WorkflowChangeType.UPDATED)
+        # Start background transfer task
+        asyncio.create_task(_run_promotion_transfer(
+            promotion_id=promotion_id,
+            deployment_id=deployment_id,
+            promotion=promotion,
+            source_env=source_env,
+            target_env=target_env,
+            selected_workflows=selected_workflows
+        ))
 
-            workflow_data = {
-                "deployment_id": deployment_id,
-                "workflow_id": ws.get("workflow_id"),
-                "workflow_name_at_time": ws.get("workflow_name"),
-                "change_type": change_type.value,
-                "status": WorkflowStatus.SUCCESS.value,
-                "error_message": None,
-            }
-            await db_service.create_deployment_workflow(workflow_data)
-
-        # Update promotion as completed
-        await db_service.update_promotion(promotion_id, MOCK_TENANT_ID, {
-            "status": "completed",
-            "completed_at": datetime.utcnow().isoformat()
-        })
-
+        # Return immediately with deployment info
         return {
             "promotion_id": promotion_id,
             "deployment_id": deployment_id,
-            "status": "completed",
-            "summary": summary_json,
-            "message": "Promotion executed successfully"
+            "status": "running",
+            "message": f"Promotion started. Transferring {len(selected_workflows)} workflow(s) in the background."
         }
 
     except HTTPException:
@@ -244,25 +367,9 @@ async def execute_promotion(
                 "status": "failed",
                 "completed_at": datetime.utcnow().isoformat()
             })
-            
-            # Emit promotion.failure event
-            try:
-                promotion = await db_service.get_promotion(promotion_id, MOCK_TENANT_ID)
-                await notification_service.emit_event(
-                    tenant_id=MOCK_TENANT_ID,
-                    event_type="promotion.failure",
-                    environment_id=promotion.get("target_environment_id") if promotion else None,
-                    metadata={
-                        "promotion_id": promotion_id,
-                        "error_message": str(e),
-                        "error_type": type(e).__name__
-                    }
-                )
-            except Exception as event_error:
-                logger.error(f"Failed to emit promotion.failure event: {str(event_error)}")
         except:
             pass
-        
+
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to execute promotion: {str(e)}"

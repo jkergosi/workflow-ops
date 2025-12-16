@@ -15,6 +15,7 @@ import { WorkflowDetailPage } from '@/pages/WorkflowDetailPage';
 import { ExecutionsPage } from '@/pages/ExecutionsPage';
 import { SnapshotsPage } from '@/pages/SnapshotsPage';
 import { DeploymentsPage } from '@/pages/DeploymentsPage';
+import { DeploymentDetailPage } from '@/pages/DeploymentDetailPage';
 import { ObservabilityPage } from '@/pages/ObservabilityPage';
 import { AlertsPage } from '@/pages/AlertsPage';
 import { TeamPage } from '@/pages/TeamPage';
@@ -194,6 +195,7 @@ function App() {
                 <Route path="/executions" element={<RoleProtectedRoute><ExecutionsPage /></RoleProtectedRoute>} />
                 <Route path="/snapshots" element={<RoleProtectedRoute><SnapshotsPage /></RoleProtectedRoute>} />
                 <Route path="/deployments" element={<RoleProtectedRoute><DeploymentsPage /></RoleProtectedRoute>} />
+                <Route path="/deployments/:id" element={<RoleProtectedRoute><DeploymentDetailPage /></RoleProtectedRoute>} />
                 <Route path="/pipelines" element={<RoleProtectedRoute><PipelinesPage /></RoleProtectedRoute>} />
                 <Route path="/pipelines/new" element={<RoleProtectedRoute><PipelineEditorPage /></RoleProtectedRoute>} />
                 <Route path="/pipelines/:id" element={<RoleProtectedRoute><PipelineEditorPage /></RoleProtectedRoute>} />
