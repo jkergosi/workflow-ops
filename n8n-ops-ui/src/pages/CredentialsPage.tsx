@@ -25,6 +25,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog';
+import { Alert, AlertDescription } from '@/components/ui/alert';
 import {
   AlertDialog,
   AlertDialogAction,
@@ -154,16 +155,83 @@ export function CredentialsPage() {
   const [formData, setFormData] = useState<Record<string, string>>({});
   const [showPasswords, setShowPasswords] = useState<Record<string, boolean>>({});
 
-  // Fetch all credentials
-  const { data: credentials, isLoading, refetch } = useQuery({
-    queryKey: ['credentials', selectedEnvironment],
-    queryFn: () => api.getCredentials(selectedEnvironment === 'all' ? undefined : selectedEnvironment),
-  });
-
   // Fetch environments for filter and create dialog
   const { data: environments } = useQuery({
     queryKey: ['environments'],
     queryFn: () => api.getEnvironments(),
+  });
+
+  // Get the selected environment ID (handle type vs id selection)
+  const selectedEnvId = useMemo(() => {
+    if (!selectedEnvironment || selectedEnvironment === 'all') return 'all';
+    // Check if selectedEnvironment is an ID or a type
+    const envById = environments?.data?.find((e: Environment) => e.id === selectedEnvironment);
+    if (envById) return envById.id;
+    // Otherwise, find by type
+    const envByType = environments?.data?.find((e: Environment) => e.type === selectedEnvironment);
+    return envByType?.id || 'all';
+  }, [selectedEnvironment, environments?.data]);
+
+  // Fetch credentials directly from N8N (live data, not cache)
+  const { data: credentials, isLoading, refetch } = useQuery({
+    queryKey: ['physical-credentials', selectedEnvId, environments?.data?.length],
+    queryFn: async () => {
+      const envs = environments?.data || [];
+      if (envs.length === 0) {
+        return { data: [] };
+      }
+
+      if (selectedEnvId === 'all') {
+        // Aggregate credentials from all N8N environments
+        const results = await Promise.allSettled(
+          envs.map(async (env: Environment) => {
+            try {
+              const result = await api.getCredentialsByEnvironment(env.id);
+              // Add environment info to each credential
+              return (result.data || []).map((cred: any) => ({
+                ...cred,
+                environment: {
+                  id: env.id,
+                  name: env.name,
+                  type: env.type,
+                  n8n_base_url: env.n8n_base_url,
+                },
+                n8n_credential_id: cred.id,
+              }));
+            } catch (error) {
+              console.warn(`Failed to fetch credentials from ${env.name}:`, error);
+              return [];
+            }
+          })
+        );
+        // Flatten successful results
+        const allCredentials = results
+          .filter((r): r is PromiseFulfilledResult<any[]> => r.status === 'fulfilled')
+          .flatMap(r => r.value);
+        return { data: allCredentials };
+      }
+
+      // Single environment - fetch directly from N8N
+      const env = envs.find((e: Environment) => e.id === selectedEnvId);
+      if (!env) {
+        return { data: [] };
+      }
+
+      const result = await api.getCredentialsByEnvironment(selectedEnvId);
+      // Add environment info to each credential
+      const credentialsWithEnv = (result.data || []).map((cred: any) => ({
+        ...cred,
+        environment: {
+          id: env.id,
+          name: env.name,
+          type: env.type,
+          n8n_base_url: env.n8n_base_url,
+        },
+        n8n_credential_id: cred.id,
+      }));
+      return { data: credentialsWithEnv };
+    },
+    enabled: !!environments?.data && environments.data.length > 0,
   });
 
   // Create credential mutation
@@ -172,7 +240,7 @@ export function CredentialsPage() {
       api.createCredential(data),
     onSuccess: () => {
       toast.success('Credential created successfully');
-      queryClient.invalidateQueries({ queryKey: ['credentials'] });
+      queryClient.invalidateQueries({ queryKey: ['physical-credentials'] });
       setCreateDialogOpen(false);
       resetForm();
     },
@@ -188,7 +256,7 @@ export function CredentialsPage() {
       api.updateCredential(id, data),
     onSuccess: () => {
       toast.success('Credential updated successfully');
-      queryClient.invalidateQueries({ queryKey: ['credentials'] });
+      queryClient.invalidateQueries({ queryKey: ['physical-credentials'] });
       setEditDialogOpen(false);
       resetForm();
     },
@@ -203,7 +271,7 @@ export function CredentialsPage() {
     mutationFn: (id: string) => api.deleteCredential(id),
     onSuccess: () => {
       toast.success('Credential deleted successfully');
-      queryClient.invalidateQueries({ queryKey: ['credentials'] });
+      queryClient.invalidateQueries({ queryKey: ['physical-credentials'] });
       setDeleteDialogOpen(false);
       setSelectedCredential(null);
     },
@@ -213,13 +281,12 @@ export function CredentialsPage() {
     },
   });
 
-  // Sync mutation to refresh from N8N (via environment sync)
+  // Sync mutation to refresh from N8N (syncs to cache and refetches live data)
   const syncMutation = useMutation({
     mutationFn: async () => {
       const envsToSync = environments?.data?.filter((env: Environment) =>
-        selectedEnvironment === 'all' ||
-        env.type === selectedEnvironment ||
-        env.id === selectedEnvironment
+        selectedEnvId === 'all' ||
+        env.id === selectedEnvId
       ) || [];
 
       const results = [];
@@ -233,7 +300,8 @@ export function CredentialsPage() {
       setIsSyncing(false);
       const total = results.reduce((sum, r) => sum + (r.synced || 0), 0);
       toast.success(`Synced ${total} credentials from N8N`);
-      queryClient.invalidateQueries({ queryKey: ['credentials'] });
+      // Invalidate the live credentials query to refetch
+      queryClient.invalidateQueries({ queryKey: ['physical-credentials'] });
     },
     onError: (error: any) => {
       setIsSyncing(false);
@@ -465,17 +533,13 @@ export function CredentialsPage() {
       </div>
 
       {/* Info Banner */}
-      <Card className="bg-blue-50 border-blue-200">
-        <CardContent className="py-3">
-          <div className="flex items-start gap-2">
-            <Info className="h-4 w-4 text-blue-600 mt-0.5" />
-            <p className="text-sm text-blue-800">
-              Credential secrets are encrypted and stored securely in N8N. Only metadata (name, type) is cached locally.
-              Actual secrets are never visible or stored in this application.
-            </p>
-          </div>
-        </CardContent>
-      </Card>
+      <Alert>
+        <Info className="h-4 w-4" />
+        <AlertDescription>
+          Credential secrets are encrypted and stored securely in N8N. Only metadata (name, type) is cached locally.
+          Actual secrets are never visible or stored in this application.
+        </AlertDescription>
+      </Alert>
 
       <Tabs defaultValue="credentials" className="space-y-4">
         <TabsList>
@@ -524,14 +588,14 @@ export function CredentialsPage() {
             </div>
 
             <select
-              value={selectedEnvironment || 'all'}
+              value={selectedEnvId || 'all'}
               onChange={(e) => setSelectedEnvironment(e.target.value as EnvironmentType)}
               className="flex h-9 w-[180px] rounded-md border border-input bg-background text-foreground px-3 py-1 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
             >
               <option value="all" className="bg-background text-foreground">All Environments</option>
               {environments?.data?.map((env: Environment) => (
-                <option key={env.id} value={env.type || env.id} className="bg-background text-foreground">
-                  {env.name}
+                <option key={env.id} value={env.id} className="bg-background text-foreground">
+                  {env.name} ({env.type})
                 </option>
               ))}
             </select>

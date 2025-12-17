@@ -91,6 +91,44 @@ async def get_credentials(environment_type: Optional[str] = None):
         )
 
 
+@router.get("/by-environment/{environment_id}")
+async def get_credentials_by_environment(environment_id: str):
+    """Get all credentials directly from N8N for a specific environment.
+
+    Used for populating dropdowns when creating credential mappings.
+    Returns fresh data from N8N, not from cache.
+    """
+    try:
+        env = await db_service.get_environment(environment_id, MOCK_TENANT_ID)
+        if not env:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Environment not found"
+            )
+
+        adapter = ProviderRegistry.get_adapter_for_environment(env)
+        credentials = await adapter.get_credentials()
+
+        return [
+            {
+                "id": cred.get("id"),
+                "name": cred.get("name"),
+                "type": cred.get("type"),
+                "createdAt": cred.get("createdAt"),
+                "updatedAt": cred.get("updatedAt"),
+            }
+            for cred in credentials
+        ]
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to fetch credentials from N8N: {str(e)}"
+        )
+
+
 @router.get("/{credential_id}")
 async def get_credential(credential_id: str):
     """Get a specific credential by ID"""
@@ -417,42 +455,4 @@ async def sync_credentials(environment_id: str):
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to sync credentials: {str(e)}"
-        )
-
-
-@router.get("/by-environment/{environment_id}")
-async def get_credentials_by_environment(environment_id: str):
-    """Get all credentials directly from N8N for a specific environment.
-
-    Used for populating dropdowns when creating credential mappings.
-    Returns fresh data from N8N, not from cache.
-    """
-    try:
-        env = await db_service.get_environment(environment_id, MOCK_TENANT_ID)
-        if not env:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Environment not found"
-            )
-
-        adapter = ProviderRegistry.get_adapter_for_environment(env)
-        credentials = await adapter.get_credentials()
-
-        return [
-            {
-                "id": cred.get("id"),
-                "name": cred.get("name"),
-                "type": cred.get("type"),
-                "createdAt": cred.get("createdAt"),
-                "updatedAt": cred.get("updatedAt"),
-            }
-            for cred in credentials
-        ]
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to fetch credentials from N8N: {str(e)}"
         )

@@ -1,6 +1,7 @@
 from fastapi import APIRouter, HTTPException, status, Depends
 from typing import Optional, List, Dict, Any
 import logging
+from functools import wraps
 
 from app.services.database import db_service
 from app.services.provider_registry import ProviderRegistry
@@ -27,6 +28,34 @@ router = APIRouter()
 logger = logging.getLogger(__name__)
 
 
+def handle_db_errors(func):
+    """Decorator to handle database errors and provide helpful messages for missing tables."""
+    @wraps(func)
+    async def wrapper(*args, **kwargs):
+        try:
+            return await func(*args, **kwargs)
+        except Exception as e:
+            error_str = str(e).lower()
+            # Check for missing table errors (Supabase/PostgreSQL)
+            if "relation" in error_str and "does not exist" in error_str:
+                missing_table = "credential management"
+                if "logical_credentials" in error_str:
+                    missing_table = "logical_credentials"
+                elif "credential_mappings" in error_str:
+                    missing_table = "credential_mappings"
+                elif "workflow_credential_dependencies" in error_str:
+                    missing_table = "workflow_credential_dependencies"
+
+                logger.error(f"Database table missing: {e}")
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail=f"Database table '{missing_table}' not found. Please run the migration: migrations/create_credential_tables.sql"
+                )
+            # Re-raise other exceptions
+            raise
+    return wrapper
+
+
 def get_current_tenant_id(user_info: dict) -> str:
     tenant = user_info.get("tenant") if user_info else None
     if tenant and tenant.get("id"):
@@ -35,6 +64,7 @@ def get_current_tenant_id(user_info: dict) -> str:
 
 
 @router.get("/logical", response_model=list[LogicalCredentialResponse])
+@handle_db_errors
 async def list_logical_credentials(user_info: dict = Depends(get_current_user)):
     tenant_id = get_current_tenant_id(user_info)
     return await db_service.list_logical_credentials(tenant_id)
@@ -66,6 +96,7 @@ async def delete_logical_credential(logical_id: str, user_info: dict = Depends(g
 
 
 @router.get("/mappings", response_model=list[CredentialMappingResponse])
+@handle_db_errors
 async def list_mappings(environment_id: Optional[str] = None, provider: Optional[str] = None, user_info: dict = Depends(get_current_user)):
     tenant_id = get_current_tenant_id(user_info)
     return await db_service.list_credential_mappings(tenant_id, environment_id=environment_id, provider=provider)
@@ -343,6 +374,7 @@ async def refresh_workflow_dependencies(
 
 
 @router.get("/matrix", response_model=CredentialMatrixResponse)
+@handle_db_errors
 async def get_credential_matrix(user_info: dict = Depends(get_current_user)):
     """Get a matrix view of all logical credentials and their mappings across environments."""
     tenant_id = get_current_tenant_id(user_info)
@@ -386,6 +418,7 @@ async def get_credential_matrix(user_info: dict = Depends(get_current_user)):
 
 
 @router.post("/discover/{environment_id}")
+@handle_db_errors
 async def discover_credentials_from_workflows(
     environment_id: str,
     provider: str = "n8n",
@@ -446,6 +479,7 @@ async def discover_credentials_from_workflows(
 
 
 @router.post("/mappings/validate", response_model=MappingValidationReport)
+@handle_db_errors
 async def validate_credential_mappings(
     environment_id: Optional[str] = None,
     user_info: dict = Depends(get_current_user)
