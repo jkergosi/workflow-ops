@@ -49,7 +49,7 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
-import { api } from '@/lib/api';
+import { apiClient } from '@/lib/api-client';
 import { useAppStore } from '@/store/use-app-store';
 import {
   Search, AlertCircle, RefreshCw, Key, Download, ArrowUpDown, ArrowUp, ArrowDown,
@@ -147,6 +147,10 @@ export function CredentialsPage() {
   const [editDialogOpen, setEditDialogOpen] = useState(false);
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const [selectedCredential, setSelectedCredential] = useState<Credential | null>(null);
+  const [mappingDialogOpen, setMappingDialogOpen] = useState(false);
+  const [mappingLogicalId, setMappingLogicalId] = useState<string>('');
+  const [mappingEnvId, setMappingEnvId] = useState<string>('');
+  const [selectedPhysicalCredId, setSelectedPhysicalCredId] = useState<string>('');
 
   // Form states
   const [formName, setFormName] = useState('');
@@ -158,7 +162,7 @@ export function CredentialsPage() {
   // Fetch environments for filter and create dialog
   const { data: environments } = useQuery({
     queryKey: ['environments'],
-    queryFn: () => api.getEnvironments(),
+    queryFn: () => apiClient.getEnvironments(),
   });
 
   // Get the selected environment ID (handle type vs id selection)
@@ -172,72 +176,29 @@ export function CredentialsPage() {
     return envByType?.id || 'all';
   }, [selectedEnvironment, environments?.data]);
 
-  // Fetch credentials directly from N8N (live data, not cache)
+  // Fetch credentials from the database cache (synced from N8N)
   const { data: credentials, isLoading, refetch } = useQuery({
-    queryKey: ['physical-credentials', selectedEnvId, environments?.data?.length],
+    queryKey: ['physical-credentials', selectedEnvId],
     queryFn: async () => {
+      // Get environment type for filtering if a specific environment is selected
       const envs = environments?.data || [];
-      if (envs.length === 0) {
-        return { data: [] };
+      let envType: string | undefined;
+      
+      if (selectedEnvId && selectedEnvId !== 'all') {
+        const env = envs.find((e: Environment) => e.id === selectedEnvId);
+        envType = env?.type;
       }
-
-      if (selectedEnvId === 'all') {
-        // Aggregate credentials from all N8N environments
-        const results = await Promise.allSettled(
-          envs.map(async (env: Environment) => {
-            try {
-              const result = await api.getCredentialsByEnvironment(env.id);
-              // Add environment info to each credential
-              return (result.data || []).map((cred: any) => ({
-                ...cred,
-                environment: {
-                  id: env.id,
-                  name: env.name,
-                  type: env.type,
-                  n8n_base_url: env.n8n_base_url,
-                },
-                n8n_credential_id: cred.id,
-              }));
-            } catch (error) {
-              console.warn(`Failed to fetch credentials from ${env.name}:`, error);
-              return [];
-            }
-          })
-        );
-        // Flatten successful results
-        const allCredentials = results
-          .filter((r): r is PromiseFulfilledResult<any[]> => r.status === 'fulfilled')
-          .flatMap(r => r.value);
-        return { data: allCredentials };
-      }
-
-      // Single environment - fetch directly from N8N
-      const env = envs.find((e: Environment) => e.id === selectedEnvId);
-      if (!env) {
-        return { data: [] };
-      }
-
-      const result = await api.getCredentialsByEnvironment(selectedEnvId);
-      // Add environment info to each credential
-      const credentialsWithEnv = (result.data || []).map((cred: any) => ({
-        ...cred,
-        environment: {
-          id: env.id,
-          name: env.name,
-          type: env.type,
-          n8n_base_url: env.n8n_base_url,
-        },
-        n8n_credential_id: cred.id,
-      }));
-      return { data: credentialsWithEnv };
+      
+      // Fetch cached credentials from database
+      const result = await apiClient.getCredentials({ environmentType: envType });
+      return result;
     },
-    enabled: !!environments?.data && environments.data.length > 0,
   });
 
   // Create credential mutation
   const createMutation = useMutation({
     mutationFn: (data: { name: string; type: string; data: Record<string, any>; environment_id: string }) =>
-      api.createCredential(data),
+      apiClient.createCredential(data),
     onSuccess: () => {
       toast.success('Credential created successfully');
       queryClient.invalidateQueries({ queryKey: ['physical-credentials'] });
@@ -253,7 +214,7 @@ export function CredentialsPage() {
   // Update credential mutation
   const updateMutation = useMutation({
     mutationFn: ({ id, data }: { id: string; data: { name?: string; data?: Record<string, any> } }) =>
-      api.updateCredential(id, data),
+      apiClient.updateCredential(id, data),
     onSuccess: () => {
       toast.success('Credential updated successfully');
       queryClient.invalidateQueries({ queryKey: ['physical-credentials'] });
@@ -268,7 +229,7 @@ export function CredentialsPage() {
 
   // Delete credential mutation
   const deleteMutation = useMutation({
-    mutationFn: (id: string) => api.deleteCredential(id),
+    mutationFn: (id: string) => apiClient.deleteCredential(id),
     onSuccess: () => {
       toast.success('Credential deleted successfully');
       queryClient.invalidateQueries({ queryKey: ['physical-credentials'] });
@@ -291,7 +252,7 @@ export function CredentialsPage() {
 
       const results = [];
       for (const env of envsToSync) {
-        const result = await api.syncCredentials(env.id);
+        const result = await apiClient.syncCredentials(env.id);
         results.push({ env: env.name, ...result.data });
       }
       return results;
@@ -314,6 +275,78 @@ export function CredentialsPage() {
     toast.info('Syncing credentials from N8N...');
     setIsSyncing(true);
     syncMutation.mutate();
+  };
+
+  // Fetch physical credentials for mapping dialog
+  const { data: physicalCredentials, isLoading: isLoadingPhysical } = useQuery({
+    queryKey: ['physical-credentials-for-mapping', mappingEnvId],
+    queryFn: () => apiClient.getCredentialsByEnvironment(mappingEnvId),
+    enabled: !!mappingEnvId && mappingDialogOpen,
+  });
+
+  // Fetch logical credentials for mapping dialog
+  const { data: logicalCredentials } = useQuery({
+    queryKey: ['logical-credentials'],
+    queryFn: () => apiClient.getLogicalCredentials(),
+  });
+
+  // Create mapping mutation
+  const createMappingMutation = useMutation({
+    mutationFn: (data: {
+      logical_credential_id: string;
+      environment_id: string;
+      physical_credential_id: string;
+      physical_name: string;
+      physical_type: string;
+    }) => apiClient.createCredentialMapping(data),
+    onSuccess: () => {
+      toast.success('Mapping created successfully');
+      queryClient.invalidateQueries({ queryKey: ['credential-matrix'] });
+      setMappingDialogOpen(false);
+      setSelectedPhysicalCredId('');
+    },
+    onError: (error: any) => {
+      const message = error.response?.data?.detail || 'Failed to create mapping';
+      toast.error(message);
+    },
+  });
+
+  // Handler for opening mapping dialog
+  const handleCreateMapping = (logicalId: string, envId: string) => {
+    setMappingLogicalId(logicalId);
+    setMappingEnvId(envId);
+    setSelectedPhysicalCredId('');
+    setMappingDialogOpen(true);
+  };
+
+  // Handler for creating mapping
+  const handleSubmitMapping = () => {
+    const selectedCred = physicalCredentials?.data?.find(
+      (c: any) => c.id === selectedPhysicalCredId
+    );
+    if (!selectedCred) {
+      toast.error('Please select a credential');
+      return;
+    }
+    createMappingMutation.mutate({
+      logical_credential_id: mappingLogicalId,
+      environment_id: mappingEnvId,
+      physical_credential_id: selectedCred.id,
+      physical_name: selectedCred.name,
+      physical_type: selectedCred.type,
+    });
+  };
+
+  // Get logical credential name for display
+  const getMappingLogicalName = () => {
+    const logical = logicalCredentials?.data?.find((lc: any) => lc.id === mappingLogicalId);
+    return logical?.name || mappingLogicalId;
+  };
+
+  // Get environment name for display
+  const getMappingEnvName = () => {
+    const env = environments?.data?.find((e: Environment) => e.id === mappingEnvId);
+    return env?.name || mappingEnvId;
   };
 
   // Form helpers
@@ -595,7 +628,7 @@ export function CredentialsPage() {
               <option value="all" className="bg-background text-foreground">All Environments</option>
               {environments?.data?.map((env: Environment) => (
                 <option key={env.id} value={env.id} className="bg-background text-foreground">
-                  {env.name} ({env.type})
+                  {env.name}
                 </option>
               ))}
             </select>
@@ -766,7 +799,7 @@ export function CredentialsPage() {
         </TabsContent>
 
         <TabsContent value="matrix">
-          <CredentialMatrix />
+          <CredentialMatrix onCreateMapping={handleCreateMapping} />
         </TabsContent>
 
         <TabsContent value="discover">
@@ -806,7 +839,7 @@ export function CredentialsPage() {
                 <SelectContent>
                   {environments?.data?.map((env: Environment) => (
                     <SelectItem key={env.id} value={env.id}>
-                      {env.name} ({env.type})
+                      {env.name}
                     </SelectItem>
                   ))}
                 </SelectContent>
@@ -970,6 +1003,52 @@ export function CredentialsPage() {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+
+      {/* Mapping Dialog */}
+      <Dialog open={mappingDialogOpen} onOpenChange={setMappingDialogOpen}>
+        <DialogContent className="max-w-lg">
+          <DialogHeader>
+            <DialogTitle>Create Credential Mapping</DialogTitle>
+            <DialogDescription>
+              Map logical credential "{getMappingLogicalName()}" to a physical credential in {getMappingEnvName()}.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4 py-4">
+            <div className="space-y-2">
+              <Label>Select Physical Credential</Label>
+              {isLoadingPhysical ? (
+                <div className="text-sm text-muted-foreground">Loading credentials...</div>
+              ) : physicalCredentials?.data?.length === 0 ? (
+                <div className="text-sm text-muted-foreground">No credentials found in this environment</div>
+              ) : (
+                <Select value={selectedPhysicalCredId} onValueChange={setSelectedPhysicalCredId}>
+                  <SelectTrigger>
+                    <SelectValue placeholder="Select a credential..." />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {physicalCredentials?.data?.map((cred: any) => (
+                      <SelectItem key={cred.id} value={cred.id}>
+                        {cred.name} ({cred.type})
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              )}
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setMappingDialogOpen(false)}>
+              Cancel
+            </Button>
+            <Button
+              onClick={handleSubmitMapping}
+              disabled={!selectedPhysicalCredId || createMappingMutation.isPending}
+            >
+              {createMappingMutation.isPending ? 'Creating...' : 'Create Mapping'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

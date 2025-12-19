@@ -1,7 +1,7 @@
 """
 Promotions API endpoints for pipeline-aware environment promotion
 """
-from fastapi import APIRouter, HTTPException, status, Depends, BackgroundTasks
+from fastapi import APIRouter, HTTPException, status, Depends, BackgroundTasks, Query
 import asyncio
 from typing import List, Optional, Dict, Any
 from datetime import datetime
@@ -919,6 +919,60 @@ async def list_promotions(
     )
 
 
+@router.get("/workflows/{workflow_id}/diff")
+async def get_workflow_diff(
+    workflow_id: str,
+    source_environment_id: str = Query(..., description="Source environment ID"),
+    target_environment_id: str = Query(..., description="Target environment ID"),
+    source_snapshot_id: Optional[str] = Query(None, description="Source snapshot ID (defaults to latest)"),
+    target_snapshot_id: Optional[str] = Query(None, description="Target snapshot ID (defaults to latest)"),
+    _: None = Depends(require_entitlement("workflow_ci_cd"))
+):
+    """
+    Get detailed diff for a single workflow between source and target environments.
+    Returns structured diff result with differences and summary.
+    """
+    logger.info(f"[WORKFLOW_DIFF] Route hit! workflow_id={workflow_id}, source={source_environment_id}, target={target_environment_id}")
+    try:
+        if not source_environment_id or not target_environment_id:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="source_environment_id and target_environment_id are required"
+            )
+        
+        # If no snapshot IDs provided, use "latest" (will use latest from GitHub)
+        source_snap = source_snapshot_id or "latest"
+        target_snap = target_snapshot_id or "latest"
+        
+        diff_result = await promotion_service.get_workflow_diff(
+            tenant_id=MOCK_TENANT_ID,
+            workflow_id=workflow_id,
+            source_env_id=source_environment_id,
+            target_env_id=target_environment_id,
+            source_snapshot_id=source_snap,
+            target_snapshot_id=target_snap
+        )
+
+        return {
+            "data": diff_result
+        }
+
+    except ValueError as e:
+        logger.error(f"ValueError in get_workflow_diff: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(e)
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Exception in get_workflow_diff: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to get workflow diff: {str(e)}"
+        )
+
+
 @router.get("/{promotion_id}", response_model=PromotionDetail)
 async def get_promotion(
     promotion_id: str,
@@ -927,6 +981,14 @@ async def get_promotion(
     """
     Get details of a specific promotion.
     """
+    logger.info(f"[GET_PROMOTION] Route hit with promotion_id={promotion_id}")
+    # Prevent this route from matching /workflows/... paths
+    if promotion_id == "workflows":
+        logger.warning(f"[GET_PROMOTION] Blocked attempt to access workflows path as promotion_id")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Promotion {promotion_id} not found"
+        )
     try:
         promo = await db_service.get_promotion(promotion_id, MOCK_TENANT_ID)
         if not promo:

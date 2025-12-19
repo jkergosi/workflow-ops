@@ -5,12 +5,21 @@ from typing import Dict, Any, List, Optional, Tuple
 from datetime import datetime
 import json
 import logging
+import asyncio
 from uuid import uuid4
 
 from app.services.provider_registry import ProviderRegistry
 from app.services.github_service import GitHubService
 from app.services.database import db_service
 from app.services.notification_service import notification_service
+from app.services.diff_service import (
+    DriftDifference,
+    DriftSummary,
+    compare_nodes,
+    compare_connections,
+    compare_settings,
+    normalize_value,
+)
 from app.schemas.promotion import (
     PromotionStatus,
     WorkflowChangeType,
@@ -23,6 +32,113 @@ from app.schemas.promotion import (
 from app.schemas.pipeline import PipelineStage, PipelineStageGates
 
 logger = logging.getLogger(__name__)
+
+
+def normalize_workflow_for_comparison(workflow: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Normalize workflow data for comparison by removing metadata fields
+    that differ between environments but don't represent actual changes.
+    """
+    # Create a deep copy to avoid modifying the original
+    normalized = json.loads(json.dumps(workflow))
+    
+    # Fields to exclude from comparison (metadata that differs between envs)
+    exclude_fields = [
+        'id', 'createdAt', 'updatedAt', 'versionId', 
+        'triggerCount', 'staticData', 'meta', 'hash',
+        'executionOrder', 'homeProject', 'sharedWithProjects',
+        # GitHub/sync metadata
+        '_comment', 'pinData',
+        # Additional runtime fields
+        'active',  # Active state may differ between environments
+        # Tags have different IDs per environment
+        'tags', 'tagIds',
+        # Sharing/permission info differs
+        'shared', 'scopes', 'usedCredentials',
+    ]
+    
+    for field in exclude_fields:
+        normalized.pop(field, None)
+    
+    # Normalize settings - remove environment-specific settings
+    if 'settings' in normalized and isinstance(normalized['settings'], dict):
+        settings_exclude = [
+            'executionOrder', 'saveDataErrorExecution', 'saveDataSuccessExecution',
+            'callerPolicy', 'timezone', 'saveManualExecutions',
+        ]
+        for field in settings_exclude:
+            normalized['settings'].pop(field, None)
+        # If settings is now empty, remove it entirely
+        if not normalized['settings']:
+            normalized.pop('settings', None)
+    
+    # Normalize nodes to remove UI/execution-specific data
+    if 'nodes' in normalized and isinstance(normalized['nodes'], list):
+        for node in normalized['nodes']:
+            # Remove position and UI-specific fields
+            ui_fields = [
+                'position', 'positionAbsolute', 'selected', 'selectedNodes',
+                'executionData', 'typeVersion', 'onError', 'id',
+                'webhookId', 'extendsCredential', 'notesInFlow',
+            ]
+            for field in ui_fields:
+                node.pop(field, None)
+            
+            # Normalize credentials - only compare by name, not ID
+            if 'credentials' in node and isinstance(node['credentials'], dict):
+                normalized_creds = {}
+                for cred_type, cred_ref in node['credentials'].items():
+                    if isinstance(cred_ref, dict):
+                        # Keep only name for comparison (ID differs between envs)
+                        normalized_creds[cred_type] = {'name': cred_ref.get('name')}
+                    else:
+                        normalized_creds[cred_type] = cred_ref
+                node['credentials'] = normalized_creds
+        
+        # Sort nodes by name for consistent comparison (order may differ)
+        normalized['nodes'] = sorted(normalized['nodes'], key=lambda n: n.get('name', ''))
+    
+    # Normalize connections - sort for consistent comparison
+    if 'connections' in normalized and isinstance(normalized['connections'], dict):
+        # Connections structure should be compared by content, not order
+        pass  # JSON dumps with sort_keys handles this
+    
+    return normalized
+
+
+def get_workflow_differences(source: Dict[str, Any], target: Dict[str, Any]) -> List[str]:
+    """Get a list of fields that differ between two normalized workflows."""
+    differences = []
+    
+    all_keys = set(source.keys()) | set(target.keys())
+    
+    for key in all_keys:
+        source_val = source.get(key)
+        target_val = target.get(key)
+        
+        if source_val is None and target_val is not None:
+            differences.append(f"'{key}' only in target")
+        elif target_val is None and source_val is not None:
+            differences.append(f"'{key}' only in source")
+        elif json.dumps(source_val, sort_keys=True) != json.dumps(target_val, sort_keys=True):
+            # For large fields like nodes, show more detail
+            if key == 'nodes' and isinstance(source_val, list) and isinstance(target_val, list):
+                if len(source_val) != len(target_val):
+                    differences.append(f"'{key}' has different number of items ({len(source_val)} vs {len(target_val)})")
+                else:
+                    for i, (s_node, t_node) in enumerate(zip(source_val, target_val)):
+                        if json.dumps(s_node, sort_keys=True) != json.dumps(t_node, sort_keys=True):
+                            node_name = s_node.get('name', f'node_{i}')
+                            # Find what differs in the node
+                            node_diff_keys = []
+                            for nk in set(s_node.keys()) | set(t_node.keys()):
+                                if json.dumps(s_node.get(nk), sort_keys=True) != json.dumps(t_node.get(nk), sort_keys=True):
+                                    node_diff_keys.append(nk)
+                            differences.append(f"nodes[{i}] '{node_name}' differs in: {node_diff_keys}")
+            else:
+                differences.append(f"'{key}' values differ")
+    
+    return differences
 
 
 class PromotionService:
@@ -330,9 +446,11 @@ class PromotionService:
                     target_dep = target_workflows.get(dep_id)
                     
                     if source_dep and target_dep:
-                        # Compare to see if they differ
-                        source_json = json.dumps(source_dep, sort_keys=True)
-                        target_json = json.dumps(target_dep, sort_keys=True)
+                        # Compare to see if they differ (use normalization)
+                        source_normalized = normalize_workflow_for_comparison(source_dep)
+                        target_normalized = normalize_workflow_for_comparison(target_dep)
+                        source_json = json.dumps(source_normalized, sort_keys=True)
+                        target_json = json.dumps(target_normalized, sort_keys=True)
                         if source_json != target_json:
                             missing_deps.append({
                                 "workflow_id": dep_id,
@@ -402,11 +520,20 @@ class PromotionService:
                     selected=True  # Auto-select new workflows
                 ))
             elif source_wf and target_wf:
-                # Compare workflows
-                source_json = json.dumps(source_wf, sort_keys=True)
-                target_json = json.dumps(target_wf, sort_keys=True)
+                # Compare workflows - normalize to exclude metadata fields
+                source_normalized = normalize_workflow_for_comparison(source_wf)
+                target_normalized = normalize_workflow_for_comparison(target_wf)
+                source_json = json.dumps(source_normalized, sort_keys=True)
+                target_json = json.dumps(target_normalized, sort_keys=True)
 
                 if source_json != target_json:
+                    # Log what's different for debugging
+                    differences = get_workflow_differences(source_normalized, target_normalized)
+                    logger.warning(f"Workflow '{source_wf.get('name', wf_id)}' differs: {differences}")
+                    # Log first 500 chars of each normalized JSON for comparison
+                    logger.debug(f"Source normalized (first 500): {source_json[:500]}")
+                    logger.debug(f"Target normalized (first 500): {target_json[:500]}")
+                    
                     # Check if target was modified independently
                     # (Simplified - in production, check commit history)
                     if target_wf.get("updatedAt") and source_wf.get("updatedAt"):
@@ -456,6 +583,168 @@ class PromotionService:
                     ))
 
         return selections
+
+    async def get_workflow_diff(
+        self,
+        tenant_id: str,
+        workflow_id: str,
+        source_env_id: str,
+        target_env_id: str,
+        source_snapshot_id: str = "latest",
+        target_snapshot_id: str = "latest"
+    ) -> Dict[str, Any]:
+        """
+        Get detailed diff for a single workflow between source and target environments.
+        Returns structured diff result with differences and summary.
+        """
+        # Get environment configs
+        source_env = await self.db.get_environment(source_env_id, tenant_id)
+        target_env = await self.db.get_environment(target_env_id, tenant_id)
+
+        if not source_env or not target_env:
+            raise ValueError("Source or target environment not found")
+
+        # Get the specific workflow from GitHub for both environments
+        # Note: We need to fetch workflows because they're stored by filename (sanitized name), not ID
+        # Optimize by fetching in parallel
+        source_github = self._get_github_service(source_env)
+        target_github = self._get_github_service(target_env)
+        
+        source_env_type = source_env.get("n8n_type", "dev")
+        target_env_type = target_env.get("n8n_type", "dev")
+        
+        # Fetch workflows in parallel for better performance
+        source_workflows_dict, target_workflows_dict = await asyncio.gather(
+            source_github.get_all_workflows_from_github(environment_type=source_env_type),
+            target_github.get_all_workflows_from_github(environment_type=target_env_type)
+        )
+        
+        # get_all_workflows_from_github returns Dict[str, Dict[str, Any]] mapping workflow_id to workflow_data
+        source_wf = source_workflows_dict.get(workflow_id)
+        target_wf = target_workflows_dict.get(workflow_id)
+
+        if not source_wf:
+            # Try to fetch from N8N directly as fallback (workflow might not be synced to GitHub yet)
+            logger.info(f"Workflow {workflow_id} not found in GitHub for source environment, trying N8N directly...")
+            try:
+                source_adapter = ProviderRegistry.get_adapter_for_environment(source_env)
+                source_wf = await source_adapter.get_workflow(workflow_id)
+                logger.info(f"Successfully fetched workflow {workflow_id} from N8N source environment")
+            except Exception as e:
+                logger.error(f"Failed to fetch workflow {workflow_id} from N8N: {str(e)}")
+                # Log available workflow IDs for debugging
+                available_ids = list(source_workflows_dict.keys())[:10]  # First 10 for logging
+                logger.warning(
+                    f"Workflow {workflow_id} not found in source environment '{source_env.get('name')}'. "
+                    f"Found {len(source_workflows_dict)} workflows in GitHub. "
+                    f"Sample IDs: {available_ids}"
+                )
+                raise ValueError(
+                    f"Workflow {workflow_id} not found in source environment '{source_env.get('name')}'. "
+                    f"Workflow may not be synced to GitHub yet. Please sync workflows to GitHub first."
+                )
+        
+        # Try to fetch target workflow from N8N if not in GitHub
+        if not target_wf:
+            logger.info(f"Workflow {workflow_id} not found in GitHub for target environment, trying N8N directly...")
+            try:
+                target_adapter = ProviderRegistry.get_adapter_for_environment(target_env)
+                target_wf = await target_adapter.get_workflow(workflow_id)
+                logger.info(f"Successfully fetched workflow {workflow_id} from N8N target environment")
+            except Exception as e:
+                logger.debug(f"Workflow {workflow_id} not found in target environment (this is OK for new workflows): {str(e)}")
+                target_wf = None
+
+        workflow_name = source_wf.get("name", "Unknown")
+
+        # Normalize workflows for comparison (same as compare_workflows)
+        source_normalized = normalize_workflow_for_comparison(source_wf)
+        target_normalized = normalize_workflow_for_comparison(target_wf) if target_wf else None
+
+        # If target doesn't exist, this is a new workflow
+        if not target_wf:
+            return {
+                "workflow_id": workflow_id,
+                "workflow_name": workflow_name,
+                "source_version": source_wf,
+                "target_version": None,
+                "differences": [],
+                "summary": {
+                    "nodes_added": len(source_wf.get("nodes", [])),
+                    "nodes_removed": 0,
+                    "nodes_modified": 0,
+                    "connections_changed": False,
+                    "settings_changed": False
+                }
+            }
+
+        # Compare using diff_service functions
+        all_differences: List[DriftDifference] = []
+        summary = DriftSummary()
+
+        # Compare nodes
+        source_nodes = source_normalized.get("nodes", [])
+        target_nodes = target_normalized.get("nodes", []) if target_normalized else []
+        node_diffs, node_summary = compare_nodes(source_nodes, target_nodes)
+        all_differences.extend(node_diffs)
+        summary.nodes_added = node_summary.nodes_added
+        summary.nodes_removed = node_summary.nodes_removed
+        summary.nodes_modified = node_summary.nodes_modified
+
+        # Compare connections
+        source_connections = source_normalized.get("connections", {})
+        target_connections = target_normalized.get("connections", {}) if target_normalized else {}
+        connection_diffs, connections_changed = compare_connections(source_connections, target_connections)
+        all_differences.extend(connection_diffs)
+        summary.connections_changed = connections_changed
+
+        # Compare settings
+        source_settings = source_normalized.get("settings", {})
+        target_settings = target_normalized.get("settings", {}) if target_normalized else {}
+        settings_diffs, settings_changed = compare_settings(source_settings, target_settings)
+        all_differences.extend(settings_diffs)
+        summary.settings_changed = settings_changed
+
+        # Compare name
+        if source_wf.get("name") != target_wf.get("name"):
+            all_differences.append(DriftDifference(
+                path="name",
+                git_value=source_wf.get("name"),
+                runtime_value=target_wf.get("name"),
+                diff_type="modified"
+            ))
+
+        # Compare active state
+        if source_wf.get("active") != target_wf.get("active"):
+            all_differences.append(DriftDifference(
+                path="active",
+                git_value=source_wf.get("active"),
+                runtime_value=target_wf.get("active"),
+                diff_type="modified"
+            ))
+
+        return {
+            "workflow_id": workflow_id,
+            "workflow_name": workflow_name,
+            "source_version": source_wf,
+            "target_version": target_wf,
+            "differences": [
+                {
+                    "path": d.path,
+                    "source_value": d.git_value,  # Using git_value as source
+                    "target_value": d.runtime_value,  # Using runtime_value as target
+                    "type": d.diff_type
+                }
+                for d in all_differences
+            ],
+            "summary": {
+                "nodes_added": summary.nodes_added,
+                "nodes_removed": summary.nodes_removed,
+                "nodes_modified": summary.nodes_modified,
+                "connections_changed": summary.connections_changed,
+                "settings_changed": summary.settings_changed
+            }
+        }
 
     async def _check_credentials(
         self,
@@ -948,9 +1237,28 @@ class PromotionService:
                     except Exception as e:
                         logger.error(f"Failed to rewrite credentials for {selection.workflow_name}: {e}")
 
-                # Write to target provider
+                # Write to target provider - check if workflow exists first
                 workflow_id = workflow_data.get("id")
-                await target_adapter.update_workflow(workflow_id, workflow_data)
+                
+                # Determine if this is a new workflow or an update
+                is_new_workflow = selection.change_type == WorkflowChangeType.NEW
+                
+                if is_new_workflow:
+                    # Create new workflow in target
+                    logger.info(f"Creating new workflow: {selection.workflow_name}")
+                    await target_adapter.create_workflow(workflow_data)
+                else:
+                    # Try to update existing workflow, fall back to create if not found
+                    try:
+                        await target_adapter.update_workflow(workflow_id, workflow_data)
+                    except Exception as update_error:
+                        # Check if it's a 404 (workflow doesn't exist) or 400 (bad request which could mean not found)
+                        error_str = str(update_error).lower()
+                        if '404' in error_str or '400' in error_str:
+                            logger.info(f"Workflow {selection.workflow_name} not found in target, creating new")
+                            await target_adapter.create_workflow(workflow_data)
+                        else:
+                            raise
                 
                 workflows_promoted += 1
             except Exception as e:

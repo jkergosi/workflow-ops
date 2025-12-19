@@ -111,16 +111,25 @@ class GitHubService:
             print(f"Error syncing workflow to GitHub: {str(e)}")
             raise
 
-    async def get_workflow_from_github(self, workflow_id: str) -> Optional[Dict[str, Any]]:
-        """Get a workflow from GitHub"""
+    async def get_workflow_from_github(self, workflow_id: str, environment_type: Optional[str] = None) -> Optional[Dict[str, Any]]:
+        """Get a single workflow from GitHub by ID"""
         if not self.is_configured() or not self.repo:
             return None
 
         try:
+            # Try with environment_type path first if provided
+            if environment_type:
+                file_path = f"workflows/{environment_type}/{workflow_id}.json"
+                try:
+                    file_content = self.repo.get_contents(file_path, ref=self.branch)
+                    content = base64.b64decode(file_content.content).decode('utf-8')
+                    return json.loads(content)
+                except GithubException:
+                    pass  # Fall through to try without environment_type
+            
+            # Try without environment_type path
             file_path = f"workflows/{workflow_id}.json"
             file_content = self.repo.get_contents(file_path, ref=self.branch)
-
-            # Decode base64 content
             content = base64.b64decode(file_content.content).decode('utf-8')
             return json.loads(content)
         except GithubException:

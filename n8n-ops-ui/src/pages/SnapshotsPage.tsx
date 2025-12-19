@@ -307,7 +307,7 @@ export function SnapshotsPage() {
               <SelectContent>
                 {environments.data.map((env) => (
                   <SelectItem key={env.id} value={env.id}>
-                    {env.name} {env.type ? `(${env.type})` : ''}
+                    {env.name}
                   </SelectItem>
                 ))}
               </SelectContent>

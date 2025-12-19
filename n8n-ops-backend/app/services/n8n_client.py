@@ -351,16 +351,16 @@ class N8NClient:
 
                 return credentials
         except httpx.HTTPStatusError as e:
-            # If credentials endpoint is not accessible (older n8n versions or cloud), fall back to workflow extraction
-            if e.response.status_code in [401, 403, 404, 405]:
-                import logging
-                logging.info(f"N8N credentials API not available (status {e.response.status_code}), extracting from workflows")
-                return await self._extract_credentials_from_workflows()
-            raise
+            import logging
+            # Don't fallback to workflow extraction - that creates phantom credentials
+            # that get cached as if they were real N8N credentials
+            logging.warning(f"N8N credentials API not available (status {e.response.status_code}). "
+                          "Credentials will not be available. Check N8N API key permissions.")
+            return []
         except Exception as e:
             import logging
-            logging.warning(f"Failed to fetch credentials: {str(e)}")
-            return await self._extract_credentials_from_workflows()
+            logging.warning(f"Failed to fetch credentials: {str(e)}. Returning empty list.")
+            return []
 
     def _extract_credential_usage_from_workflows(self, workflows: List[Dict[str, Any]]) -> Dict[str, List[Dict[str, Any]]]:
         """Build a map of credential_id -> list of workflows that use it"""

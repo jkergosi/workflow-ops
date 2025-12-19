@@ -44,8 +44,11 @@ def parse_used_by_workflows(credential: dict) -> dict:
 
 
 @router.get("/")
-async def get_credentials(environment_type: Optional[str] = None):
-    """Get all credentials, optionally filtered by environment type (dev, staging, production)"""
+async def get_credentials(
+    environment_type: Optional[str] = None,
+    environment_id: Optional[str] = None
+):
+    """Get all credentials, optionally filtered by environment type or ID"""
     try:
         # Get all environments first for lookup (include n8n_base_url for N8N links)
         envs_response = db_service.client.table("environments").select(
@@ -53,7 +56,9 @@ async def get_credentials(environment_type: Optional[str] = None):
         ).eq("tenant_id", MOCK_TENANT_ID).execute()
         env_lookup = {env["id"]: {"id": env["id"], "name": env["n8n_name"], "type": env["n8n_type"], "n8n_base_url": env["n8n_base_url"]} for env in envs_response.data}
 
-        if environment_type:
+        # Resolve environment_id from either parameter
+        resolved_env_id = environment_id
+        if not resolved_env_id and environment_type:
             # Resolve environment type to environment ID
             env_config = await db_service.get_environment_by_type(MOCK_TENANT_ID, environment_type)
             if not env_config:
@@ -61,12 +66,13 @@ async def get_credentials(environment_type: Optional[str] = None):
                     status_code=status.HTTP_404_NOT_FOUND,
                     detail=f"Environment '{environment_type}' not configured"
                 )
-            environment_id = env_config.get("id")
+            resolved_env_id = env_config.get("id")
 
+        if resolved_env_id:
             # Get credentials for specific environment
             response = db_service.client.table("credentials").select(
                 "*"
-            ).eq("tenant_id", MOCK_TENANT_ID).eq("environment_id", environment_id).eq("is_deleted", False).order("name").execute()
+            ).eq("tenant_id", MOCK_TENANT_ID).eq("environment_id", resolved_env_id).eq("is_deleted", False).order("name").execute()
         else:
             # Get all credentials across all environments
             response = db_service.client.table("credentials").select(

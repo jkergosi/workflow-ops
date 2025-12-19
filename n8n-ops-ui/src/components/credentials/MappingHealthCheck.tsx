@@ -99,7 +99,7 @@ export function MappingHealthCheck({ onFixMapping }: MappingHealthCheckProps) {
                 <SelectItem value="all">All Environments</SelectItem>
                 {environments.map((env) => (
                   <SelectItem key={env.id} value={env.id}>
-                    {env.name} ({env.type})
+                    {env.name}
                   </SelectItem>
                 ))}
               </SelectContent>
@@ -124,31 +124,31 @@ export function MappingHealthCheck({ onFixMapping }: MappingHealthCheckProps) {
                   <div className="text-sm text-muted-foreground">Total Mappings</div>
                 </CardContent>
               </Card>
-              <Card className="border-green-200 bg-green-50/50">
+              <Card className="border-green-200 bg-green-50/50 dark:border-green-800 dark:bg-green-950/50">
                 <CardContent className="pt-4">
-                  <div className="text-2xl font-bold text-green-700 flex items-center gap-2">
+                  <div className="text-2xl font-bold text-green-700 dark:text-green-400 flex items-center gap-2">
                     <CheckCircle2 className="h-5 w-5" />
                     {report.valid}
                   </div>
-                  <div className="text-sm text-green-600">Valid</div>
+                  <div className="text-sm text-green-600 dark:text-green-500">Valid</div>
                 </CardContent>
               </Card>
-              <Card className="border-red-200 bg-red-50/50">
+              <Card className="border-red-200 bg-red-50/50 dark:border-red-800 dark:bg-red-950/50">
                 <CardContent className="pt-4">
-                  <div className="text-2xl font-bold text-red-700 flex items-center gap-2">
+                  <div className="text-2xl font-bold text-red-700 dark:text-red-400 flex items-center gap-2">
                     <XCircle className="h-5 w-5" />
                     {report.invalid}
                   </div>
-                  <div className="text-sm text-red-600">Invalid</div>
+                  <div className="text-sm text-red-600 dark:text-red-500">Invalid</div>
                 </CardContent>
               </Card>
-              <Card className="border-yellow-200 bg-yellow-50/50">
+              <Card className="border-yellow-200 bg-yellow-50/50 dark:border-yellow-800 dark:bg-yellow-950/50">
                 <CardContent className="pt-4">
-                  <div className="text-2xl font-bold text-yellow-700 flex items-center gap-2">
+                  <div className="text-2xl font-bold text-yellow-700 dark:text-yellow-400 flex items-center gap-2">
                     <AlertTriangle className="h-5 w-5" />
                     {report.stale}
                   </div>
-                  <div className="text-sm text-yellow-600">Stale</div>
+                  <div className="text-sm text-yellow-600 dark:text-yellow-500">Stale</div>
                 </CardContent>
               </Card>
             </div>

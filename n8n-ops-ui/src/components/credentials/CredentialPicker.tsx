@@ -32,8 +32,8 @@ export function CredentialPicker({
   const [searchQuery, setSearchQuery] = useState('');
 
   const { data: credentialsData, isLoading } = useQuery({
-    queryKey: ['n8n-credentials', environmentId],
-    queryFn: () => apiClient.getCredentialsByEnvironment(environmentId),
+    queryKey: ['cached-credentials', environmentId],
+    queryFn: () => apiClient.getCredentials({ environmentId }),
     enabled: !!environmentId,
   });
 

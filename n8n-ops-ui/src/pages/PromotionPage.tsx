@@ -33,12 +33,13 @@ import {
 } from '@/components/ui/dialog';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { apiClient } from '@/lib/api-client';
-import { ArrowLeft, Play, AlertTriangle, CheckCircle, XCircle, Loader2 } from 'lucide-react';
+import { ArrowLeft, Play, AlertTriangle, CheckCircle, XCircle, Loader2, GitCompare } from 'lucide-react';
 import { toast } from 'sonner';
 import type { Pipeline, Environment, WorkflowSelection, WorkflowChangeType } from '@/types';
 import type { CredentialPreflightResult, CredentialIssue } from '@/types/credentials';
 import { CredentialPreflightDialog } from '@/components/promotion/CredentialPreflightDialog';
 import { InlineMappingDialog } from '@/components/promotion/InlineMappingDialog';
+import { WorkflowDiffDialog } from '@/components/promotion/WorkflowDiffDialog';
 
 export function PromotionPage() {
   const navigate = useNavigate();
@@ -57,6 +58,8 @@ export function PromotionPage() {
   const [preflightResult, setPreflightResult] = useState<CredentialPreflightResult | null>(null);
   const [showMappingDialog, setShowMappingDialog] = useState(false);
   const [selectedIssue, setSelectedIssue] = useState<CredentialIssue | null>(null);
+  const [showDiffDialog, setShowDiffDialog] = useState(false);
+  const [selectedWorkflowForDiff, setSelectedWorkflowForDiff] = useState<WorkflowSelection | null>(null);
 
   const { data: pipelines } = useQuery({
     queryKey: ['pipelines'],
@@ -493,8 +496,7 @@ export function PromotionPage() {
                     </TableHead>
                     <TableHead>Workflow Name</TableHead>
                     <TableHead>Change Type</TableHead>
-                    <TableHead>Source Status</TableHead>
-                    <TableHead>Target Status</TableHead>
+                    <TableHead>Actions</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
@@ -514,22 +516,20 @@ export function PromotionPage() {
                     <TableCell className="font-medium">{workflow.workflowName}</TableCell>
                     <TableCell>{getChangeTypeBadge(workflow.changeType)}</TableCell>
                     <TableCell>
-                      {workflow.enabledInSource ? (
-                        <Badge variant="success">Active</Badge>
-                      ) : (
-                        <Badge variant="outline">Inactive</Badge>
-                      )}
-                    </TableCell>
-                    <TableCell>
-                      {workflow.enabledInTarget !== undefined ? (
-                        workflow.enabledInTarget ? (
-                          <Badge variant="success">Active</Badge>
-                        ) : (
-                          <Badge variant="outline">Inactive</Badge>
-                        )
-                      ) : (
-                        <span className="text-muted-foreground">N/A</span>
-                      )}
+                      <div className="flex gap-2">
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={() => {
+                            setSelectedWorkflowForDiff(workflow);
+                            setShowDiffDialog(true);
+                          }}
+                          title="View diff"
+                        >
+                          <GitCompare className="h-3 w-3 mr-1" />
+                          View Diff
+                        </Button>
+                      </div>
                     </TableCell>
                     </TableRow>
                   ))}
@@ -783,6 +783,20 @@ export function PromotionPage() {
         targetEnvironmentName={targetEnv?.name || 'Target'}
         onMappingCreated={handleMappingCreated}
       />
+
+      {/* Workflow Diff Dialog */}
+      {selectedWorkflowForDiff && (
+        <WorkflowDiffDialog
+          open={showDiffDialog}
+          onOpenChange={setShowDiffDialog}
+          workflowId={selectedWorkflowForDiff.workflowId}
+          workflowName={selectedWorkflowForDiff.workflowName}
+          sourceEnvironmentId={sourceEnvId || ''}
+          targetEnvironmentId={targetEnvId || ''}
+          sourceEnvironmentName={sourceEnv?.name}
+          targetEnvironmentName={targetEnv?.name}
+        />
+      )}
     </div>
   );
 }

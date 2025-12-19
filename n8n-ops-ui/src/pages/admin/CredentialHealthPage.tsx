@@ -34,6 +34,7 @@ import type { LogicalCredential, CredentialMapping } from '@/types/credentials';
 import { Shield, Server, Globe, Plus, Pencil, Trash2 } from 'lucide-react';
 import { toast } from 'sonner';
 import { CredentialPicker } from '@/components/credentials/CredentialPicker';
+import { Combobox } from '@/components/ui/combobox';
 import type { N8NCredentialRef } from '@/types/credentials';
 
 export function CredentialHealthPage() {
@@ -88,6 +89,21 @@ export function CredentialHealthPage() {
     enabled: true,
   });
 
+  // Fetch all cached credentials to get available types for autocomplete
+  const { data: allCredentialsData } = useQuery({
+    queryKey: ['all-cached-credentials'],
+    queryFn: () => apiClient.getCredentials(),
+  });
+
+  // Extract unique credential types for autocomplete
+  const availableCredentialTypes = useMemo(() => {
+    const types = new Set<string>();
+    (allCredentialsData?.data || []).forEach((cred: any) => {
+      if (cred.type) types.add(cred.type);
+    });
+    return Array.from(types).sort();
+  }, [allCredentialsData]);
+
   // Mutations for logical credentials
   const createLogicalMutation = useMutation({
     mutationFn: (data: { name: string; required_type?: string; description?: string; tenant_id: string }) =>
@@ -130,8 +146,13 @@ export function CredentialHealthPage() {
   // Mutations for mappings
   const createMappingMutation = useMutation({
     mutationFn: (data: any) => apiClient.createCredentialMapping(data),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['credential-mappings'] });
+    onSuccess: (_data, variables) => {
+      // Switch to the environment filter to show the newly created mapping
+      if (variables.environment_id && variables.environment_id !== selectedEnvId) {
+        setSelectedEnvId(variables.environment_id);
+      }
+      queryClient.invalidateQueries({ queryKey: ['credential-mappings'], refetchType: 'all' });
+      queryClient.invalidateQueries({ queryKey: ['credential-matrix'] });
       toast.success('Mapping created');
       closeMappingDialog();
     },
@@ -143,7 +164,8 @@ export function CredentialHealthPage() {
   const updateMappingMutation = useMutation({
     mutationFn: ({ id, data }: { id: string; data: any }) => apiClient.updateCredentialMapping(id, data),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['credential-mappings'] });
+      queryClient.invalidateQueries({ queryKey: ['credential-mappings'], refetchType: 'all' });
+      queryClient.invalidateQueries({ queryKey: ['credential-matrix'] });
       toast.success('Mapping updated');
       closeMappingDialog();
     },
@@ -155,7 +177,8 @@ export function CredentialHealthPage() {
   const deleteMappingMutation = useMutation({
     mutationFn: (id: string) => apiClient.deleteCredentialMapping(id),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['credential-mappings'] });
+      queryClient.invalidateQueries({ queryKey: ['credential-mappings'], refetchType: 'all' });
+      queryClient.invalidateQueries({ queryKey: ['credential-matrix'] });
       toast.success('Mapping deleted');
       setDeleteMappingId(null);
     },
@@ -322,7 +345,7 @@ export function CredentialHealthPage() {
               <SelectContent>
                 {envOptions.map((env) => (
                   <SelectItem key={env.id} value={env.id}>
-                    {env.name} ({env.type})
+                    {env.name}
                   </SelectItem>
                 ))}
               </SelectContent>
@@ -345,7 +368,8 @@ export function CredentialHealthPage() {
               </SelectTrigger>
               <SelectContent>
                 <SelectItem value="all">All providers</SelectItem>
-                {providers.map((p: any) => (
+                <SelectItem value="n8n">n8n</SelectItem>
+                {providers.filter((p: any) => p.provider !== 'n8n').map((p: any) => (
                   <SelectItem key={p.provider} value={p.provider}>
                     {p.provider}
                   </SelectItem>
@@ -510,13 +534,19 @@ export function CredentialHealthPage() {
               </p>
             </div>
             <div className="grid gap-2">
-              <Label htmlFor="type">Required Type</Label>
-              <Input
-                id="type"
+              <Label>Required Type</Label>
+              <Combobox
+                options={availableCredentialTypes.map((type) => ({ value: type, label: type }))}
                 value={logicalType}
-                onChange={(e) => setLogicalType(e.target.value)}
-                placeholder="e.g., slackApi"
+                onChange={setLogicalType}
+                placeholder="Select or enter type..."
+                searchPlaceholder="Search types..."
+                emptyText="No matching types"
+                allowCustom={true}
               />
+              <p className="text-xs text-muted-foreground">
+                Select from known types or type a custom value
+              </p>
             </div>
             <div className="grid gap-2">
               <Label htmlFor="description">Description</Label>
@@ -577,7 +607,7 @@ export function CredentialHealthPage() {
                 <SelectContent>
                   {envOptions.map((env) => (
                     <SelectItem key={env.id} value={env.id}>
-                      {env.name} ({env.type})
+                      {env.name}
                     </SelectItem>
                   ))}
                 </SelectContent>

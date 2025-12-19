@@ -613,7 +613,7 @@ export function WorkflowsPage() {
                 ) : (
                   availableEnvironments.map((env) => (
                     <option key={env.id} value={env.type} className="bg-background text-foreground">
-                      {env.name} ({env.type})
+                      {env.name}
                     </option>
                   ))
                 )}

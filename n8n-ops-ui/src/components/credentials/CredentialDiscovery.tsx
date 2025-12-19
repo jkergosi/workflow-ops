@@ -43,15 +43,7 @@ export function CredentialDiscovery({
     enabled: false,
   });
 
-  const discovered: DiscoveredCredential[] = (discoveredData?.data || []).map((d: any) => ({
-    type: d.type,
-    name: d.name,
-    logicalKey: d.logical_key,
-    workflowCount: d.workflow_count,
-    workflows: d.workflows || [],
-    existingLogicalId: d.existing_logical_id,
-    mappingStatus: d.mapping_status,
-  }));
+  const discovered: DiscoveredCredential[] = discoveredData?.data || [];
 
   const createLogicalMutation = useMutation({
     mutationFn: (data: { name: string; required_type: string; description?: string; tenant_id: string }) =>
@@ -154,7 +146,7 @@ export function CredentialDiscovery({
               <SelectContent>
                 {environments.map((env) => (
                   <SelectItem key={env.id} value={env.id}>
-                    {env.name} ({env.type})
+                    {env.name}
                   </SelectItem>
                 ))}
               </SelectContent>

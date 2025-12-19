@@ -1,4 +1,4 @@
-from fastapi import APIRouter, HTTPException, status, Depends
+from fastapi import APIRouter, HTTPException, status, Depends, Query
 from typing import Optional, List, Dict, Any
 import logging
 from functools import wraps
@@ -111,6 +111,96 @@ async def create_mapping(body: CredentialMappingCreate, user_info: dict = Depend
     return created
 
 
+@router.post("/mappings/validate", response_model=MappingValidationReport)
+@handle_db_errors
+async def validate_credential_mappings(
+    environment_id: Optional[str] = Query(None, description="Filter by environment ID"),
+    user_info: dict = Depends(get_current_user)
+):
+    """Validate that all credential mappings still resolve to valid N8N credentials."""
+    tenant_id = get_current_tenant_id(user_info)
+
+    mappings = await db_service.list_credential_mappings(tenant_id, environment_id=environment_id)
+    logical_creds = await db_service.list_logical_credentials(tenant_id)
+    environments = await db_service.get_environments(tenant_id)
+
+    logical_by_id = {lc.get("id"): lc for lc in logical_creds}
+    env_by_id = {e.get("id"): e for e in environments}
+
+    env_credentials_cache: Dict[str, Dict[str, Any]] = {}
+
+    total = len(mappings)
+    valid_count = 0
+    invalid_count = 0
+    stale_count = 0
+    issues: List[MappingIssue] = []
+
+    for mapping in mappings:
+        mapping_id = mapping.get("id")
+        env_id = mapping.get("environment_id")
+        logical_id = mapping.get("logical_credential_id")
+        physical_id = mapping.get("physical_credential_id")
+
+        logical = logical_by_id.get(logical_id, {})
+        env = env_by_id.get(env_id, {})
+        logical_name = logical.get("name", logical_id)
+        env_name = env.get("n8n_name", env_id)
+
+        if env_id not in env_credentials_cache:
+            try:
+                adapter = ProviderRegistry.get_adapter_for_environment(env)
+                creds = await adapter.get_credentials()
+                env_credentials_cache[env_id] = {c.get("id"): c for c in creds}
+            except Exception as e:
+                logger.warning(f"Failed to fetch credentials for env {env_id}: {e}")
+                env_credentials_cache[env_id] = {}
+
+        n8n_creds = env_credentials_cache.get(env_id, {})
+        n8n_cred = n8n_creds.get(physical_id)
+
+        new_status = mapping.get("status", "valid")
+        issue_type = None
+        issue_msg = None
+
+        if not n8n_cred:
+            new_status = "invalid"
+            issue_type = "credential_not_found"
+            issue_msg = f"Physical credential '{physical_id}' not found in N8N"
+            invalid_count += 1
+        else:
+            expected_name = mapping.get("physical_name")
+            actual_name = n8n_cred.get("name")
+            if expected_name and actual_name and expected_name != actual_name:
+                new_status = "stale"
+                issue_type = "name_changed"
+                issue_msg = f"Credential name changed from '{expected_name}' to '{actual_name}'"
+                stale_count += 1
+            else:
+                new_status = "valid"
+                valid_count += 1
+
+        if mapping.get("status") != new_status:
+            await db_service.update_credential_mapping(tenant_id, mapping_id, {"status": new_status})
+
+        if issue_type:
+            issues.append(MappingIssue(
+                mapping_id=mapping_id,
+                logical_name=logical_name,
+                environment_id=env_id,
+                environment_name=env_name,
+                issue=issue_type,
+                message=issue_msg,
+            ))
+
+    return MappingValidationReport(
+        total=total,
+        valid=valid_count,
+        invalid=invalid_count,
+        stale=stale_count,
+        issues=issues,
+    )
+
+
 @router.patch("/mappings/{mapping_id}", response_model=CredentialMappingResponse)
 async def update_mapping(mapping_id: str, body: CredentialMappingUpdate, user_info: dict = Depends(get_current_user)):
     tenant_id = get_current_tenant_id(user_info)
@@ -160,19 +250,40 @@ async def credential_preflight_check(
         logger.error(f"Failed to fetch target credentials: {e}")
         target_cred_map = {}
 
+    # Get GitHub service for source environment (fallback for workflow data)
+    from app.services.github_service import GitHubService
+    source_github = GitHubService(
+        repo=source_env.get("github_repo"),
+        branch=source_env.get("github_branch", "main"),
+        token=source_env.get("github_token")
+    )
+    
+    # Try to get all workflows from GitHub at once for efficiency
+    github_workflows = {}
+    if source_github.is_configured():
+        try:
+            github_workflows = await source_github.get_all_workflows_from_github()
+        except Exception as e:
+            logger.warning(f"Failed to fetch workflows from GitHub: {e}")
+    
     # Process each workflow
     for workflow_id in body.workflow_ids:
-        # Get workflow data from cache
+        # Get workflow data from cache first
         workflow_record = await db_service.get_workflow(tenant_id, body.source_environment_id, workflow_id)
+        
+        # If not in cache, try GitHub
         if not workflow_record:
-            blocking_issues.append(CredentialIssue(
-                workflow_id=workflow_id,
-                workflow_name="Unknown",
-                logical_credential_key="",
-                issue_type="workflow_not_found",
-                message=f"Workflow {workflow_id} not found in source environment",
-                is_blocking=True
-            ))
+            github_wf = github_workflows.get(workflow_id)
+            if github_wf:
+                workflow_record = {
+                    "name": github_wf.get("name", "Unknown"),
+                    "workflow_data": github_wf
+                }
+        
+        if not workflow_record:
+            # Not a blocking issue - just skip this workflow for preflight
+            # It might be a new workflow being deployed
+            logger.warning(f"Workflow {workflow_id} not found in cache or GitHub, skipping preflight")
             continue
 
         workflow_name = workflow_record.get("name", "Unknown")
@@ -476,94 +587,4 @@ async def discover_credentials_from_workflows(
                 discovered[key]["workflows"].append({"id": wf_id, "name": wf_name})
 
     return list(discovered.values())
-
-
-@router.post("/mappings/validate", response_model=MappingValidationReport)
-@handle_db_errors
-async def validate_credential_mappings(
-    environment_id: Optional[str] = None,
-    user_info: dict = Depends(get_current_user)
-):
-    """Validate that all credential mappings still resolve to valid N8N credentials."""
-    tenant_id = get_current_tenant_id(user_info)
-
-    mappings = await db_service.list_credential_mappings(tenant_id, environment_id=environment_id)
-    logical_creds = await db_service.list_logical_credentials(tenant_id)
-    environments = await db_service.get_environments(tenant_id)
-
-    logical_by_id = {lc.get("id"): lc for lc in logical_creds}
-    env_by_id = {e.get("id"): e for e in environments}
-
-    env_credentials_cache: Dict[str, Dict[str, Any]] = {}
-
-    total = len(mappings)
-    valid_count = 0
-    invalid_count = 0
-    stale_count = 0
-    issues: List[MappingIssue] = []
-
-    for mapping in mappings:
-        mapping_id = mapping.get("id")
-        env_id = mapping.get("environment_id")
-        logical_id = mapping.get("logical_credential_id")
-        physical_id = mapping.get("physical_credential_id")
-
-        logical = logical_by_id.get(logical_id, {})
-        env = env_by_id.get(env_id, {})
-        logical_name = logical.get("name", logical_id)
-        env_name = env.get("n8n_name", env_id)
-
-        if env_id not in env_credentials_cache:
-            try:
-                adapter = ProviderRegistry.get_adapter_for_environment(env)
-                creds = await adapter.get_credentials()
-                env_credentials_cache[env_id] = {c.get("id"): c for c in creds}
-            except Exception as e:
-                logger.warning(f"Failed to fetch credentials for env {env_id}: {e}")
-                env_credentials_cache[env_id] = {}
-
-        n8n_creds = env_credentials_cache.get(env_id, {})
-        n8n_cred = n8n_creds.get(physical_id)
-
-        new_status = mapping.get("status", "valid")
-        issue_type = None
-        issue_msg = None
-
-        if not n8n_cred:
-            new_status = "invalid"
-            issue_type = "credential_not_found"
-            issue_msg = f"Physical credential '{physical_id}' not found in N8N"
-            invalid_count += 1
-        else:
-            expected_name = mapping.get("physical_name")
-            actual_name = n8n_cred.get("name")
-            if expected_name and actual_name and expected_name != actual_name:
-                new_status = "stale"
-                issue_type = "name_changed"
-                issue_msg = f"Credential name changed from '{expected_name}' to '{actual_name}'"
-                stale_count += 1
-            else:
-                new_status = "valid"
-                valid_count += 1
-
-        if mapping.get("status") != new_status:
-            await db_service.update_credential_mapping(tenant_id, mapping_id, {"status": new_status})
-
-        if issue_type:
-            issues.append(MappingIssue(
-                mapping_id=mapping_id,
-                logical_name=logical_name,
-                environment_id=env_id,
-                environment_name=env_name,
-                issue=issue_type,
-                message=issue_msg,
-            ))
-
-    return MappingValidationReport(
-        total=total,
-        valid=valid_count,
-        invalid=invalid_count,
-        stale=stale_count,
-        issues=issues,
-    )
 

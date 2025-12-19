@@ -106,6 +106,33 @@ export interface SnapshotComparison {
   };
 }
 
+// Workflow diff types for deployment preview
+export type WorkflowDiffType = 'added' | 'removed' | 'modified';
+
+export interface WorkflowDifference {
+  path: string;
+  sourceValue: any;
+  targetValue: any;
+  type: WorkflowDiffType;
+}
+
+export interface WorkflowDiffSummary {
+  nodesAdded: number;
+  nodesRemoved: number;
+  nodesModified: number;
+  connectionsChanged: boolean;
+  settingsChanged: boolean;
+}
+
+export interface WorkflowDiffResult {
+  workflowId: string;
+  workflowName: string;
+  sourceVersion: any; // Full workflow JSON from source
+  targetVersion: any | null; // Full workflow JSON from target (null if new workflow)
+  differences: WorkflowDifference[];
+  summary: WorkflowDiffSummary;
+}
+
 // Deployment types (Promotion records)
 export type DeploymentStatus = 'pending' | 'running' | 'success' | 'failed' | 'canceled';
 export type WorkflowChangeType = 'created' | 'updated' | 'deleted' | 'skipped' | 'unchanged';

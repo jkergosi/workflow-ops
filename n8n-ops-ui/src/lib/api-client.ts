@@ -61,6 +61,7 @@ import type {
   TenantFeatureOverride,
   FeatureConfigAudit,
   FeatureAccessLog,
+  WorkflowDiffResult,
 } from '@/types';
 
 // Helper function to determine if a string is a UUID
@@ -783,6 +784,52 @@ class ApiClient {
     return { data: response.data };
   }
 
+  async getWorkflowDiff(
+    workflowId: string,
+    sourceEnvironmentId: string,
+    targetEnvironmentId: string,
+    sourceSnapshotId?: string,
+    targetSnapshotId?: string
+  ): Promise<{ data: WorkflowDiffResult }> {
+    const params = new URLSearchParams({
+      source_environment_id: sourceEnvironmentId,
+      target_environment_id: targetEnvironmentId,
+    });
+    if (sourceSnapshotId) {
+      params.append('source_snapshot_id', sourceSnapshotId);
+    }
+    if (targetSnapshotId) {
+      params.append('target_snapshot_id', targetSnapshotId);
+    }
+    const response = await this.client.get<any>(
+      `/promotions/workflows/${workflowId}/diff?${params.toString()}`
+    );
+    
+    // Transform snake_case to camelCase
+    const data = response.data;
+    return {
+      data: {
+        workflowId: data.workflow_id,
+        workflowName: data.workflow_name,
+        sourceVersion: data.source_version,
+        targetVersion: data.target_version,
+        differences: data.differences.map((d: any) => ({
+          path: d.path,
+          sourceValue: d.source_value,
+          targetValue: d.target_value,
+          type: d.type,
+        })),
+        summary: {
+          nodesAdded: data.summary.nodes_added,
+          nodesRemoved: data.summary.nodes_removed,
+          nodesModified: data.summary.nodes_modified,
+          connectionsChanged: data.summary.connections_changed,
+          settingsChanged: data.summary.settings_changed,
+        },
+      },
+    };
+  }
+
   async createSnapshot(request: PromotionSnapshotRequest): Promise<{ data: PromotionSnapshotResponse }> {
     const response = await this.client.post<PromotionSnapshotResponse>('/promotions/snapshots', request);
     return { data: response.data };
@@ -1051,9 +1098,11 @@ class ApiClient {
   }
 
   // Credential endpoints
-  async getCredentials(environmentType?: string): Promise<{ data: Credential[] }> {
-    const params = environmentType ? { environment_type: environmentType } : {};
-    const response = await this.client.get<any[]>('/credentials/', { params });
+  async getCredentials(params?: { environmentType?: string; environmentId?: string }): Promise<{ data: Credential[] }> {
+    const queryParams: Record<string, string> = {};
+    if (params?.environmentType) queryParams.environment_type = params.environmentType;
+    if (params?.environmentId) queryParams.environment_id = params.environmentId;
+    const response = await this.client.get<any[]>('/credentials/', { params: queryParams });
     // Add provider field with default for backward compatibility
     const data = response.data.map((cred: any) => ({
       ...cred,
@@ -1111,26 +1160,118 @@ class ApiClient {
 
   async getCredentialMatrix(): Promise<{ data: any }> {
     const response = await this.client.get('/admin/credentials/matrix');
-    return { data: response.data };
+    const data = response.data;
+    
+    // Transform snake_case to camelCase for frontend compatibility
+    const logicalCredentials = (data.logical_credentials || []).map((lc: any) => ({
+      id: lc.id,
+      tenantId: lc.tenant_id,
+      name: lc.name,
+      description: lc.description,
+      requiredType: lc.required_type,
+      createdAt: lc.created_at,
+    }));
+    
+    const environments = (data.environments || []).map((env: any) => ({
+      id: env.id,
+      name: env.name,
+      type: env.type,
+    }));
+    
+    // Transform matrix cells
+    const matrix: Record<string, Record<string, any>> = {};
+    for (const [lcId, envMap] of Object.entries(data.matrix || {})) {
+      matrix[lcId] = {};
+      for (const [envId, cell] of Object.entries(envMap as Record<string, any>)) {
+        if (cell) {
+          matrix[lcId][envId] = {
+            mappingId: cell.mapping_id,
+            physicalCredentialId: cell.physical_credential_id,
+            physicalName: cell.physical_name,
+            physicalType: cell.physical_type,
+            status: cell.status,
+          };
+        } else {
+          matrix[lcId][envId] = null;
+        }
+      }
+    }
+    
+    return { 
+      data: {
+        logical_credentials: logicalCredentials,
+        environments,
+        matrix,
+      }
+    };
   }
 
   async discoverCredentials(environmentId: string, provider: string = 'n8n'): Promise<{ data: any[] }> {
     const response = await this.client.post(`/admin/credentials/discover/${environmentId}`, null, {
       params: { provider },
     });
-    return { data: response.data };
+    
+    // Transform snake_case to camelCase for frontend compatibility
+    const data = (response.data || []).map((d: any) => ({
+      type: d.type,
+      name: d.name,
+      logicalKey: d.logical_key,
+      workflowCount: d.workflow_count,
+      workflows: d.workflows || [],
+      existingLogicalId: d.existing_logical_id,
+      mappingStatus: d.mapping_status,
+    }));
+    
+    return { data };
   }
 
   async validateCredentialMappings(environmentId?: string): Promise<{ data: any }> {
     const response = await this.client.post('/admin/credentials/mappings/validate', null, {
       params: environmentId ? { environment_id: environmentId } : {},
     });
-    return { data: response.data };
+    
+    // Transform snake_case to camelCase for frontend compatibility
+    const data = response.data;
+    const issues = (data.issues || []).map((issue: any) => ({
+      mappingId: issue.mapping_id,
+      logicalName: issue.logical_name,
+      environmentId: issue.environment_id,
+      environmentName: issue.environment_name,
+      issue: issue.issue,
+      message: issue.message,
+    }));
+    
+    return { 
+      data: {
+        total: data.total,
+        valid: data.valid,
+        invalid: data.invalid,
+        stale: data.stale,
+        issues,
+      }
+    };
   }
 
   async getLogicalCredentials(): Promise<{ data: any[] }> {
     const response = await this.client.get('/admin/credentials/logical');
     return { data: response.data };
+  }
+
+  async listLogicalCredentials(): Promise<{ data: any[] }> {
+    return this.getLogicalCredentials();
+  }
+
+  async updateLogicalCredential(id: string, data: {
+    name?: string;
+    required_type?: string;
+    description?: string;
+  }): Promise<{ data: any }> {
+    const response = await this.client.patch(`/admin/credentials/logical/${id}`, data);
+    return { data: response.data };
+  }
+
+  async deleteLogicalCredential(id: string): Promise<void> {
+    await this.client.delete(`/admin/credentials/logical/${id}`);
   }
 
   async createLogicalCredential(data: {
@@ -1158,6 +1299,58 @@ class ApiClient {
     return { data: response.data };
   }
 
+  async listCredentialMappings(params?: {
+    environmentId?: string;
+    provider?: string;
+  }): Promise<{ data: any[] }> {
+    const response = await this.client.get('/admin/credentials/mappings', {
+      params: {
+        environment_id: params?.environmentId,
+        provider: params?.provider,
+      },
+    });
+    
+    // Transform snake_case to camelCase for frontend compatibility
+    const data = (response.data || []).map((m: any) => ({
+      id: m.id,
+      tenantId: m.tenant_id,
+      logicalCredentialId: m.logical_credential_id,
+      environmentId: m.environment_id,
+      provider: m.provider,
+      physicalCredentialId: m.physical_credential_id,
+      physicalName: m.physical_name,
+      physicalType: m.physical_type,
+      status: m.status,
+      createdAt: m.created_at,
+      updatedAt: m.updated_at,
+      // Keep snake_case versions for backward compatibility
+      logical_credential_id: m.logical_credential_id,
+      environment_id: m.environment_id,
+      physical_credential_id: m.physical_credential_id,
+      physical_name: m.physical_name,
+      physical_type: m.physical_type,
+      tenant_id: m.tenant_id,
+      created_at: m.created_at,
+      updated_at: m.updated_at,
+    }));
+    
+    return { data };
+  }
+
+  async updateCredentialMapping(id: string, data: {
+    physical_credential_id?: string;
+    physical_name?: string;
+    physical_type?: string;
+    status?: string;
+  }): Promise<{ data: any }> {
+    const response = await this.client.patch(`/admin/credentials/mappings/${id}`, data);
+    return { data: response.data };
+  }
+
+  async deleteCredentialMapping(id: string): Promise<void> {
+    await this.client.delete(`/admin/credentials/mappings/${id}`);
+  }
+
   async credentialPreflightCheck(data: {
     source_environment_id: string;
     target_environment_id: string;
@@ -1165,6 +1358,12 @@ class ApiClient {
     provider?: string;
   }): Promise<{ data: any }> {
     const response = await this.client.post('/admin/credentials/preflight', data);
+    return { data: response.data };
+  }
+
+  // Provider endpoints
+  async getActiveProviders(): Promise<{ data: { providers: any[]; total_providers: number; is_multi_provider: boolean } }> {
+    const response = await this.client.get('/admin/providers/active');
     return { data: response.data };
   }
 

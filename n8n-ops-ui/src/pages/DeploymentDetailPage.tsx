@@ -15,7 +15,8 @@ import {
 } from '@/components/ui/table';
 import { apiClient } from '@/lib/api-client';
 import { useDeploymentsSSE } from '@/lib/use-deployments-sse';
-import { ArrowLeft, ArrowRight, Clock, CheckCircle, AlertCircle, XCircle, Loader2, Rocket, Trash2 } from 'lucide-react';
+import { useAuth } from '@/lib/auth';
+import { ArrowLeft, ArrowRight, Clock, CheckCircle, AlertCircle, XCircle, Loader2, Rocket, Trash2, User } from 'lucide-react';
 import { useState } from 'react';
 import type { DeploymentWorkflow } from '@/types';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
@@ -42,6 +43,7 @@ export function DeploymentDetailPage() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
+  const { user } = useAuth();
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const [errorSheetOpen, setErrorSheetOpen] = useState(false);
   const [selectedWorkflow, setSelectedWorkflow] = useState<DeploymentWorkflow | null>(null);
@@ -161,6 +163,29 @@ export function DeploymentDetailPage() {
     if (deployment) {
       deleteMutation.mutate(deployment.id);
     }
+  };
+
+  // Helper to display a friendly name for triggered by user
+  const getTriggeredByDisplay = (userId?: string) => {
+    if (!userId) return 'System';
+    
+    // Default mock UUID - show current user or "You"
+    if (userId === '00000000-0000-0000-0000-000000000000') {
+      return user?.name || user?.email || 'You';
+    }
+    
+    // If it looks like an email, display it directly
+    if (userId.includes('@')) {
+      return userId;
+    }
+    
+    // If it's the current user's ID, show their name
+    if (user?.id === userId) {
+      return user.name || user.email || 'You';
+    }
+    
+    // Otherwise show a shortened UUID
+    return userId.length > 8 ? `${userId.substring(0, 8)}...` : userId;
   };
 
   if (isLoading) {
@@ -374,13 +399,21 @@ export function DeploymentDetailPage() {
       {/* Workflows Table */}
       <Card>
         <CardHeader>
-          <CardTitle>Workflows</CardTitle>
+          <CardTitle className="flex items-center gap-2">
+            Workflows
+            {deployment.status === 'running' && (
+              <Badge variant="secondary" className="text-xs">
+                {getProgress().current} / {getProgress().total} processed
+              </Badge>
+            )}
+          </CardTitle>
         </CardHeader>
         <CardContent>
           {deployment.workflows && deployment.workflows.length > 0 ? (
             <Table>
               <TableHeader>
                 <TableRow>
+                  <TableHead className="w-8"></TableHead>
                   <TableHead>Workflow Name</TableHead>
                   <TableHead>Change Type</TableHead>
                   <TableHead>Status</TableHead>
@@ -388,45 +421,82 @@ export function DeploymentDetailPage() {
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {deployment.workflows.map((workflow) => (
-                  <TableRow key={workflow.id}>
-                    <TableCell className="font-medium">
-                      {workflow.workflowNameAtTime}
-                    </TableCell>
-                    <TableCell>
-                      {workflow.changeType}
-                    </TableCell>
-                    <TableCell>
-                      <Badge
-                        variant={
-                          workflow.status === 'success'
-                            ? 'success'
-                            : workflow.status === 'failed'
-                            ? 'destructive'
-                            : 'outline'
-                        }
-                      >
-                        {workflow.status}
-                      </Badge>
-                    </TableCell>
-                    <TableCell className="text-sm text-muted-foreground max-w-xs">
-                      {workflow.errorMessage ? (
-                        <button
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            setSelectedWorkflow(workflow);
-                            setErrorSheetOpen(true);
-                          }}
-                          className="text-primary hover:underline truncate block w-full text-left"
+                {deployment.workflows.map((workflow, index) => {
+                  // Determine visual status based on deployment progress
+                  const isCurrentlyProcessing = 
+                    deployment.status === 'running' && 
+                    deployment.currentWorkflowName === workflow.workflowNameAtTime;
+                  const isPending = 
+                    deployment.status === 'running' && 
+                    workflow.status === 'pending';
+                  const isCompleted = 
+                    workflow.status === 'success' || workflow.status === 'failed';
+                  
+                  return (
+                    <TableRow 
+                      key={workflow.id}
+                      className={isCurrentlyProcessing ? 'bg-blue-50/50 dark:bg-blue-950/30' : ''}
+                    >
+                      <TableCell className="w-8">
+                        {isCurrentlyProcessing ? (
+                          <Loader2 className="h-4 w-4 animate-spin text-blue-500" />
+                        ) : workflow.status === 'success' ? (
+                          <CheckCircle className="h-4 w-4 text-green-500" />
+                        ) : workflow.status === 'failed' ? (
+                          <XCircle className="h-4 w-4 text-red-500" />
+                        ) : isPending ? (
+                          <Clock className="h-4 w-4 text-muted-foreground" />
+                        ) : null}
+                      </TableCell>
+                      <TableCell className="font-medium">
+                        <div className="flex items-center gap-2">
+                          {workflow.workflowNameAtTime}
+                          {isCurrentlyProcessing && (
+                            <Badge variant="secondary" className="text-xs">
+                              Processing...
+                            </Badge>
+                          )}
+                        </div>
+                      </TableCell>
+                      <TableCell>
+                        <Badge variant="outline" className="text-xs">
+                          {workflow.changeType}
+                        </Badge>
+                      </TableCell>
+                      <TableCell>
+                        <Badge
+                          variant={
+                            workflow.status === 'success'
+                              ? 'success'
+                              : workflow.status === 'failed'
+                              ? 'destructive'
+                              : isCurrentlyProcessing
+                              ? 'secondary'
+                              : 'outline'
+                          }
                         >
-                          {workflow.errorMessage}
-                        </button>
-                      ) : (
-                        '-'
-                      )}
-                    </TableCell>
-                  </TableRow>
-                ))}
+                          {isCurrentlyProcessing ? 'processing' : workflow.status}
+                        </Badge>
+                      </TableCell>
+                      <TableCell className="text-sm text-muted-foreground max-w-xs">
+                        {workflow.errorMessage ? (
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setSelectedWorkflow(workflow);
+                              setErrorSheetOpen(true);
+                            }}
+                            className="text-primary hover:underline truncate block w-full text-left"
+                          >
+                            {workflow.errorMessage}
+                          </button>
+                        ) : (
+                          '-'
+                        )}
+                      </TableCell>
+                    </TableRow>
+                  );
+                })}
               </TableBody>
             </Table>
           ) : (
@@ -443,7 +513,10 @@ export function DeploymentDetailPage() {
           <CardTitle className="text-sm font-medium">Triggered By</CardTitle>
         </CardHeader>
         <CardContent>
-          <p>{deployment.triggeredByUserId || 'System'}</p>
+          <div className="flex items-center gap-2">
+            <User className="h-4 w-4 text-muted-foreground" />
+            <span>{getTriggeredByDisplay(deployment.triggeredByUserId)}</span>
+          </div>
         </CardContent>
       </Card>
 

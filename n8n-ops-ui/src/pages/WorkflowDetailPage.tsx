@@ -2018,16 +2018,26 @@ export function WorkflowDetailPage() {
                         <GitBranch className="h-4 w-4" />
                         Triggers ({triggerNodes.length})
                       </h4>
-                      <div className="space-y-2">
-                        {triggerNodes.map((node) => (
-                          <div key={node.id} className="flex items-center gap-2 p-2 rounded-md bg-muted">
-                            <Badge variant="outline" className="text-xs">
-                              {formatNodeType(node.type)}
-                            </Badge>
-                            <span className="text-sm">{node.name}</span>
-                          </div>
-                        ))}
-                      </div>
+                      <Table>
+                        <TableHeader>
+                          <TableRow>
+                            <TableHead>Name</TableHead>
+                            <TableHead>Type</TableHead>
+                          </TableRow>
+                        </TableHeader>
+                        <TableBody>
+                          {triggerNodes.map((node) => (
+                            <TableRow key={node.id}>
+                              <TableCell className="font-medium">{node.name}</TableCell>
+                              <TableCell>
+                                <Badge variant="outline" className="text-xs">
+                                  {formatNodeType(node.type)}
+                                </Badge>
+                              </TableCell>
+                            </TableRow>
+                          ))}
+                        </TableBody>
+                      </Table>
                     </div>
                   )}
                 </div>

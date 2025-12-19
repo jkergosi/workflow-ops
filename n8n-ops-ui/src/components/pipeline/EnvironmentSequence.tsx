@@ -150,7 +150,7 @@ export function EnvironmentSequence({
                 <SelectContent>
                   {availableEnvironments.map((env) => (
                     <SelectItem key={env.id} value={env.id}>
-                      {env.name} ({env.type})
+                      {env.name}
                     </SelectItem>
                   ))}
                 </SelectContent>
