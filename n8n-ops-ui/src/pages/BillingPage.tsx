@@ -1,6 +1,6 @@
 // @ts-nocheck
 // TODO: Fix TypeScript errors in this file
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -20,6 +20,13 @@ import {
 import { Label } from '@/components/ui/label';
 
 export function BillingPage() {
+  useEffect(() => {
+    document.title = 'Billing - n8n Ops';
+    return () => {
+      document.title = 'n8n Ops';
+    };
+  }, []);
+
   const queryClient = useQueryClient();
   const { features } = useFeatures();
   const [upgradeDialogOpen, setUpgradeDialogOpen] = useState(false);

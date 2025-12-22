@@ -84,10 +84,10 @@ describe('CredentialHealthPage', () => {
   });
 
   describe('Credential Sections', () => {
-    it('should display Logical Credentials section', async () => {
+    it('should display Credential Aliases section', async () => {
       render(<CredentialHealthPage />);
 
-      expect(screen.getByText('Logical Credentials')).toBeInTheDocument();
+      expect(screen.getByText('Credential Aliases')).toBeInTheDocument();
     });
 
     it('should display Credential Mappings section', async () => {

@@ -72,3 +72,28 @@ Object.defineProperty(window, 'localStorage', { value: localStorageMock });
 
 // Mock scrollTo
 window.scrollTo = vi.fn();
+
+// Mock EventSource (SSE) for happy-dom
+class EventSourceMock {
+  url: string;
+  withCredentials = false;
+  readyState = 0;
+  onopen: ((this: EventSource, ev: Event) => any) | null = null;
+  onmessage: ((this: EventSource, ev: MessageEvent) => any) | null = null;
+  onerror: ((this: EventSource, ev: Event) => any) | null = null;
+
+  constructor(url: string) {
+    this.url = url;
+  }
+
+  close() {
+    this.readyState = 2;
+  }
+
+  addEventListener = vi.fn();
+  removeEventListener = vi.fn();
+  dispatchEvent = vi.fn().mockReturnValue(true);
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+(globalThis as any).EventSource = EventSourceMock as unknown as typeof EventSource;

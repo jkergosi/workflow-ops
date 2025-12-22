@@ -11,7 +11,7 @@ import { Loader2, Server, GitBranch, CheckCircle, XCircle, ArrowLeft, CheckCircl
 import { toast } from 'sonner';
 import { apiClient } from '@/lib/api-client';
 import { useAuth } from '@/lib/auth';
-import type { EnvironmentType } from '@/types';
+import type { EnvironmentType, EnvironmentTypeConfig } from '@/types';
 
 export function EnvironmentSetupPage() {
   const navigate = useNavigate();
@@ -39,12 +39,37 @@ export function EnvironmentSetupPage() {
     gitPat: '',
   });
 
+  const [environmentTypes, setEnvironmentTypes] = useState<EnvironmentTypeConfig[]>([]);
+
+  useEffect(() => {
+    document.title = isEditMode ? 'Edit Environment - n8n Ops' : 'New Environment - n8n Ops';
+    return () => {
+      document.title = 'n8n Ops';
+    };
+  }, [isEditMode]);
+
   // Load existing environment data if editing
   useEffect(() => {
     if (isEditMode && id) {
       loadEnvironment(id);
     }
   }, [id, isEditMode]);
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const res = await apiClient.getEnvironmentTypes();
+        setEnvironmentTypes((res.data || []).filter((t) => t.isActive));
+      } catch {
+        // Don't block environment setup if admin endpoint isn't available yet
+        setEnvironmentTypes([
+          { id: 'dev', tenantId: 'local', key: 'dev', label: 'Development', sortOrder: 10, isActive: true },
+          { id: 'staging', tenantId: 'local', key: 'staging', label: 'Staging', sortOrder: 20, isActive: true },
+          { id: 'production', tenantId: 'local', key: 'production', label: 'Production', sortOrder: 30, isActive: true },
+        ]);
+      }
+    })();
+  }, []);
 
   const loadEnvironment = async (envId: string) => {
     try {
@@ -252,15 +277,17 @@ export function EnvironmentSetupPage() {
                   <Select
                     value={formData.type}
                     onValueChange={(value: EnvironmentType) => setFormData({ ...formData, type: value })}
-                    disabled={isLoading || isEditMode}
+                    disabled={isLoading}
                   >
-                    <SelectTrigger>
+                    <SelectTrigger id="type">
                       <SelectValue placeholder="Select type" />
                     </SelectTrigger>
                     <SelectContent>
-                      <SelectItem value="dev">Development</SelectItem>
-                      <SelectItem value="staging">Staging</SelectItem>
-                      <SelectItem value="production">Production</SelectItem>
+                      {environmentTypes.map((t) => (
+                        <SelectItem key={t.id} value={t.key}>
+                          {t.label}
+                        </SelectItem>
+                      ))}
                     </SelectContent>
                   </Select>
                 </div>

@@ -1,5 +1,6 @@
 from fastapi import APIRouter, HTTPException, status, Depends
 from typing import Optional, List
+import logging
 
 from app.schemas.observability import (
     TimeRange,
@@ -14,25 +15,33 @@ from app.services.observability_service import observability_service
 from app.core.entitlements_gate import require_entitlement
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 # Mock tenant ID for development (same as other endpoints)
-MOCK_TENANT_ID = "00000000-0000-0000-0000-000000000001"
+MOCK_TENANT_ID = "00000000-0000-0000-0000-000000000000"
 
 
 @router.get("/overview", response_model=ObservabilityOverview)
 async def get_observability_overview(
     time_range: TimeRange = TimeRange.TWENTY_FOUR_HOURS,
+    environment_id: Optional[str] = None,
     _: dict = Depends(require_entitlement("observability_basic"))
 ):
     """
     Get complete observability overview including KPIs, workflow performance,
     environment health, and promotion/sync stats.
+
+    - **time_range**: Time period to analyze (1h, 6h, 24h, 7d, 30d)
+    - **environment_id**: Optional environment ID to filter by
     """
     try:
+        logger.info(f"Getting observability overview: time_range={time_range}, environment_id={environment_id}, tenant_id={MOCK_TENANT_ID}")
         overview = await observability_service.get_observability_overview(
             MOCK_TENANT_ID,
-            time_range
+            time_range,
+            environment_id=environment_id
         )
+        logger.info(f"Observability overview returned: kpi_total_executions={overview.kpi_metrics.total_executions}, workflow_count={len(overview.workflow_performance)}")
         return overview
     except Exception as e:
         raise HTTPException(

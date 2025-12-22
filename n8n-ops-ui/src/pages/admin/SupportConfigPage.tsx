@@ -25,6 +25,13 @@ interface SupportConfigFormData {
 }
 
 export function SupportConfigPage() {
+  useEffect(() => {
+    document.title = 'Support Config - n8n Ops';
+    return () => {
+      document.title = 'n8n Ops';
+    };
+  }, []);
+
   const queryClient = useQueryClient();
 
   const [formData, setFormData] = useState<SupportConfigFormData>({

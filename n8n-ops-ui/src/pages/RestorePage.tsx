@@ -40,6 +40,13 @@ import { toast } from 'sonner';
 import { apiClient } from '@/lib/api-client';
 
 export function RestorePage() {
+  useEffect(() => {
+    document.title = 'Restore - n8n Ops';
+    return () => {
+      document.title = 'n8n Ops';
+    };
+  }, []);
+
   const navigate = useNavigate();
   const { id: environmentId } = useParams<{ id: string }>();
   const queryClient = useQueryClient();

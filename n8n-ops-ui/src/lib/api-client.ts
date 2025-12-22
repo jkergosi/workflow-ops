@@ -5,6 +5,7 @@ import type { AxiosInstance } from 'axios';
 import type {
   Environment,
   EnvironmentType,
+  EnvironmentTypeConfig,
   Workflow,
   Execution,
   Snapshot,
@@ -316,6 +317,7 @@ class ApiClient {
     id: string,
     environment: {
       name?: string;
+      type?: string;
       base_url?: string;
       api_key?: string;
       n8n_encryption_key?: string;
@@ -329,6 +331,7 @@ class ApiClient {
     // Transform to backend field names
     const payload: Record<string, any> = {};
     if (environment.name !== undefined) payload.n8n_name = environment.name;
+    if (environment.type !== undefined) payload.n8n_type = environment.type;
     if (environment.base_url !== undefined) payload.n8n_base_url = environment.base_url;
     if (environment.api_key !== undefined) payload.n8n_api_key = environment.api_key;
     if (environment.n8n_encryption_key !== undefined) payload.n8n_encryption_key = environment.n8n_encryption_key;
@@ -340,6 +343,82 @@ class ApiClient {
 
     const response = await this.client.patch<Environment>(`/environments/${id}`, payload);
     return { data: response.data };
+  }
+
+  // Admin: Environment Types
+  async getEnvironmentTypes(): Promise<{ data: EnvironmentTypeConfig[] }> {
+    const response = await this.client.get<any[]>('/admin/environment-types');
+    const data = (response.data || []).map((t: any) => ({
+      id: t.id,
+      tenantId: t.tenant_id,
+      key: t.key,
+      label: t.label,
+      sortOrder: t.sort_order ?? 0,
+      isActive: t.is_active ?? true,
+      createdAt: t.created_at,
+      updatedAt: t.updated_at,
+    }));
+    return { data };
+  }
+
+  async createEnvironmentType(payload: { key: string; label: string; sort_order?: number; is_active?: boolean }): Promise<{ data: EnvironmentTypeConfig }> {
+    const response = await this.client.post<any>('/admin/environment-types', {
+      key: payload.key,
+      label: payload.label,
+      sort_order: payload.sort_order ?? 0,
+      is_active: payload.is_active ?? true,
+    });
+    const t = response.data;
+    return {
+      data: {
+        id: t.id,
+        tenantId: t.tenant_id,
+        key: t.key,
+        label: t.label,
+        sortOrder: t.sort_order ?? 0,
+        isActive: t.is_active ?? true,
+        createdAt: t.created_at,
+        updatedAt: t.updated_at,
+      },
+    };
+  }
+
+  async updateEnvironmentType(id: string, payload: { key?: string; label?: string; sort_order?: number; is_active?: boolean }): Promise<{ data: EnvironmentTypeConfig }> {
+    const response = await this.client.patch<any>(`/admin/environment-types/${id}`, payload);
+    const t = response.data;
+    return {
+      data: {
+        id: t.id,
+        tenantId: t.tenant_id,
+        key: t.key,
+        label: t.label,
+        sortOrder: t.sort_order ?? 0,
+        isActive: t.is_active ?? true,
+        createdAt: t.created_at,
+        updatedAt: t.updated_at,
+      },
+    };
+  }
+
+  async deleteEnvironmentType(id: string): Promise<void> {
+    await this.client.delete(`/admin/environment-types/${id}`);
+  }
+
+  async reorderEnvironmentTypes(orderedIds: string[]): Promise<{ data: EnvironmentTypeConfig[] }> {
+    const response = await this.client.post<any[]>('/admin/environment-types/reorder', {
+      ordered_ids: orderedIds,
+    });
+    const data = (response.data || []).map((t: any) => ({
+      id: t.id,
+      tenantId: t.tenant_id,
+      key: t.key,
+      label: t.label,
+      sortOrder: t.sort_order ?? 0,
+      isActive: t.is_active ?? true,
+      createdAt: t.created_at,
+      updatedAt: t.updated_at,
+    }));
+    return { data };
   }
 
   async deleteEnvironment(id: string): Promise<void> {
@@ -806,25 +885,26 @@ class ApiClient {
     );
     
     // Transform snake_case to camelCase
-    const data = response.data;
+    // Backend wraps result in {"data": ...}, so unwrap it first
+    const data = response.data.data || response.data;
     return {
       data: {
         workflowId: data.workflow_id,
         workflowName: data.workflow_name,
         sourceVersion: data.source_version,
         targetVersion: data.target_version,
-        differences: data.differences.map((d: any) => ({
+        differences: (data.differences || []).map((d: any) => ({
           path: d.path,
           sourceValue: d.source_value,
           targetValue: d.target_value,
           type: d.type,
         })),
         summary: {
-          nodesAdded: data.summary.nodes_added,
-          nodesRemoved: data.summary.nodes_removed,
-          nodesModified: data.summary.nodes_modified,
-          connectionsChanged: data.summary.connections_changed,
-          settingsChanged: data.summary.settings_changed,
+          nodesAdded: data.summary?.nodes_added || 0,
+          nodesRemoved: data.summary?.nodes_removed || 0,
+          nodesModified: data.summary?.nodes_modified || 0,
+          connectionsChanged: data.summary?.connections_changed || false,
+          settingsChanged: data.summary?.settings_changed || false,
         },
       },
     };
@@ -907,6 +987,31 @@ class ApiClient {
 
   async deleteDeployment(deploymentId: string): Promise<void> {
     await this.client.delete(`/deployments/${deploymentId}`);
+  }
+
+  async rerunDeployment(deploymentId: string): Promise<{
+    data: {
+      deploymentId: string;
+      promotionId: string;
+      jobId: string;
+      status: string;
+      message: string;
+      workflowCount: number;
+      requiresApproval: boolean;
+    };
+  }> {
+    const response = await this.client.post(`/deployments/${deploymentId}/rerun`);
+    return {
+      data: {
+        deploymentId: response.data.deployment_id,
+        promotionId: response.data.promotion_id,
+        jobId: response.data.job_id,
+        status: response.data.status,
+        message: response.data.message,
+        workflowCount: response.data.workflow_count,
+        requiresApproval: response.data.requires_approval,
+      },
+    };
   }
 
   async getDeployment(deploymentId: string): Promise<{ data: DeploymentDetail }> {
@@ -1614,14 +1719,43 @@ class ApiClient {
   }
 
   // Observability endpoints
-  async getObservabilityOverview(timeRange: TimeRange = '24h'): Promise<{ data: ObservabilityOverview }> {
+  async getObservabilityOverview(timeRange: TimeRange = '24h', environmentId?: string): Promise<{ data: ObservabilityOverview }> {
+    const params: any = { time_range: timeRange };
+    if (environmentId) {
+      params.environment_id = environmentId;
+    }
     const response = await this.client.get('/observability/overview', {
-      params: { time_range: timeRange },
+      params,
     });
     // Transform snake_case to camelCase
     const data = response.data;
+
+    // Helper to transform sparkline data
+    const transformSparkline = (sparkline: any[] | null | undefined) => {
+      if (!sparkline) return undefined;
+      return sparkline.map((p: any) => ({
+        timestamp: p.timestamp,
+        value: p.value,
+      }));
+    };
+
     return {
       data: {
+        // Section 1: System Status
+        systemStatus: data.system_status ? {
+          status: data.system_status.status,
+          insights: (data.system_status.insights || []).map((i: any) => ({
+            message: i.message,
+            severity: i.severity,
+            linkType: i.link_type,
+            linkId: i.link_id,
+          })),
+          failureDeltaPercent: data.system_status.failure_delta_percent,
+          failingWorkflowsCount: data.system_status.failing_workflows_count,
+          lastFailedDeployment: data.system_status.last_failed_deployment,
+        } : undefined,
+
+        // Section 2: KPI Metrics with Sparklines
         kpiMetrics: {
           totalExecutions: data.kpi_metrics.total_executions,
           successCount: data.kpi_metrics.success_count,
@@ -1631,7 +1765,27 @@ class ApiClient {
           p95DurationMs: data.kpi_metrics.p95_duration_ms,
           deltaExecutions: data.kpi_metrics.delta_executions,
           deltaSuccessRate: data.kpi_metrics.delta_success_rate,
+          executionsSparkline: transformSparkline(data.kpi_metrics.executions_sparkline),
+          successRateSparkline: transformSparkline(data.kpi_metrics.success_rate_sparkline),
+          durationSparkline: transformSparkline(data.kpi_metrics.duration_sparkline),
+          failuresSparkline: transformSparkline(data.kpi_metrics.failures_sparkline),
         },
+
+        // Section 3: Error Intelligence
+        errorIntelligence: data.error_intelligence ? {
+          errors: (data.error_intelligence.errors || []).map((e: any) => ({
+            errorType: e.error_type,
+            count: e.count,
+            firstSeen: e.first_seen,
+            lastSeen: e.last_seen,
+            affectedWorkflowCount: e.affected_workflow_count,
+            affectedWorkflowIds: e.affected_workflow_ids || [],
+            sampleMessage: e.sample_message,
+          })),
+          totalErrorCount: data.error_intelligence.total_error_count,
+        } : undefined,
+
+        // Section 4: Workflow Performance with Risk
         workflowPerformance: (data.workflow_performance || []).map((w: any) => ({
           workflowId: w.workflow_id,
           workflowName: w.workflow_name,
@@ -1641,7 +1795,12 @@ class ApiClient {
           errorRate: w.error_rate,
           avgDurationMs: w.avg_duration_ms,
           p95DurationMs: w.p95_duration_ms,
+          riskScore: w.risk_score,
+          lastFailureAt: w.last_failure_at,
+          primaryErrorType: w.primary_error_type,
         })),
+
+        // Section 5: Environment Health
         environmentHealth: (data.environment_health || []).map((e: any) => ({
           environmentId: e.environment_id,
           environmentName: e.environment_name,
@@ -1652,10 +1811,21 @@ class ApiClient {
           activeWorkflows: e.active_workflows,
           totalWorkflows: e.total_workflows,
           lastDeploymentAt: e.last_deployment_at,
+          lastDeploymentStatus: e.last_deployment_status,
           lastSnapshotAt: e.last_snapshot_at,
           driftState: e.drift_state,
+          driftWorkflowCount: e.drift_workflow_count,
           lastCheckedAt: e.last_checked_at,
+          credentialHealth: e.credential_health ? {
+            totalCount: e.credential_health.total_count,
+            validCount: e.credential_health.valid_count,
+            invalidCount: e.credential_health.invalid_count,
+            unknownCount: e.credential_health.unknown_count,
+          } : undefined,
+          apiReachable: e.api_reachable,
         })),
+
+        // Section 6: Promotion & Sync Stats
         promotionSyncStats: data.promotion_sync_stats ? {
           promotionsTotal: data.promotion_sync_stats.promotions_total,
           promotionsSuccess: data.promotion_sync_stats.promotions_success,
@@ -1672,6 +1842,11 @@ class ApiClient {
             status: d.status,
             startedAt: d.started_at,
             finishedAt: d.finished_at,
+            impactedWorkflows: d.impacted_workflows ? d.impacted_workflows.map((iw: any) => ({
+              workflowId: iw.workflow_id,
+              workflowName: iw.workflow_name,
+              changeType: iw.change_type,
+            })) : undefined,
           })),
         } : undefined,
       },
@@ -2354,6 +2529,122 @@ class ApiClient {
 
   async testN8nConnection(): Promise<{ data: { success: boolean; message: string } }> {
     const response = await this.client.post('/admin/support/test-n8n');
+    return { data: response.data };
+  }
+
+  // Provider Subscription endpoints
+  async getProvidersWithPlans(): Promise<{ data: any[] }> {
+    const response = await this.client.get('/providers');
+    return { data: response.data };
+  }
+
+  async getProvider(providerId: string): Promise<{ data: any }> {
+    const response = await this.client.get(`/providers/${providerId}`);
+    return { data: response.data };
+  }
+
+  async getProviderPlans(providerId: string): Promise<{ data: any[] }> {
+    const response = await this.client.get(`/providers/${providerId}/plans`);
+    return { data: response.data };
+  }
+
+  async getTenantProviderSubscriptions(): Promise<{ data: any[] }> {
+    const response = await this.client.get('/providers/subscriptions/list');
+    return { data: response.data };
+  }
+
+  async getActiveProviderSubscriptions(): Promise<{ data: any[] }> {
+    const response = await this.client.get('/providers/subscriptions/active');
+    return { data: response.data };
+  }
+
+  async createProviderCheckout(data: {
+    provider_id: string;
+    plan_id: string;
+    billing_cycle: 'monthly' | 'yearly';
+    success_url: string;
+    cancel_url: string;
+  }): Promise<{ data: { checkout_url: string; session_id: string } }> {
+    const response = await this.client.post('/providers/checkout', data);
+    return { data: response.data };
+  }
+
+  async subscribeToFreePlan(providerId: string): Promise<{ data: { message: string; provider: string } }> {
+    const response = await this.client.post(`/providers/${providerId}/subscribe-free`);
+    return { data: response.data };
+  }
+
+  async updateProviderSubscription(
+    providerId: string,
+    data: { plan_id?: string; cancel_at_period_end?: boolean }
+  ): Promise<{ data: any }> {
+    const response = await this.client.patch(`/providers/${providerId}/subscription`, data);
+    return { data: response.data };
+  }
+
+  async cancelProviderSubscription(providerId: string): Promise<{ data: { message: string } }> {
+    const response = await this.client.delete(`/providers/${providerId}/subscription`);
+    return { data: response.data };
+  }
+
+  // Admin Provider Management endpoints
+  async adminGetAllProviders(): Promise<{ data: any[] }> {
+    const response = await this.client.get('/providers/admin/all');
+    return { data: response.data };
+  }
+
+  async adminUpdateProvider(providerId: string, data: {
+    display_name?: string;
+    description?: string;
+    icon?: string;
+    is_active?: boolean;
+  }): Promise<{ data: any }> {
+    const response = await this.client.patch(`/providers/admin/${providerId}`, data);
+    return { data: response.data };
+  }
+
+  async adminGetProviderPlans(providerId: string): Promise<{ data: any[] }> {
+    const response = await this.client.get(`/providers/admin/${providerId}/plans`);
+    return { data: response.data };
+  }
+
+  async adminCreateProviderPlan(data: {
+    provider_id: string;
+    name: string;
+    display_name: string;
+    description?: string;
+    price_monthly: number;
+    price_yearly: number;
+    stripe_price_id_monthly?: string;
+    stripe_price_id_yearly?: string;
+    features: Record<string, any>;
+    max_environments: number;
+    max_workflows: number;
+    sort_order?: number;
+  }): Promise<{ data: any }> {
+    const response = await this.client.post('/providers/admin/plans', data);
+    return { data: response.data };
+  }
+
+  async adminUpdateProviderPlan(planId: string, data: {
+    display_name?: string;
+    description?: string;
+    price_monthly?: number;
+    price_yearly?: number;
+    stripe_price_id_monthly?: string;
+    stripe_price_id_yearly?: string;
+    features?: Record<string, any>;
+    max_environments?: number;
+    max_workflows?: number;
+    is_active?: boolean;
+    sort_order?: number;
+  }): Promise<{ data: any }> {
+    const response = await this.client.patch(`/providers/admin/plans/${planId}`, data);
+    return { data: response.data };
+  }
+
+  async adminDeleteProviderPlan(planId: string): Promise<{ data: { message: string } }> {
+    const response = await this.client.delete(`/providers/admin/plans/${planId}`);
     return { data: response.data };
   }
 }

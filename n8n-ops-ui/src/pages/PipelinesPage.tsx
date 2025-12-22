@@ -1,6 +1,6 @@
 // @ts-nocheck
 // TODO: Fix TypeScript errors in this file
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
@@ -30,6 +30,13 @@ import { toast } from 'sonner';
 import type { Pipeline } from '@/types';
 
 export function PipelinesPage() {
+  useEffect(() => {
+    document.title = 'Pipelines - n8n Ops';
+    return () => {
+      document.title = 'n8n Ops';
+    };
+  }, []);
+
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);

@@ -84,7 +84,7 @@ export function MappingHealthCheck({ onFixMapping }: MappingHealthCheckProps) {
           Mapping Health Check
         </CardTitle>
         <CardDescription>
-          Validate that all credential mappings still resolve to valid N8N credentials
+          Validate that all credential mappings still resolve to valid physical credentials
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
@@ -159,7 +159,7 @@ export function MappingHealthCheck({ onFixMapping }: MappingHealthCheckProps) {
                 <Table>
                   <TableHeader>
                     <TableRow>
-                      <TableHead>Logical Credential</TableHead>
+                      <TableHead>Credential Alias</TableHead>
                       <TableHead>Environment</TableHead>
                       <TableHead>Issue</TableHead>
                       <TableHead>Details</TableHead>
@@ -196,7 +196,7 @@ export function MappingHealthCheck({ onFixMapping }: MappingHealthCheckProps) {
                 <CheckCircle2 className="h-12 w-12 mx-auto mb-4" />
                 <p className="font-medium">All mappings are healthy!</p>
                 <p className="text-sm text-muted-foreground">
-                  All {report.total} credential mappings resolve to valid N8N credentials.
+                  All {report.total} credential mappings resolve to valid physical credentials.
                 </p>
               </div>
             )}

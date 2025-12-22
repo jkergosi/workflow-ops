@@ -1,4 +1,5 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -6,6 +7,7 @@ import { Label } from '@/components/ui/label';
 import { Badge } from '@/components/ui/badge';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Switch } from '@/components/ui/switch';
+import { apiClient } from '@/lib/api-client';
 import {
   Settings,
   Database,
@@ -23,8 +25,21 @@ import {
   Copy,
   Webhook,
   TestTube,
+  ArrowUp,
+  ArrowDown,
+  Plus,
+  Trash2,
+  Pencil,
+  Layers,
+  Check,
+  X,
+  Loader2,
+  Workflow,
+  Zap,
 } from 'lucide-react';
 import { toast } from 'sonner';
+import { useAppStore } from '@/store/use-app-store';
+import type { ProviderWithPlans, TenantProviderSubscription } from '@/types';
 
 interface SystemConfig {
   appName: string;
@@ -114,13 +129,550 @@ const mockStripeConfig: StripeConfig = {
   lastWebhookReceived: new Date(Date.now() - 3600000).toISOString(),
 };
 
+// Provider Plans Management Component
+function ProviderPlansManagement() {
+  const queryClient = useQueryClient();
+  const [editingPlan, setEditingPlan] = useState<any>(null);
+  const [expandedProviders, setExpandedProviders] = useState<Record<string, boolean>>({});
+
+  // Fetch all providers with plans (including inactive)
+  const { data: providersData, isLoading } = useQuery({
+    queryKey: ['admin-providers-all'],
+    queryFn: () => apiClient.adminGetAllProviders(),
+  });
+
+  const providers = providersData?.data || [];
+
+  // Update plan mutation
+  const updatePlanMutation = useMutation({
+    mutationFn: ({ planId, data }: { planId: string; data: any }) =>
+      apiClient.adminUpdateProviderPlan(planId, data),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['admin-providers-all'] });
+      queryClient.invalidateQueries({ queryKey: ['providers-with-plans'] });
+      toast.success('Plan updated successfully');
+      setEditingPlan(null);
+    },
+    onError: (error: any) => {
+      toast.error(error.response?.data?.detail || 'Failed to update plan');
+    },
+  });
+
+  // Toggle provider expansion
+  const toggleProvider = (providerId: string) => {
+    setExpandedProviders((prev) => ({
+      ...prev,
+      [providerId]: !prev[providerId],
+    }));
+  };
+
+  // Get provider icon
+  const getProviderIcon = (name: string) => {
+    switch (name?.toLowerCase()) {
+      case 'n8n':
+        return <Workflow className="h-5 w-5" />;
+      case 'make':
+        return <Zap className="h-5 w-5" />;
+      default:
+        return <Layers className="h-5 w-5" />;
+    }
+  };
+
+  if (isLoading) {
+    return (
+      <Card>
+        <CardContent className="flex items-center justify-center py-8">
+          <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
+        </CardContent>
+      </Card>
+    );
+  }
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="flex items-center gap-2">
+          <Layers className="h-5 w-5" />
+          Provider Plans
+        </CardTitle>
+        <CardDescription>
+          Manage pricing plans and Stripe integration for each provider
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        {providers.length === 0 ? (
+          <div className="text-center py-8 text-muted-foreground">
+            No providers configured. Run the database migration to seed providers.
+          </div>
+        ) : (
+          providers.map((provider: any) => (
+            <div key={provider.id} className="border rounded-lg">
+              {/* Provider Header */}
+              <button
+                onClick={() => toggleProvider(provider.id)}
+                className="w-full flex items-center justify-between p-4 hover:bg-muted/50 transition-colors"
+              >
+                <div className="flex items-center gap-3">
+                  <div className="p-2 bg-muted rounded-lg">
+                    {getProviderIcon(provider.name)}
+                  </div>
+                  <div className="text-left">
+                    <h3 className="font-semibold">{provider.display_name}</h3>
+                    <p className="text-sm text-muted-foreground">
+                      {provider.plans?.length || 0} plans configured
+                    </p>
+                  </div>
+                </div>
+                <div className="flex items-center gap-2">
+                  <Badge variant={provider.is_active ? 'default' : 'secondary'}>
+                    {provider.is_active ? 'Active' : 'Inactive'}
+                  </Badge>
+                  {expandedProviders[provider.id] ? (
+                    <ArrowUp className="h-4 w-4" />
+                  ) : (
+                    <ArrowDown className="h-4 w-4" />
+                  )}
+                </div>
+              </button>
+
+              {/* Plans Table */}
+              {expandedProviders[provider.id] && (
+                <div className="border-t">
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-sm">
+                      <thead className="bg-muted/50">
+                        <tr>
+                          <th className="text-left p-3 font-medium">Plan</th>
+                          <th className="text-left p-3 font-medium">Monthly</th>
+                          <th className="text-left p-3 font-medium">Yearly</th>
+                          <th className="text-left p-3 font-medium">Stripe Monthly</th>
+                          <th className="text-left p-3 font-medium">Stripe Yearly</th>
+                          <th className="text-left p-3 font-medium">Limits</th>
+                          <th className="text-left p-3 font-medium">Status</th>
+                          <th className="text-right p-3 font-medium">Actions</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {provider.plans?.map((plan: any) => (
+                          <tr key={plan.id} className="border-t">
+                            {editingPlan?.id === plan.id ? (
+                              // Editing mode
+                              <>
+                                <td className="p-3">
+                                  <Input
+                                    value={editingPlan.display_name}
+                                    onChange={(e) =>
+                                      setEditingPlan({ ...editingPlan, display_name: e.target.value })
+                                    }
+                                    className="w-32"
+                                  />
+                                </td>
+                                <td className="p-3">
+                                  <Input
+                                    type="number"
+                                    value={editingPlan.price_monthly}
+                                    onChange={(e) =>
+                                      setEditingPlan({
+                                        ...editingPlan,
+                                        price_monthly: parseFloat(e.target.value) || 0,
+                                      })
+                                    }
+                                    className="w-20"
+                                  />
+                                </td>
+                                <td className="p-3">
+                                  <Input
+                                    type="number"
+                                    value={editingPlan.price_yearly}
+                                    onChange={(e) =>
+                                      setEditingPlan({
+                                        ...editingPlan,
+                                        price_yearly: parseFloat(e.target.value) || 0,
+                                      })
+                                    }
+                                    className="w-20"
+                                  />
+                                </td>
+                                <td className="p-3">
+                                  <Input
+                                    value={editingPlan.stripe_price_id_monthly || ''}
+                                    onChange={(e) =>
+                                      setEditingPlan({
+                                        ...editingPlan,
+                                        stripe_price_id_monthly: e.target.value,
+                                      })
+                                    }
+                                    placeholder="price_xxx"
+                                    className="w-32 font-mono text-xs"
+                                  />
+                                </td>
+                                <td className="p-3">
+                                  <Input
+                                    value={editingPlan.stripe_price_id_yearly || ''}
+                                    onChange={(e) =>
+                                      setEditingPlan({
+                                        ...editingPlan,
+                                        stripe_price_id_yearly: e.target.value,
+                                      })
+                                    }
+                                    placeholder="price_xxx"
+                                    className="w-32 font-mono text-xs"
+                                  />
+                                </td>
+                                <td className="p-3">
+                                  <div className="flex gap-2">
+                                    <Input
+                                      type="number"
+                                      value={editingPlan.max_environments}
+                                      onChange={(e) =>
+                                        setEditingPlan({
+                                          ...editingPlan,
+                                          max_environments: parseInt(e.target.value) || 0,
+                                        })
+                                      }
+                                      className="w-16"
+                                      title="Max Environments (-1 = unlimited)"
+                                    />
+                                    <Input
+                                      type="number"
+                                      value={editingPlan.max_workflows}
+                                      onChange={(e) =>
+                                        setEditingPlan({
+                                          ...editingPlan,
+                                          max_workflows: parseInt(e.target.value) || 0,
+                                        })
+                                      }
+                                      className="w-16"
+                                      title="Max Workflows (-1 = unlimited)"
+                                    />
+                                  </div>
+                                </td>
+                                <td className="p-3">
+                                  <Switch
+                                    checked={editingPlan.is_active}
+                                    onCheckedChange={(checked) =>
+                                      setEditingPlan({ ...editingPlan, is_active: checked })
+                                    }
+                                  />
+                                </td>
+                                <td className="p-3 text-right">
+                                  <div className="flex justify-end gap-2">
+                                    <Button
+                                      size="sm"
+                                      onClick={() => {
+                                        updatePlanMutation.mutate({
+                                          planId: editingPlan.id,
+                                          data: {
+                                            display_name: editingPlan.display_name,
+                                            price_monthly: editingPlan.price_monthly,
+                                            price_yearly: editingPlan.price_yearly,
+                                            stripe_price_id_monthly: editingPlan.stripe_price_id_monthly || null,
+                                            stripe_price_id_yearly: editingPlan.stripe_price_id_yearly || null,
+                                            max_environments: editingPlan.max_environments,
+                                            max_workflows: editingPlan.max_workflows,
+                                            is_active: editingPlan.is_active,
+                                          },
+                                        });
+                                      }}
+                                      disabled={updatePlanMutation.isPending}
+                                    >
+                                      {updatePlanMutation.isPending ? (
+                                        <Loader2 className="h-4 w-4 animate-spin" />
+                                      ) : (
+                                        <Save className="h-4 w-4" />
+                                      )}
+                                    </Button>
+                                    <Button
+                                      size="sm"
+                                      variant="ghost"
+                                      onClick={() => setEditingPlan(null)}
+                                    >
+                                      <X className="h-4 w-4" />
+                                    </Button>
+                                  </div>
+                                </td>
+                              </>
+                            ) : (
+                              // View mode
+                              <>
+                                <td className="p-3">
+                                  <div>
+                                    <span className="font-medium">{plan.display_name}</span>
+                                    <span className="text-xs text-muted-foreground ml-2">
+                                      ({plan.name})
+                                    </span>
+                                  </div>
+                                </td>
+                                <td className="p-3">${plan.price_monthly}</td>
+                                <td className="p-3">${plan.price_yearly}</td>
+                                <td className="p-3">
+                                  {plan.stripe_price_id_monthly ? (
+                                    <code className="text-xs bg-muted px-1 py-0.5 rounded">
+                                      {plan.stripe_price_id_monthly.substring(0, 12)}...
+                                    </code>
+                                  ) : (
+                                    <span className="text-muted-foreground">-</span>
+                                  )}
+                                </td>
+                                <td className="p-3">
+                                  {plan.stripe_price_id_yearly ? (
+                                    <code className="text-xs bg-muted px-1 py-0.5 rounded">
+                                      {plan.stripe_price_id_yearly.substring(0, 12)}...
+                                    </code>
+                                  ) : (
+                                    <span className="text-muted-foreground">-</span>
+                                  )}
+                                </td>
+                                <td className="p-3">
+                                  <span className="text-xs">
+                                    {plan.max_environments === -1 ? '∞' : plan.max_environments} env,{' '}
+                                    {plan.max_workflows === -1 ? '∞' : plan.max_workflows} wf
+                                  </span>
+                                </td>
+                                <td className="p-3">
+                                  <Badge variant={plan.is_active ? 'default' : 'secondary'}>
+                                    {plan.is_active ? 'Active' : 'Inactive'}
+                                  </Badge>
+                                </td>
+                                <td className="p-3 text-right">
+                                  <Button
+                                    size="sm"
+                                    variant="ghost"
+                                    onClick={() => setEditingPlan({ ...plan })}
+                                  >
+                                    <Pencil className="h-4 w-4" />
+                                  </Button>
+                                </td>
+                              </>
+                            )}
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              )}
+            </div>
+          ))
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
 export function SettingsPage() {
+  useEffect(() => {
+    document.title = 'Settings - n8n Ops';
+    return () => {
+      document.title = 'n8n Ops';
+    };
+  }, []);
+
+  const queryClient = useQueryClient();
+
+  const { data: environmentTypesData, isLoading: isLoadingEnvironmentTypes } = useQuery({
+    queryKey: ['environment-types'],
+    queryFn: () => apiClient.getEnvironmentTypes(),
+  });
+
+  const environmentTypes = environmentTypesData?.data || [];
+
+  const createEnvironmentTypeMutation = useMutation({
+    mutationFn: (payload: { key: string; label: string }) =>
+      apiClient.createEnvironmentType({ key: payload.key, label: payload.label }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['environment-types'] });
+      toast.success('Environment type created');
+    },
+    onError: (error: any) => {
+      toast.error(error.response?.data?.detail || 'Failed to create environment type');
+    },
+  });
+
+  const updateEnvironmentTypeMutation = useMutation({
+    mutationFn: (payload: { id: string; updates: { key?: string; label?: string; is_active?: boolean } }) =>
+      apiClient.updateEnvironmentType(payload.id, payload.updates),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['environment-types'] });
+      toast.success('Environment type updated');
+    },
+    onError: (error: any) => {
+      toast.error(error.response?.data?.detail || 'Failed to update environment type');
+    },
+  });
+
+  const deleteEnvironmentTypeMutation = useMutation({
+    mutationFn: (id: string) => apiClient.deleteEnvironmentType(id),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['environment-types'] });
+      toast.success('Environment type deleted');
+    },
+    onError: (error: any) => {
+      toast.error(error.response?.data?.detail || 'Failed to delete environment type');
+    },
+  });
+
+  const reorderEnvironmentTypesMutation = useMutation({
+    mutationFn: (orderedIds: string[]) => apiClient.reorderEnvironmentTypes(orderedIds),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['environment-types'] });
+      toast.success('Environment types reordered');
+    },
+    onError: (error: any) => {
+      toast.error(error.response?.data?.detail || 'Failed to reorder environment types');
+    },
+  });
+
+  const [newEnvTypeKey, setNewEnvTypeKey] = useState('');
+  const [newEnvTypeLabel, setNewEnvTypeLabel] = useState('');
+  const [editingEnvTypeId, setEditingEnvTypeId] = useState<string | null>(null);
+  const [editingEnvTypeKey, setEditingEnvTypeKey] = useState('');
+  const [editingEnvTypeLabel, setEditingEnvTypeLabel] = useState('');
+
+  const startEditEnvType = (t: any) => {
+    setEditingEnvTypeId(t.id);
+    setEditingEnvTypeKey(t.key || '');
+    setEditingEnvTypeLabel(t.label || '');
+  };
+
+  const cancelEditEnvType = () => {
+    setEditingEnvTypeId(null);
+    setEditingEnvTypeKey('');
+    setEditingEnvTypeLabel('');
+  };
+
+  const saveEditEnvType = () => {
+    if (!editingEnvTypeId) return;
+    updateEnvironmentTypeMutation.mutate({
+      id: editingEnvTypeId,
+      updates: { key: editingEnvTypeKey.trim(), label: editingEnvTypeLabel.trim() },
+    });
+    cancelEditEnvType();
+  };
+
+  const moveEnvType = (id: string, direction: 'up' | 'down') => {
+    const sorted = [...environmentTypes].sort((a: any, b: any) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0));
+    const idx = sorted.findIndex((t: any) => t.id === id);
+    if (idx < 0) return;
+    const swapIdx = direction === 'up' ? idx - 1 : idx + 1;
+    if (swapIdx < 0 || swapIdx >= sorted.length) return;
+    const next = [...sorted];
+    const tmp = next[idx];
+    next[idx] = next[swapIdx];
+    next[swapIdx] = tmp;
+    reorderEnvironmentTypesMutation.mutate(next.map((t: any) => t.id));
+  };
   const [systemConfig, setSystemConfig] = useState(mockSystemConfig);
   const [emailConfig, setEmailConfig] = useState(mockEmailConfig);
   const [isSaving, setIsSaving] = useState(false);
   const [showAuth0Secret, setShowAuth0Secret] = useState(false);
   const [showStripeSecret, setShowStripeSecret] = useState(false);
   const [showWebhookSecret, setShowWebhookSecret] = useState(false);
+
+  // Provider state from Zustand store
+  const { providerDisplayName, setProviderDisplayName, setSelectedProvider } = useAppStore();
+  const [localProviderDisplayName, setLocalProviderDisplayName] = useState(providerDisplayName);
+  const [selectedBillingCycle, setSelectedBillingCycle] = useState<'monthly' | 'yearly'>('monthly');
+
+  // Fetch providers with plans
+  const { data: providersData, isLoading: isLoadingProviders } = useQuery({
+    queryKey: ['providers-with-plans'],
+    queryFn: () => apiClient.getProvidersWithPlans(),
+  });
+
+  const providers: ProviderWithPlans[] = providersData?.data || [];
+
+  // Fetch tenant's provider subscriptions
+  const { data: subscriptionsData, isLoading: isLoadingSubscriptions } = useQuery({
+    queryKey: ['tenant-provider-subscriptions'],
+    queryFn: () => apiClient.getTenantProviderSubscriptions(),
+  });
+
+  const subscriptions: TenantProviderSubscription[] = subscriptionsData?.data || [];
+
+  // Get subscription for a provider
+  const getSubscription = (providerId: string) => {
+    return subscriptions.find((s) => s.provider_id === providerId);
+  };
+
+  // Subscribe to free plan mutation
+  const subscribeFreeMutation = useMutation({
+    mutationFn: (providerId: string) => apiClient.subscribeToFreePlan(providerId),
+    onSuccess: (_, providerId) => {
+      queryClient.invalidateQueries({ queryKey: ['tenant-provider-subscriptions'] });
+      // Update selected provider
+      const provider = providers.find((p) => p.id === providerId);
+      if (provider) {
+        setSelectedProvider(provider.name as 'n8n' | 'make');
+        setProviderDisplayName(provider.display_name);
+      }
+      toast.success('Successfully subscribed to free plan');
+    },
+    onError: (error: any) => {
+      toast.error(error.response?.data?.detail || 'Failed to subscribe');
+    },
+  });
+
+  // Create checkout mutation (for paid plans)
+  const createCheckoutMutation = useMutation({
+    mutationFn: (data: { provider_id: string; plan_id: string; billing_cycle: 'monthly' | 'yearly' }) =>
+      apiClient.createProviderCheckout({
+        ...data,
+        success_url: `${window.location.origin}/admin/settings?tab=provider&success=true`,
+        cancel_url: `${window.location.origin}/admin/settings?tab=provider&canceled=true`,
+      }),
+    onSuccess: (response) => {
+      // Redirect to Stripe checkout
+      window.location.href = response.data.checkout_url;
+    },
+    onError: (error: any) => {
+      toast.error(error.response?.data?.detail || 'Failed to start checkout');
+    },
+  });
+
+  // Cancel subscription mutation
+  const cancelSubscriptionMutation = useMutation({
+    mutationFn: (providerId: string) => apiClient.cancelProviderSubscription(providerId),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['tenant-provider-subscriptions'] });
+      toast.success('Subscription will be canceled at the end of the billing period');
+    },
+    onError: (error: any) => {
+      toast.error(error.response?.data?.detail || 'Failed to cancel subscription');
+    },
+  });
+
+  const handleSubscribe = (providerId: string, planId: string, planName: string, price: number) => {
+    if (price === 0 || planName.toLowerCase() === 'free') {
+      subscribeFreeMutation.mutate(providerId);
+    } else {
+      createCheckoutMutation.mutate({
+        provider_id: providerId,
+        plan_id: planId,
+        billing_cycle: selectedBillingCycle,
+      });
+    }
+  };
+
+  // Get icon for provider
+  const getProviderIcon = (name: string) => {
+    switch (name.toLowerCase()) {
+      case 'n8n':
+        return <Workflow className="h-6 w-6" />;
+      case 'make':
+        return <Zap className="h-6 w-6" />;
+      default:
+        return <Layers className="h-6 w-6" />;
+    }
+  };
+
+  const handleSaveProvider = async () => {
+    setIsSaving(true);
+    setProviderDisplayName(localProviderDisplayName);
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    setIsSaving(false);
+    toast.success('Provider settings saved successfully');
+  };
 
   const handleSaveSystem = async () => {
     setIsSaving(true);
@@ -173,12 +725,14 @@ export function SettingsPage() {
       </div>
 
       <Tabs defaultValue="general" className="space-y-6">
-        <TabsList className="grid w-full grid-cols-5">
+        <TabsList className="grid w-full grid-cols-7">
           <TabsTrigger value="general">General</TabsTrigger>
+          <TabsTrigger value="provider">Provider</TabsTrigger>
           <TabsTrigger value="database">Database</TabsTrigger>
           <TabsTrigger value="auth">Auth0</TabsTrigger>
           <TabsTrigger value="payments">Payments</TabsTrigger>
           <TabsTrigger value="email">Email</TabsTrigger>
+          <TabsTrigger value="environments">Environments</TabsTrigger>
         </TabsList>
 
         {/* General Tab */}
@@ -298,6 +852,248 @@ export function SettingsPage() {
                   <span>true</span>
                 </div>
               </div>
+            </CardContent>
+          </Card>
+        </TabsContent>
+
+        {/* Provider Tab */}
+        <TabsContent value="provider" className="space-y-6">
+          {/* Active Subscriptions */}
+          {subscriptions.length > 0 && (
+            <Card>
+              <CardHeader>
+                <CardTitle className="flex items-center gap-2">
+                  <CheckCircle className="h-5 w-5 text-green-500" />
+                  Active Subscriptions
+                </CardTitle>
+                <CardDescription>Providers you are currently subscribed to</CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                {subscriptions.map((sub) => (
+                  <div key={sub.id} className="flex items-center justify-between p-4 rounded-lg border bg-muted/30">
+                    <div className="flex items-center gap-4">
+                      <div className="p-2 bg-background rounded-lg">
+                        {getProviderIcon(sub.provider?.name || '')}
+                      </div>
+                      <div>
+                        <h3 className="font-semibold">{sub.provider?.display_name || 'Unknown Provider'}</h3>
+                        <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                          <Badge variant={sub.status === 'active' ? 'default' : 'secondary'}>
+                            {sub.plan?.display_name || 'Unknown Plan'}
+                          </Badge>
+                          <span>•</span>
+                          <span className="capitalize">{sub.billing_cycle}</span>
+                          {sub.cancel_at_period_end && (
+                            <>
+                              <span>•</span>
+                              <span className="text-amber-600">Cancels at period end</span>
+                            </>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      {!sub.cancel_at_period_end && (
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => cancelSubscriptionMutation.mutate(sub.provider_id)}
+                          disabled={cancelSubscriptionMutation.isPending}
+                        >
+                          {cancelSubscriptionMutation.isPending ? (
+                            <Loader2 className="h-4 w-4 animate-spin" />
+                          ) : (
+                            'Cancel'
+                          )}
+                        </Button>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </CardContent>
+            </Card>
+          )}
+
+          {/* Display Name Settings */}
+          <Card>
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2">
+                <Layers className="h-5 w-5" />
+                Display Settings
+              </CardTitle>
+              <CardDescription>Customize how the provider name appears in the application</CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <div className="space-y-2">
+                <Label htmlFor="provider-display-name">Provider Display Name</Label>
+                <Input
+                  id="provider-display-name"
+                  value={localProviderDisplayName}
+                  onChange={(e) => setLocalProviderDisplayName(e.target.value)}
+                  placeholder="n8n"
+                />
+              </div>
+              <div className="flex justify-end">
+                <Button onClick={handleSaveProvider} disabled={isSaving}>
+                  <Save className="h-4 w-4 mr-2" />
+                  {isSaving ? 'Saving...' : 'Save Changes'}
+                </Button>
+              </div>
+            </CardContent>
+          </Card>
+
+          {/* Available Providers */}
+          <Card>
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2">
+                <Layers className="h-5 w-5" />
+                Available Providers
+              </CardTitle>
+              <CardDescription>Subscribe to workflow automation providers</CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-6">
+              {/* Billing Cycle Toggle */}
+              <div className="flex items-center justify-center gap-4 p-2 bg-muted/50 rounded-lg">
+                <Button
+                  variant={selectedBillingCycle === 'monthly' ? 'default' : 'ghost'}
+                  size="sm"
+                  onClick={() => setSelectedBillingCycle('monthly')}
+                >
+                  Monthly
+                </Button>
+                <Button
+                  variant={selectedBillingCycle === 'yearly' ? 'default' : 'ghost'}
+                  size="sm"
+                  onClick={() => setSelectedBillingCycle('yearly')}
+                >
+                  Yearly
+                  <Badge variant="secondary" className="ml-2">Save 17%</Badge>
+                </Button>
+              </div>
+
+              {isLoadingProviders || isLoadingSubscriptions ? (
+                <div className="flex items-center justify-center py-8">
+                  <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
+                </div>
+              ) : providers.length === 0 ? (
+                <div className="text-center py-8 text-muted-foreground">
+                  No providers available.
+                </div>
+              ) : (
+                <div className="space-y-8">
+                  {providers.map((provider) => {
+                    const existingSub = getSubscription(provider.id);
+                    return (
+                      <div key={provider.id} className="space-y-4">
+                        {/* Provider Header */}
+                        <div className="flex items-center gap-3">
+                          <div className="p-2 bg-muted rounded-lg">
+                            {getProviderIcon(provider.name)}
+                          </div>
+                          <div>
+                            <h3 className="text-lg font-semibold">{provider.display_name}</h3>
+                            <p className="text-sm text-muted-foreground">{provider.description}</p>
+                          </div>
+                        </div>
+
+                        {/* Plans Grid */}
+                        <div className="grid gap-4 md:grid-cols-3">
+                          {provider.plans?.map((plan) => {
+                            const isCurrentPlan = existingSub?.plan_id === plan.id && existingSub?.status === 'active';
+                            const price = selectedBillingCycle === 'yearly' ? plan.price_yearly : plan.price_monthly;
+                            const monthlyEquivalent = selectedBillingCycle === 'yearly' ? plan.price_yearly / 12 : plan.price_monthly;
+
+                            return (
+                              <Card
+                                key={plan.id}
+                                className={`relative ${isCurrentPlan ? 'border-primary ring-1 ring-primary' : ''}`}
+                              >
+                                {isCurrentPlan && (
+                                  <div className="absolute -top-3 left-4">
+                                    <Badge variant="default">Current Plan</Badge>
+                                  </div>
+                                )}
+                                <CardHeader className="pt-6">
+                                  <CardTitle className="text-lg">{plan.display_name}</CardTitle>
+                                  <CardDescription>{plan.description}</CardDescription>
+                                </CardHeader>
+                                <CardContent className="space-y-4">
+                                  {/* Price */}
+                                  <div>
+                                    <div className="flex items-baseline gap-1">
+                                      <span className="text-3xl font-bold">
+                                        ${Math.round(monthlyEquivalent)}
+                                      </span>
+                                      <span className="text-muted-foreground">/month</span>
+                                    </div>
+                                    {selectedBillingCycle === 'yearly' && price > 0 && (
+                                      <p className="text-sm text-muted-foreground">
+                                        Billed ${price}/year
+                                      </p>
+                                    )}
+                                  </div>
+
+                                  {/* Features */}
+                                  <ul className="space-y-2 text-sm">
+                                    <li className="flex items-center gap-2">
+                                      <Check className="h-4 w-4 text-green-500" />
+                                      <span>
+                                        {plan.max_environments === -1
+                                          ? 'Unlimited environments'
+                                          : `${plan.max_environments} environment${plan.max_environments > 1 ? 's' : ''}`}
+                                      </span>
+                                    </li>
+                                    <li className="flex items-center gap-2">
+                                      <Check className="h-4 w-4 text-green-500" />
+                                      <span>
+                                        {plan.max_workflows === -1
+                                          ? 'Unlimited workflows'
+                                          : `${plan.max_workflows} workflows`}
+                                      </span>
+                                    </li>
+                                    {Object.entries(plan.features || {}).map(([key, value]) => (
+                                      <li key={key} className="flex items-center gap-2">
+                                        {value ? (
+                                          <Check className="h-4 w-4 text-green-500" />
+                                        ) : (
+                                          <X className="h-4 w-4 text-muted-foreground" />
+                                        )}
+                                        <span className={!value ? 'text-muted-foreground' : ''}>
+                                          {key.replace(/_/g, ' ').replace(/\b\w/g, (l) => l.toUpperCase())}
+                                        </span>
+                                      </li>
+                                    ))}
+                                  </ul>
+
+                                  {/* Action Button */}
+                                  <Button
+                                    className="w-full"
+                                    variant={isCurrentPlan ? 'outline' : 'default'}
+                                    disabled={isCurrentPlan || subscribeFreeMutation.isPending || createCheckoutMutation.isPending}
+                                    onClick={() => handleSubscribe(provider.id, plan.id, plan.name, price)}
+                                  >
+                                    {subscribeFreeMutation.isPending || createCheckoutMutation.isPending ? (
+                                      <Loader2 className="h-4 w-4 animate-spin" />
+                                    ) : isCurrentPlan ? (
+                                      'Current Plan'
+                                    ) : existingSub ? (
+                                      'Switch Plan'
+                                    ) : price === 0 ? (
+                                      'Get Started Free'
+                                    ) : (
+                                      'Subscribe'
+                                    )}
+                                  </Button>
+                                </CardContent>
+                              </Card>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
             </CardContent>
           </Card>
         </TabsContent>
@@ -471,7 +1267,11 @@ export function SettingsPage() {
         </TabsContent>
 
         {/* Payments Tab */}
-        <TabsContent value="payments">
+        <TabsContent value="payments" className="space-y-6">
+          {/* Provider Plans Management */}
+          <ProviderPlansManagement />
+
+          {/* Stripe Configuration */}
           <Card>
             <CardHeader>
               <CardTitle className="flex items-center gap-2">
@@ -691,6 +1491,137 @@ export function SettingsPage() {
                   <Save className="h-4 w-4 mr-2" />
                   {isSaving ? 'Saving...' : 'Save Changes'}
                 </Button>
+              </div>
+            </CardContent>
+          </Card>
+        </TabsContent>
+
+        <TabsContent value="environments">
+          <Card>
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2">
+                <Shield className="h-5 w-5" />
+                Environment Types
+              </CardTitle>
+              <CardDescription>
+                Create, edit, enable/disable, and reorder environment types. Environments are sorted across the app based on this order.
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <div className="grid gap-3 md:grid-cols-3">
+                <div className="space-y-2">
+                  <Label htmlFor="env-type-key">Key</Label>
+                  <Input
+                    id="env-type-key"
+                    value={newEnvTypeKey}
+                    onChange={(e) => setNewEnvTypeKey(e.target.value)}
+                    placeholder="e.g., dev"
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="env-type-label">Label</Label>
+                  <Input
+                    id="env-type-label"
+                    value={newEnvTypeLabel}
+                    onChange={(e) => setNewEnvTypeLabel(e.target.value)}
+                    placeholder="e.g., Development"
+                  />
+                </div>
+                <div className="flex items-end">
+                  <Button
+                    onClick={() => {
+                      const key = newEnvTypeKey.trim();
+                      const label = newEnvTypeLabel.trim();
+                      if (!key || !label) {
+                        toast.error('Key and label are required');
+                        return;
+                      }
+                      createEnvironmentTypeMutation.mutate({ key, label });
+                      setNewEnvTypeKey('');
+                      setNewEnvTypeLabel('');
+                    }}
+                    disabled={createEnvironmentTypeMutation.isPending}
+                    className="w-full"
+                  >
+                    <Plus className="h-4 w-4 mr-2" />
+                    Add Type
+                  </Button>
+                </div>
+              </div>
+
+              <div className="border rounded-lg overflow-hidden">
+                <div className="grid grid-cols-12 gap-2 px-3 py-2 bg-muted text-xs font-medium">
+                  <div className="col-span-1">Order</div>
+                  <div className="col-span-3">Key</div>
+                  <div className="col-span-4">Label</div>
+                  <div className="col-span-2">Active</div>
+                  <div className="col-span-2 text-right">Actions</div>
+                </div>
+
+                {isLoadingEnvironmentTypes ? (
+                  <div className="p-4 text-sm text-muted-foreground">Loading...</div>
+                ) : environmentTypes.length === 0 ? (
+                  <div className="p-4 text-sm text-muted-foreground">No environment types configured.</div>
+                ) : (
+                  [...environmentTypes]
+                    .sort((a: any, b: any) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0))
+                    .map((t: any, idx: number) => {
+                      const isEditing = editingEnvTypeId === t.id;
+                      return (
+                        <div key={t.id} className="grid grid-cols-12 gap-2 px-3 py-2 border-t items-center">
+                          <div className="col-span-1 text-xs text-muted-foreground">{idx + 1}</div>
+                          <div className="col-span-3">
+                            {isEditing ? (
+                              <Input value={editingEnvTypeKey} onChange={(e) => setEditingEnvTypeKey(e.target.value)} />
+                            ) : (
+                              <code className="text-xs bg-muted px-1.5 py-0.5 rounded">{t.key}</code>
+                            )}
+                          </div>
+                          <div className="col-span-4">
+                            {isEditing ? (
+                              <Input value={editingEnvTypeLabel} onChange={(e) => setEditingEnvTypeLabel(e.target.value)} />
+                            ) : (
+                              <div className="text-sm">{t.label}</div>
+                            )}
+                          </div>
+                          <div className="col-span-2">
+                            <Switch
+                              checked={!!t.isActive}
+                              onCheckedChange={(checked) =>
+                                updateEnvironmentTypeMutation.mutate({ id: t.id, updates: { is_active: checked } })
+                              }
+                            />
+                          </div>
+                          <div className="col-span-2 flex justify-end gap-2">
+                            <Button variant="outline" size="icon" onClick={() => moveEnvType(t.id, 'up')} title="Move up">
+                              <ArrowUp className="h-4 w-4" />
+                            </Button>
+                            <Button variant="outline" size="icon" onClick={() => moveEnvType(t.id, 'down')} title="Move down">
+                              <ArrowDown className="h-4 w-4" />
+                            </Button>
+                            {isEditing ? (
+                              <>
+                                <Button variant="outline" size="sm" onClick={saveEditEnvType}>Save</Button>
+                                <Button variant="ghost" size="sm" onClick={cancelEditEnvType}>Cancel</Button>
+                              </>
+                            ) : (
+                              <Button variant="outline" size="icon" onClick={() => startEditEnvType(t)} title="Edit">
+                                <Pencil className="h-4 w-4" />
+                              </Button>
+                            )}
+                            <Button
+                              variant="outline"
+                              size="icon"
+                              onClick={() => deleteEnvironmentTypeMutation.mutate(t.id)}
+                              title="Delete"
+                            >
+                              <Trash2 className="h-4 w-4" />
+                            </Button>
+                          </div>
+                        </div>
+                      );
+                    })
+                )}
               </div>
             </CardContent>
           </Card>

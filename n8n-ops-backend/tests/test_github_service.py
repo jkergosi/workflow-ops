@@ -267,7 +267,8 @@ class TestSyncWorkflowToGitHub:
         result = await configured_service.sync_workflow_to_github(
             workflow_id="wf-123",
             workflow_name="Test Workflow",
-            workflow_data=workflow_data
+            workflow_data=workflow_data,
+            environment_type="dev",
         )
 
         assert result is True
@@ -286,7 +287,8 @@ class TestSyncWorkflowToGitHub:
         result = await configured_service.sync_workflow_to_github(
             workflow_id="wf-123",
             workflow_name="Test Workflow",
-            workflow_data=workflow_data
+            workflow_data=workflow_data,
+            environment_type="dev",
         )
 
         assert result is True
@@ -295,7 +297,7 @@ class TestSyncWorkflowToGitHub:
     @pytest.mark.asyncio
     @pytest.mark.unit
     async def test_sync_uses_environment_specific_path(self, configured_service):
-        """Should use environment-specific path when environment_type provided."""
+        """Should use environment-type folder path."""
         configured_service._repo.get_contents.side_effect = GithubException(404, {}, {})
 
         workflow_data = {"name": "Test", "nodes": []}
@@ -304,7 +306,7 @@ class TestSyncWorkflowToGitHub:
             workflow_id="wf-123",
             workflow_name="Test Workflow",
             workflow_data=workflow_data,
-            environment_type="production"
+            environment_type="production",
         )
 
         # Check that create_file was called with correct path
@@ -322,7 +324,8 @@ class TestSyncWorkflowToGitHub:
         await configured_service.sync_workflow_to_github(
             workflow_id="wf-123",
             workflow_name="Test Workflow",
-            workflow_data=workflow_data
+            workflow_data=workflow_data,
+            environment_type="dev",
         )
 
         call_args = configured_service._repo.create_file.call_args
@@ -340,7 +343,8 @@ class TestSyncWorkflowToGitHub:
             workflow_id="wf-123",
             workflow_name="Test Workflow",
             workflow_data=workflow_data,
-            commit_message="Custom commit message"
+            commit_message="Custom commit message",
+            environment_type="dev",
         )
 
         call_args = configured_service._repo.create_file.call_args
@@ -357,7 +361,8 @@ class TestSyncWorkflowToGitHub:
         await configured_service.sync_workflow_to_github(
             workflow_id="wf-123",
             workflow_name="Test Workflow",
-            workflow_data=workflow_data
+            workflow_data=workflow_data,
+            environment_type="dev",
         )
 
         call_args = configured_service._repo.create_file.call_args
@@ -377,7 +382,8 @@ class TestSyncWorkflowToGitHub:
             await service.sync_workflow_to_github(
                 workflow_id="wf-123",
                 workflow_name="Test",
-                workflow_data={}
+                workflow_data={},
+                environment_type="dev",
             )
 
     @pytest.mark.asyncio
@@ -390,12 +396,13 @@ class TestSyncWorkflowToGitHub:
             await configured_service.sync_workflow_to_github(
                 workflow_id="wf-123",
                 workflow_name="Test",
-                workflow_data={}
+                workflow_data={},
+                environment_type="dev",
             )
 
 
-class TestGetWorkflowFromGitHub:
-    """Tests for retrieving workflows from GitHub."""
+class TestGetWorkflowById:
+    """Tests for retrieving workflows from GitHub by workflow ID."""
 
     @pytest.fixture
     def configured_service(self):
@@ -411,36 +418,40 @@ class TestGetWorkflowFromGitHub:
 
     @pytest.mark.asyncio
     @pytest.mark.unit
-    async def test_get_workflow_returns_parsed_json(self, configured_service):
-        """Should return parsed workflow data."""
-        workflow_data = {"name": "Test Workflow", "nodes": [], "connections": {}}
+    async def test_get_by_id_returns_workflow_with_commit_info(self, configured_service):
+        """Should return workflow data with commit metadata."""
+        from datetime import datetime
+
+        workflow_data = {"id": "wf-123", "name": "Test Workflow", "nodes": [], "connections": {}}
         encoded_content = base64.b64encode(json.dumps(workflow_data).encode()).decode()
 
         mock_file = MagicMock()
         mock_file.content = encoded_content
         configured_service._repo.get_contents.return_value = mock_file
 
-        result = await configured_service.get_workflow_from_github("wf-123")
+        mock_commit = MagicMock()
+        mock_commit.sha = "abc123"
+        mock_commit.commit.author.date = datetime(2024, 1, 15, 10, 0, 0)
+        mock_commit.commit.message = "Update workflow"
 
-        assert result == workflow_data
+        mock_commits = MagicMock()
+        mock_commits.totalCount = 1
+        mock_commits.__getitem__ = lambda self, idx: mock_commit
+        configured_service._repo.get_commits.return_value = mock_commits
+
+        result = await configured_service.get_workflow_by_id("wf-123", environment_type="dev")
+
+        assert result is not None
+        assert result["workflow"] == workflow_data
+        assert result["commit_sha"] == "abc123"
 
     @pytest.mark.asyncio
     @pytest.mark.unit
-    async def test_get_workflow_returns_none_when_not_found(self, configured_service):
+    async def test_get_by_id_returns_none_when_not_found(self, configured_service):
         """Should return None when workflow not found."""
         configured_service._repo.get_contents.side_effect = GithubException(404, {}, {})
 
-        result = await configured_service.get_workflow_from_github("wf-123")
-
-        assert result is None
-
-    @pytest.mark.asyncio
-    @pytest.mark.unit
-    async def test_get_workflow_returns_none_when_not_configured(self):
-        """Should return None when service not configured."""
-        service = GitHubService(token=None, repo_owner="o", repo_name="r", branch="b")
-
-        result = await service.get_workflow_from_github("wf-123")
+        result = await configured_service.get_workflow_by_id("wf-123", environment_type="dev")
 
         assert result is None
 
@@ -470,13 +481,13 @@ class TestGetAllWorkflowsFromGitHub:
         # Mock directory contents - need to include type attribute and base64-encoded content
         mock_file1 = MagicMock()
         mock_file1.name = "workflow1.json"
-        mock_file1.path = "workflows/workflow1.json"
+        mock_file1.path = "workflows/dev/workflow1.json"
         mock_file1.type = "file"
         mock_file1.content = base64.b64encode(json.dumps(workflow1).encode()).decode()
 
         mock_file2 = MagicMock()
         mock_file2.name = "workflow2.json"
-        mock_file2.path = "workflows/workflow2.json"
+        mock_file2.path = "workflows/dev/workflow2.json"
         mock_file2.type = "file"
         mock_file2.content = base64.b64encode(json.dumps(workflow2).encode()).decode()
 
@@ -486,7 +497,7 @@ class TestGetAllWorkflowsFromGitHub:
 
         configured_service._repo.get_contents.return_value = [mock_file1, mock_file2, mock_readme]
 
-        result = await configured_service.get_all_workflows_from_github()
+        result = await configured_service.get_all_workflows_from_github(environment_type="dev")
 
         assert len(result) == 2
         assert "1" in result
@@ -502,7 +513,7 @@ class TestGetAllWorkflowsFromGitHub:
 
         mock_json = MagicMock()
         mock_json.name = "workflow.json"
-        mock_json.path = "workflows/workflow.json"
+        mock_json.path = "workflows/dev/workflow.json"
         mock_json.type = "file"
         mock_json.content = base64.b64encode(json.dumps(workflow).encode()).decode()
 
@@ -512,7 +523,7 @@ class TestGetAllWorkflowsFromGitHub:
 
         configured_service._repo.get_contents.return_value = [mock_json, mock_md]
 
-        result = await configured_service.get_all_workflows_from_github()
+        result = await configured_service.get_all_workflows_from_github(environment_type="dev")
 
         assert len(result) == 1
         assert "1" in result
@@ -523,7 +534,7 @@ class TestGetAllWorkflowsFromGitHub:
         """Should return empty dict when not configured."""
         service = GitHubService(token=None, repo_owner="o", repo_name="r", branch="b")
 
-        result = await service.get_all_workflows_from_github()
+        result = await service.get_all_workflows_from_github(environment_type="dev")
 
         assert result == {}
 
@@ -533,7 +544,7 @@ class TestGetAllWorkflowsFromGitHub:
         """Should return empty dict on GitHub error."""
         configured_service._repo.get_contents.side_effect = GithubException(404, {}, {})
 
-        result = await configured_service.get_all_workflows_from_github()
+        result = await configured_service.get_all_workflows_from_github(environment_type="dev")
 
         assert result == {}
 
@@ -563,6 +574,9 @@ class TestGetWorkflowByName:
         encoded = base64.b64encode(json.dumps(workflow_data).encode()).decode()
 
         mock_file = MagicMock()
+        mock_file.name = "wf-123.json"
+        mock_file.path = "workflows/dev/wf-123.json"
+        mock_file.type = "file"
         mock_file.content = encoded
 
         mock_commit = MagicMock()
@@ -574,10 +588,10 @@ class TestGetWorkflowByName:
         mock_commits.totalCount = 1
         mock_commits.__getitem__ = lambda self, idx: mock_commit
 
-        configured_service._repo.get_contents.return_value = mock_file
+        configured_service._repo.get_contents.return_value = [mock_file]
         configured_service._repo.get_commits.return_value = mock_commits
 
-        result = await configured_service.get_workflow_by_name("Test Workflow")
+        result = await configured_service.get_workflow_by_name("Test Workflow", environment_type="dev")
 
         assert result is not None
         assert result["workflow"] == workflow_data
@@ -586,25 +600,14 @@ class TestGetWorkflowByName:
 
     @pytest.mark.asyncio
     @pytest.mark.unit
-    async def test_get_by_name_sanitizes_filename(self, configured_service):
-        """Should sanitize workflow name for filename lookup."""
-        workflow_data = {"name": "Test: Workflow", "nodes": []}
-        encoded = base64.b64encode(json.dumps(workflow_data).encode()).decode()
+    async def test_get_by_name_uses_environment_type_folder(self, configured_service):
+        """Should read from workflows/{environment_type}/."""
+        configured_service._repo.get_contents.side_effect = GithubException(404, {}, {})
 
-        mock_file = MagicMock()
-        mock_file.content = encoded
+        await configured_service.get_workflow_by_name("Does Not Matter", environment_type="dev")
 
-        mock_commits = MagicMock()
-        mock_commits.totalCount = 0
-
-        configured_service._repo.get_contents.return_value = mock_file
-        configured_service._repo.get_commits.return_value = mock_commits
-
-        await configured_service.get_workflow_by_name("Test: Workflow")
-
-        # Check the path used - colon should be replaced
         call_args = configured_service._repo.get_contents.call_args
-        assert ":" not in call_args.args[0]
+        assert call_args.args[0] == "workflows/dev"
 
     @pytest.mark.asyncio
     @pytest.mark.unit
@@ -612,7 +615,7 @@ class TestGetWorkflowByName:
         """Should return None when workflow not found."""
         configured_service._repo.get_contents.side_effect = GithubException(404, {}, {})
 
-        result = await configured_service.get_workflow_by_name("Nonexistent")
+        result = await configured_service.get_workflow_by_name("Nonexistent", environment_type="dev")
 
         assert result is None
 
@@ -638,8 +641,6 @@ class TestGetWorkflowCommitInfo:
         """Should return commit details for workflow."""
         from datetime import datetime
 
-        mock_file = MagicMock()
-
         mock_commit = MagicMock()
         mock_commit.sha = "def456"
         mock_commit.commit.author.date = datetime(2024, 1, 20)
@@ -650,14 +651,23 @@ class TestGetWorkflowCommitInfo:
         mock_commits.totalCount = 1
         mock_commits.__getitem__ = lambda self, idx: mock_commit
 
-        configured_service._repo.get_contents.return_value = mock_file
+        workflow_data = {"name": "Test Workflow", "nodes": []}
+        encoded = base64.b64encode(json.dumps(workflow_data).encode()).decode()
+
+        mock_file = MagicMock()
+        mock_file.name = "wf-123.json"
+        mock_file.path = "workflows/dev/wf-123.json"
+        mock_file.type = "file"
+        mock_file.content = encoded
+
+        configured_service._repo.get_contents.return_value = [mock_file]
         configured_service._repo.get_commits.return_value = mock_commits
 
-        result = await configured_service.get_workflow_commit_info("Test Workflow")
+        result = await configured_service.get_workflow_commit_info("Test Workflow", environment_type="dev")
 
         assert result["sha"] == "def456"
         assert result["message"] == "Fix bug"
-        assert result["author"] == "Developer"
+        assert result["author"] is None
 
     @pytest.mark.asyncio
     @pytest.mark.unit
@@ -665,7 +675,7 @@ class TestGetWorkflowCommitInfo:
         """Should return None when file doesn't exist."""
         configured_service._repo.get_contents.side_effect = GithubException(404, {}, {})
 
-        result = await configured_service.get_workflow_commit_info("Nonexistent")
+        result = await configured_service.get_workflow_commit_info("Nonexistent", environment_type="dev")
 
         assert result is None
 
@@ -695,7 +705,8 @@ class TestDeleteWorkflowFromGitHub:
 
         result = await configured_service.delete_workflow_from_github(
             workflow_id="wf-123",
-            workflow_name="Test Workflow"
+            workflow_name="Test Workflow",
+            environment_type="dev",
         )
 
         assert result is True
@@ -709,7 +720,8 @@ class TestDeleteWorkflowFromGitHub:
 
         result = await configured_service.delete_workflow_from_github(
             workflow_id="wf-123",
-            workflow_name="Test"
+            workflow_name="Test",
+            environment_type="dev",
         )
 
         assert result is True
@@ -734,7 +746,8 @@ class TestDeleteWorkflowFromGitHub:
         await configured_service.delete_workflow_from_github(
             workflow_id="wf-123",
             workflow_name="Test",
-            commit_message="Custom delete message"
+            commit_message="Custom delete message",
+            environment_type="dev",
         )
 
         call_args = configured_service._repo.delete_file.call_args

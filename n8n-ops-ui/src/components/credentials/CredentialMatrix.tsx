@@ -2,22 +2,23 @@ import { useMemo } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
-import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { apiClient } from '@/lib/api-client';
-import { Grid3X3, CheckCircle2, XCircle, AlertTriangle, Plus, Pencil, Loader2 } from 'lucide-react';
+import { Grid3X3, CheckCircle2, XCircle, AlertTriangle, Plus, Pencil, Loader2, Unlink } from 'lucide-react';
 import type { LogicalCredential, CredentialMapping, CredentialMatrixCell, CredentialMatrixEnvironment } from '@/types/credentials';
 
 interface CredentialMatrixProps {
   onCreateMapping?: (logicalId: string, envId: string) => void;
   onEditMapping?: (mappingId: string, logicalId: string, envId: string) => void;
+  onUnmapMapping?: (mappingId: string) => void;
   onEditLogical?: (logical: LogicalCredential) => void;
 }
 
 export function CredentialMatrix({
   onCreateMapping,
   onEditMapping,
+  onUnmapMapping,
   onEditLogical,
 }: CredentialMatrixProps) {
   const { data: matrixData, isLoading } = useQuery({
@@ -29,19 +30,6 @@ export function CredentialMatrix({
   const logicalCredentials: LogicalCredential[] = matrix?.logical_credentials || [];
   const environments: CredentialMatrixEnvironment[] = matrix?.environments || [];
   const matrixMap: Record<string, Record<string, CredentialMatrixCell | null>> = matrix?.matrix || {};
-
-  const getEnvTypeBadge = (type: string) => {
-    const colors: Record<string, string> = {
-      dev: 'bg-blue-50 text-blue-700 border-blue-200',
-      staging: 'bg-yellow-50 text-yellow-700 border-yellow-200',
-      production: 'bg-green-50 text-green-700 border-green-200',
-    };
-    return (
-      <Badge variant="outline" className={colors[type] || 'bg-gray-50 text-gray-700'}>
-        {type}
-      </Badge>
-    );
-  };
 
   const getCellContent = (cell: CredentialMatrixCell | null, logicalId: string, envId: string) => {
     if (!cell) {
@@ -79,29 +67,49 @@ export function CredentialMatrix({
     };
 
     return (
-      <TooltipProvider>
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <Button
-              variant="ghost"
-              size="sm"
-              className="h-8 w-full justify-start gap-2"
-              onClick={() => onEditMapping?.(cell.mappingId!, logicalId, envId)}
-            >
-              {statusIcon()}
-              <span className="truncate text-sm">{cell.physicalName || cell.physicalCredentialId}</span>
-            </Button>
-          </TooltipTrigger>
-          <TooltipContent>
-            <div className="space-y-1">
-              <div className="font-medium">{cell.physicalName}</div>
-              <div className="text-xs text-muted-foreground">Type: {cell.physicalType}</div>
-              <div className="text-xs text-muted-foreground">ID: {cell.physicalCredentialId}</div>
-              <div className="text-xs">Status: {cell.status || 'unknown'}</div>
-            </div>
-          </TooltipContent>
-        </Tooltip>
-      </TooltipProvider>
+      <div className="flex items-center gap-1">
+        <TooltipProvider>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button
+                variant="ghost"
+                size="sm"
+                className="h-8 flex-1 justify-start gap-2"
+                onClick={() => onEditMapping?.(cell.mappingId!, logicalId, envId)}
+              >
+                {statusIcon()}
+                <span className="truncate text-sm">{cell.physicalName || cell.physicalCredentialId}</span>
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent>
+              <div className="space-y-1">
+                <div className="font-medium">{cell.physicalName}</div>
+                <div className="text-xs text-muted-foreground">Type: {cell.physicalType}</div>
+                <div className="text-xs text-muted-foreground">ID: {cell.physicalCredentialId}</div>
+                <div className="text-xs">Status: {cell.status || 'unknown'}</div>
+              </div>
+            </TooltipContent>
+          </Tooltip>
+        </TooltipProvider>
+        <TooltipProvider>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button
+                variant="ghost"
+                size="icon"
+                className="h-6 w-6 text-muted-foreground hover:text-destructive"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onUnmapMapping?.(cell.mappingId!);
+                }}
+              >
+                <Unlink className="h-3 w-3" />
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent>Unmap this credential</TooltipContent>
+          </Tooltip>
+        </TooltipProvider>
+      </div>
     );
   };
 
@@ -121,18 +129,18 @@ export function CredentialMatrix({
         <CardHeader>
           <CardTitle className="flex items-center gap-2">
             <Grid3X3 className="h-5 w-5" />
-            Credential Matrix
+            Mapping
           </CardTitle>
           <CardDescription>
-            Cross-environment view of logical credentials and their mappings
+            Cross-environment view of credential aliases and their mappings to physical credentials. Mapping = alias → physical credential per environment.
           </CardDescription>
         </CardHeader>
         <CardContent>
           <div className="text-center py-8 text-muted-foreground">
             <Grid3X3 className="h-12 w-12 mx-auto mb-4 opacity-50" />
-            <p>No logical credentials defined yet.</p>
+            <p>No credential aliases defined yet.</p>
             <p className="text-sm mt-1">
-              Create logical credentials to map them across environments.
+              Create credential aliases to map them to physical credentials across environments.
             </p>
           </div>
         </CardContent>
@@ -145,10 +153,10 @@ export function CredentialMatrix({
       <CardHeader>
         <CardTitle className="flex items-center gap-2">
           <Grid3X3 className="h-5 w-5" />
-          Credential Matrix
+          Mapping
         </CardTitle>
         <CardDescription>
-          Cross-environment view of logical credentials and their mappings
+          Cross-environment view of credential aliases and their mappings to physical credentials. Mapping = alias → physical credential per environment.
         </CardDescription>
       </CardHeader>
       <CardContent>
@@ -156,13 +164,10 @@ export function CredentialMatrix({
           <Table>
             <TableHeader>
               <TableRow>
-                <TableHead className="w-[200px] min-w-[200px]">Logical Credential</TableHead>
+                <TableHead className="w-[200px] min-w-[200px]">Credential Alias</TableHead>
                 {environments.map((env) => (
                   <TableHead key={env.id} className="min-w-[180px]">
-                    <div className="flex flex-col gap-1">
-                      <span>{env.name}</span>
-                      {getEnvTypeBadge(env.type)}
-                    </div>
+                    <span>{env.name}</span>
                   </TableHead>
                 ))}
               </TableRow>

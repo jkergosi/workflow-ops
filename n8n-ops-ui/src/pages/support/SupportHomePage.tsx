@@ -1,3 +1,4 @@
+import { useEffect } from 'react';
 import { Link } from 'react-router-dom';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -6,6 +7,12 @@ import { useQuery } from '@tanstack/react-query';
 import { apiClient } from '@/lib/api-client';
 
 export function SupportHomePage() {
+  useEffect(() => {
+    document.title = 'Support - n8n Ops';
+    return () => {
+      document.title = 'n8n Ops';
+    };
+  }, []);
   // Fetch config to get JSM portal URL
   const { data: configData } = useQuery({
     queryKey: ['support-config'],

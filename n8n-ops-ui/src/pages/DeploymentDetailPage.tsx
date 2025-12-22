@@ -16,8 +16,8 @@ import {
 import { apiClient } from '@/lib/api-client';
 import { useDeploymentsSSE } from '@/lib/use-deployments-sse';
 import { useAuth } from '@/lib/auth';
-import { ArrowLeft, ArrowRight, Clock, CheckCircle, AlertCircle, XCircle, Loader2, Rocket, Trash2, User } from 'lucide-react';
-import { useState } from 'react';
+import { ArrowLeft, ArrowRight, Clock, CheckCircle, AlertCircle, XCircle, Loader2, Rocket, Trash2, User, RotateCcw } from 'lucide-react';
+import { useState, useEffect } from 'react';
 import type { DeploymentWorkflow } from '@/types';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
@@ -40,11 +40,18 @@ import {
 } from '@/components/ui/sheet';
 
 export function DeploymentDetailPage() {
+  useEffect(() => {
+    document.title = 'Deployment Details - n8n Ops';
+    return () => {
+      document.title = 'n8n Ops';
+    };
+  }, []);
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const { user } = useAuth();
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
+  const [rerunDialogOpen, setRerunDialogOpen] = useState(false);
   const [errorSheetOpen, setErrorSheetOpen] = useState(false);
   const [selectedWorkflow, setSelectedWorkflow] = useState<DeploymentWorkflow | null>(null);
 
@@ -150,9 +157,27 @@ export function DeploymentDetailPage() {
     },
   });
 
+  const rerunMutation = useMutation({
+    mutationFn: (deploymentId: string) => apiClient.rerunDeployment(deploymentId),
+    onSuccess: (data) => {
+      queryClient.invalidateQueries({ queryKey: ['deployments'] });
+      toast.success(data.data.message || 'Deployment rerun started successfully');
+      setRerunDialogOpen(false);
+      navigate(`/deployments/${data.data.deploymentId}`);
+    },
+    onError: (error: any) => {
+      toast.error(error?.response?.data?.detail || 'Failed to rerun deployment');
+    },
+  });
+
   const canDeleteDeployment = () => {
     if (!deployment) return false;
     return deployment.status !== 'running';
+  };
+
+  const canRerunDeployment = () => {
+    if (!deployment) return false;
+    return ['failed', 'canceled', 'success'].includes(deployment.status);
   };
 
   const handleDeleteClick = () => {
@@ -162,6 +187,16 @@ export function DeploymentDetailPage() {
   const handleConfirmDelete = () => {
     if (deployment) {
       deleteMutation.mutate(deployment.id);
+    }
+  };
+
+  const handleRerunClick = () => {
+    setRerunDialogOpen(true);
+  };
+
+  const handleConfirmRerun = () => {
+    if (deployment) {
+      rerunMutation.mutate(deployment.id);
     }
   };
 
@@ -235,6 +270,16 @@ export function DeploymentDetailPage() {
           <Badge variant={getStatusVariant(deployment.status)} className="text-base px-3 py-1">
             {deployment.status}
           </Badge>
+          {canRerunDeployment() && (
+            <Button
+              variant="default"
+              onClick={handleRerunClick}
+              disabled={rerunMutation.isPending}
+            >
+              <RotateCcw className="h-4 w-4 mr-2" />
+              {rerunMutation.isPending ? 'Starting...' : 'Rerun'}
+            </Button>
+          )}
           {canDeleteDeployment() && (
             <Button
               variant="destructive"
@@ -555,6 +600,54 @@ export function DeploymentDetailPage() {
               className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
             >
               {deleteMutation.isPending ? 'Deleting...' : 'Delete'}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      {/* Rerun Confirmation Dialog */}
+      <AlertDialog open={rerunDialogOpen} onOpenChange={setRerunDialogOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Rerun Deployment</AlertDialogTitle>
+            <AlertDialogDescription>
+              This will create a new deployment using the same pipeline, source/target environments, and workflow selections as the original.
+              All gates (drift check, credential preflight, approvals) will be re-run, and fresh pre/post snapshots will be created.
+              {deployment && (
+                <div className="mt-4 space-y-2">
+                  <div className="p-3 bg-muted rounded-md space-y-1">
+                    <p className="font-medium text-sm">Deployment Summary:</p>
+                    <p className="text-sm">
+                      <span className="font-medium">Pipeline:</span> {getPipelineName(deployment.pipelineId)}
+                    </p>
+                    <p className="text-sm">
+                      <span className="font-medium">Stage:</span>{' '}
+                      {getEnvironmentName(deployment.sourceEnvironmentId)} →{' '}
+                      {getEnvironmentName(deployment.targetEnvironmentId)}
+                    </p>
+                    <p className="text-sm">
+                      <span className="font-medium">Workflows:</span> {deployment.summaryJson?.total || 0} workflow(s)
+                    </p>
+                  </div>
+                  <div className="p-3 bg-blue-50 dark:bg-blue-950/30 rounded-md">
+                    <p className="text-sm font-medium text-blue-900 dark:text-blue-100">Gates that will run:</p>
+                    <ul className="text-sm text-blue-800 dark:text-blue-200 mt-1 list-disc list-inside space-y-0.5">
+                      <li>Drift check</li>
+                      <li>Credential preflight validation</li>
+                      <li>Approvals (if required)</li>
+                    </ul>
+                  </div>
+                </div>
+              )}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={handleConfirmRerun}
+              disabled={rerunMutation.isPending}
+            >
+              {rerunMutation.isPending ? 'Starting...' : 'Rerun Deployment'}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

@@ -134,7 +134,14 @@ async def get_restore_preview(environment_id: str):
             )
 
         # Get workflows from GitHub
-        github_workflows = await github_service.get_all_workflows_from_github()
+        # get_all_workflows_from_github returns Dict[workflow_id, workflow_data]
+        env_type = env_config.get("n8n_type")
+        if not env_type:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Environment type is required for GitHub workflow operations. Set the environment type and try again.",
+            )
+        github_workflow_map = await github_service.get_all_workflows_from_github(environment_type=env_type)
 
         # Get existing workflows from provider
         adapter = ProviderRegistry.get_adapter_for_environment(env_config)
@@ -148,7 +155,7 @@ async def get_restore_preview(environment_id: str):
         total_new = 0
         total_update = 0
 
-        for gh_workflow in github_workflows:
+        for wf_id, gh_workflow in github_workflow_map.items():
             # Extract original workflow ID from _comment
             original_id = extract_workflow_id_from_comment(gh_workflow)
             workflow_name = gh_workflow.get("name", "Unknown")
@@ -241,7 +248,14 @@ async def execute_restore(environment_id: str, options: RestoreOptions):
         adapter = ProviderRegistry.get_adapter_for_environment(env_config)
 
         # Get workflows from GitHub
-        github_workflows = await github_service.get_all_workflows_from_github()
+        # get_all_workflows_from_github returns Dict[workflow_id, workflow_data]
+        env_type = env_config.get("n8n_type")
+        if not env_type:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Environment type is required for GitHub workflow operations. Set the environment type and try again.",
+            )
+        github_workflow_map = await github_service.get_all_workflows_from_github(environment_type=env_type)
 
         # Get existing workflows from provider
         n8n_workflows = await adapter.get_workflows()
@@ -255,7 +269,7 @@ async def execute_restore(environment_id: str, options: RestoreOptions):
         workflows_failed = 0
         snapshots_created = 0
 
-        for gh_workflow in github_workflows:
+        for wf_id, gh_workflow in github_workflow_map.items():
             original_id = extract_workflow_id_from_comment(gh_workflow)
             workflow_name = gh_workflow.get("name", "Unknown")
 

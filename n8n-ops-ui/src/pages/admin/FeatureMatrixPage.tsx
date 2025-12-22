@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -42,6 +42,13 @@ import { toast } from 'sonner';
 import type { FeatureMatrixEntry, AdminPlan } from '@/types';
 
 export function FeatureMatrixPage() {
+  useEffect(() => {
+    document.title = 'Feature Matrix - n8n Ops';
+    return () => {
+      document.title = 'n8n Ops';
+    };
+  }, []);
+
   const queryClient = useQueryClient();
   const [editDialogOpen, setEditDialogOpen] = useState(false);
   const [selectedFeature, setSelectedFeature] = useState<FeatureMatrixEntry | null>(null);

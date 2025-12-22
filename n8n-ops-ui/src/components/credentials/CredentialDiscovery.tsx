@@ -49,7 +49,7 @@ export function CredentialDiscovery({
     mutationFn: (data: { name: string; required_type: string; description?: string; tenant_id: string }) =>
       apiClient.createLogicalCredential(data),
     onSuccess: () => {
-      toast.success('Logical credential created');
+      toast.success('Credential alias created');
       queryClient.invalidateQueries({ queryKey: ['logical-credentials'] });
       queryClient.invalidateQueries({ queryKey: ['discovered-credentials'] });
       runDiscovery();
@@ -83,7 +83,7 @@ export function CredentialDiscovery({
   const handleCreateAllMissing = () => {
     const missing = discovered.filter((d) => !d.existingLogicalId);
     if (missing.length === 0) {
-      toast.info('All credentials already have logical definitions');
+      toast.info('All credentials already have credential alias definitions');
       return;
     }
 
@@ -101,7 +101,7 @@ export function CredentialDiscovery({
     if (!hasLogical) {
       return (
         <Badge variant="outline" className="bg-gray-50 text-gray-700">
-          No Logical
+          No Alias
         </Badge>
       );
     }
@@ -132,7 +132,7 @@ export function CredentialDiscovery({
           Credential Discovery
         </CardTitle>
         <CardDescription>
-          Scan workflows to discover credential references and create logical credentials
+          Scan workflows to discover credential references and create credential aliases
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
@@ -171,7 +171,7 @@ export function CredentialDiscovery({
                 </span>
                 {missingCount > 0 && (
                   <span className="text-yellow-600">
-                    {missingCount} without logical definition
+                    {missingCount} without credential alias definition
                   </span>
                 )}
                 {unmappedCount > 0 && (

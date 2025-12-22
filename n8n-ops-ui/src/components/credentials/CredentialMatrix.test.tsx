@@ -53,7 +53,7 @@ describe('CredentialMatrix', () => {
       render(<CredentialMatrix />);
 
       await waitFor(() => {
-        expect(screen.getByText('Credential Matrix')).toBeInTheDocument();
+        expect(screen.getByText('Mapping')).toBeInTheDocument();
       });
     });
 
@@ -66,7 +66,7 @@ describe('CredentialMatrix', () => {
       });
     });
 
-    it('should display logical credential rows', async () => {
+    it('should display credential alias rows', async () => {
       render(<CredentialMatrix />);
 
       await waitFor(() => {
@@ -119,7 +119,7 @@ describe('CredentialMatrix', () => {
   });
 
   describe('Empty State', () => {
-    it('should show empty state when no logical credentials exist', async () => {
+    it('should show empty state when no credential aliases exist', async () => {
       server.use(
         http.get(`${API_BASE}/admin/credentials/matrix`, () => {
           return HttpResponse.json({
@@ -133,7 +133,7 @@ describe('CredentialMatrix', () => {
       render(<CredentialMatrix />);
 
       await waitFor(() => {
-        expect(screen.getByText(/no logical credentials defined/i)).toBeInTheDocument();
+        expect(screen.getByText(/no credential aliases defined/i)).toBeInTheDocument();
       });
     });
   });

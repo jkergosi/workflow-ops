@@ -149,9 +149,15 @@ async def get_workflows(
                 )
                 
                 if github_service.is_configured():
-                    # Get all workflows from GitHub
-                    github_workflows = await github_service.get_all_workflows_from_github()
-                    github_workflow_map = {wf.get("id"): wf for wf in github_workflows}
+                    # Get all workflows from GitHub (using environment type key for folder path)
+                    # get_all_workflows_from_github returns Dict[workflow_id, workflow_data]
+                    env_type = env_config.get("n8n_type")
+                    if not env_type:
+                        raise HTTPException(
+                            status_code=status.HTTP_400_BAD_REQUEST,
+                            detail="Environment type is required for GitHub workflow operations. Set the environment type and try again.",
+                        )
+                    github_workflow_map = await github_service.get_all_workflows_from_github(environment_type=env_type)
                     
                     # Compute sync status for each workflow
                     for workflow in workflows:
@@ -383,8 +389,15 @@ async def sync_workflows_from_github(
             branch=env_config.get("git_branch", "main")
         )
 
-        # Get workflows from GitHub
-        github_workflows = await github_service.get_all_workflows_from_github()
+        # Get workflows from GitHub (using environment type key for folder path)
+        # get_all_workflows_from_github returns Dict[workflow_id, workflow_data]
+        env_type = env_config.get("n8n_type")
+        if not env_type:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Environment type is required for GitHub workflow operations. Set the environment type and try again.",
+            )
+        github_workflow_map = await github_service.get_all_workflows_from_github(environment_type=env_type)
 
         # Create provider adapter
         adapter = ProviderRegistry.get_adapter_for_environment(env_config)
@@ -393,7 +406,7 @@ async def sync_workflows_from_github(
         synced_workflows = []
         errors = []
 
-        for workflow_data in github_workflows:
+        for workflow_id, workflow_data in github_workflow_map.items():
             result = await _upload_single_workflow(
                 workflow_data,
                 adapter,
@@ -409,7 +422,6 @@ async def sync_workflows_from_github(
         # After syncing from GitHub, recompute sync status for all workflows
         # Get all workflows from provider
         n8n_workflows = await adapter.get_workflows()
-        github_workflow_map = {wf.get("id"): wf for wf in github_workflows}
         
         # Compute sync status for all workflows
         for workflow in n8n_workflows:
@@ -459,6 +471,7 @@ async def sync_workflows_from_github(
 async def sync_workflows_to_github(
     environment_id: Optional[str] = None,
     environment: Optional[str] = None,  # Deprecated: use environment_id instead
+    force: bool = False,  # Force full sync, bypassing incremental check
     _: dict = Depends(require_entitlement("workflow_push"))
 ):
     """Backup/sync all workflows from N8N to GitHub"""
@@ -509,9 +522,15 @@ async def sync_workflows_to_github(
         # Get last backup timestamp for incremental backup
         last_backup = env_config.get("last_backup")
 
-        # Filter workflows that have been updated since last backup
+        # Filter workflows that have been updated since last backup (unless force=True)
         workflows_to_sync = []
-        if last_backup:
+        print(f"DEBUG: force={force}, last_backup={last_backup}, total workflows={len(workflows)}")
+        print(f"DEBUG: force type={type(force)}, force value repr={repr(force)}")
+        if force:
+            # Force full sync - include all workflows
+            workflows_to_sync = workflows
+            print(f"DEBUG: force=True, workflows_to_sync count={len(workflows_to_sync)}")
+        elif last_backup:
             from datetime import datetime
             last_backup_dt = datetime.fromisoformat(last_backup.replace('Z', '+00:00')) if isinstance(last_backup, str) else last_backup
 
@@ -528,9 +547,17 @@ async def sync_workflows_to_github(
             # No last backup, sync all workflows
             workflows_to_sync = workflows
 
+        # Get environment type key for GitHub folder path (required)
+        env_type = env_config.get("n8n_type")
+        if not env_type:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Environment type is required for GitHub workflow operations. Set the environment type and try again.",
+            )
+
         # Get all workflows from GitHub for comparison
-        github_workflows = await github_service.get_all_workflows_from_github()
-        github_workflow_map = {wf.get("id"): wf for wf in github_workflows}
+        # get_all_workflows_from_github returns Dict[workflow_id, workflow_data]
+        github_workflow_map = await github_service.get_all_workflows_from_github(environment_type=env_type)
 
         # Sync each workflow to GitHub
         synced_workflows = []
@@ -538,17 +565,20 @@ async def sync_workflows_to_github(
         errors = []
         sync_status_updates = {}  # Track sync status for all workflows
 
+        print(f"DEBUG: Starting sync loop with {len(workflows_to_sync)} workflows to sync")
         for workflow in workflows_to_sync:
             try:
                 # Get full workflow details
                 workflow_id = workflow.get("id")
+                print(f"DEBUG: Syncing workflow {workflow_id}...")
                 full_workflow = await adapter.get_workflow(workflow_id)
 
-                # Sync to GitHub
+                # Sync to GitHub with environment-specific folder
                 await github_service.sync_workflow_to_github(
                     workflow_id=workflow_id,
                     workflow_name=full_workflow.get("name"),
-                    workflow_data=full_workflow
+                    workflow_data=full_workflow,
+                    environment_type=env_type
                 )
 
                 synced_workflows.append({
@@ -684,14 +714,20 @@ async def get_all_workflows_drift(
         # Fetch all workflows from provider
         runtime_workflows = await adapter.get_workflows()
 
-        # Fetch all workflows from GitHub
-        git_workflows = await github_service.get_all_workflows_from_github()
+        # Fetch all workflows from GitHub (using environment type key for folder path)
+        # get_all_workflows_from_github returns Dict[workflow_id, workflow_data]
+        env_type = env_config.get("n8n_type")
+        if not env_type:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Environment type is required for GitHub workflow operations. Set the environment type and try again.",
+            )
+        git_workflows_map = await github_service.get_all_workflows_from_github(environment_type=env_type)
 
         # Create a map of git workflows by name
-        # Note: get_all_workflows_from_github returns raw workflow data, not wrapped objects
         git_by_name = {}
-        for gw in git_workflows:
-            # The workflow data is the dict itself, not wrapped in a "workflow" key
+        for wf_id, gw in git_workflows_map.items():
+            # The workflow data is the dict itself
             name = gw.get("name", "")
             if name:
                 git_by_name[name] = gw
@@ -855,6 +891,15 @@ async def upload_workflows(
                 branch=env_config.get("git_branch", "")
             )
 
+        env_type = None
+        if github_service and github_service.is_configured():
+            env_type = env_config.get("n8n_type")
+            if not env_type:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Environment type is required for GitHub workflow operations. Set the environment type and try again.",
+                )
+
         uploaded_workflows = []
         errors = []
 
@@ -875,7 +920,8 @@ async def upload_workflows(
                                         adapter,
                                         github_service,
                                         MOCK_TENANT_ID,
-                                        env_config.get("id")
+                                        env_config.get("id"),
+                                        environment_type=env_type
                                     )
                                     if result["success"]:
                                         uploaded_workflows.append(result["workflow"])
@@ -890,7 +936,8 @@ async def upload_workflows(
                         adapter,
                         github_service,
                         MOCK_TENANT_ID,
-                        env_config.get("id")
+                        env_config.get("id"),
+                        environment_type=env_type
                     )
                     if result["success"]:
                         uploaded_workflows.append(result["workflow"])
@@ -922,7 +969,8 @@ async def _upload_single_workflow(
     adapter,  # ProviderAdapter
     github_service: GitHubService,
     tenant_id: str,
-    environment_id: str = None
+    environment_id: str = None,
+    environment_type: str = None
 ) -> Dict[str, Any]:
     """Helper function to upload a single workflow"""
     try:
@@ -941,13 +989,14 @@ async def _upload_single_workflow(
         }
         await db_service.create_workflow_snapshot(snapshot_data)
 
-        # Sync to GitHub if configured
+        # Sync to GitHub if configured (using environment type key folder)
         if github_service and github_service.is_configured():
             try:
                 await github_service.sync_workflow_to_github(
                     workflow_id=created_workflow.get("id"),
                     workflow_name=created_workflow.get("name"),
-                    workflow_data=created_workflow
+                    workflow_data=created_workflow,
+                    environment_type=environment_type
                 )
             except Exception as github_error:
                 print(f"GitHub sync failed: {str(github_error)}")
@@ -1017,7 +1066,7 @@ async def activate_workflow(
                 new_value={"active": True},
                 metadata={
                     "environment_id": env_config.get("id"),
-                    "environment_name": env_config.get("name")
+                    "environment_name": env_config.get("n8n_name") or env_config.get("name")
                 }
             )
         except Exception:
@@ -1074,7 +1123,7 @@ async def deactivate_workflow(
                 new_value={"active": False},
                 metadata={
                     "environment_id": env_config.get("id"),
-                    "environment_name": env_config.get("name")
+                    "environment_name": env_config.get("n8n_name") or env_config.get("name")
                 }
             )
         except Exception:
@@ -1279,7 +1328,7 @@ async def delete_workflow(
                 provider=env_config.get("provider", "n8n"),  # Provider context
                 metadata={
                     "environment_id": env_config.get("id"),
-                    "environment_name": env_config.get("name")
+                    "environment_name": env_config.get("n8n_name") or env_config.get("name")
                 }
             )
         except Exception:
@@ -1380,8 +1429,14 @@ async def get_workflow_drift(
                 "message": "GitHub is not properly configured"
             }
 
-        # Fetch workflow from GitHub by name
-        git_result = await github_service.get_workflow_by_name(workflow_name)
+        # Fetch workflow from GitHub by name (using environment type key for folder path)
+        env_type = env_config.get("n8n_type")
+        if not env_type:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Environment type is required for GitHub workflow operations. Set the environment type and try again.",
+            )
+        git_result = await github_service.get_workflow_by_name(workflow_name, environment_type=env_type)
 
         if git_result is None:
             # Workflow not found in GitHub

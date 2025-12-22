@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useParams, useNavigate, Link } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
@@ -84,6 +84,12 @@ const planColors: Record<string, string> = {
 };
 
 export function TenantDetailPage() {
+  useEffect(() => {
+    document.title = 'Tenant Details - n8n Ops';
+    return () => {
+      document.title = 'n8n Ops';
+    };
+  }, []);
   const { tenantId } = useParams<{ tenantId: string }>();
   const navigate = useNavigate();
   const queryClient = useQueryClient();

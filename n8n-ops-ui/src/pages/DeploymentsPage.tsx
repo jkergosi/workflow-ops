@@ -1,11 +1,12 @@
 // @ts-nocheck
 // TODO: Fix TypeScript errors in this file
 import { useState, useEffect } from 'react';
-import { useNavigate, useLocation } from 'react-router-dom';
-import { useQuery } from '@tanstack/react-query';
+import { useNavigate, useLocation, useSearchParams } from 'react-router-dom';
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import {
   Table,
   TableBody,
@@ -16,9 +17,18 @@ import {
 } from '@/components/ui/table';
 import { apiClient } from '@/lib/api-client';
 import { useDeploymentsSSE } from '@/lib/use-deployments-sse';
-import { Rocket, ArrowRight, Clock, CheckCircle, AlertCircle, XCircle, Loader2, Trash2, Radio } from 'lucide-react';
-import type { Deployment } from '@/types';
-import { useMutation, useQueryClient } from '@tanstack/react-query';
+import { Rocket, ArrowRight, Clock, CheckCircle, AlertCircle, XCircle, Loader2, Trash2, Radio, RotateCcw, GitBranch, Plus, Edit, Copy, PlayCircle, PauseCircle } from 'lucide-react';
+import type { Deployment, Pipeline } from '@/types';
+import { Checkbox } from '@/components/ui/checkbox';
+import { Label } from '@/components/ui/label';
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog';
 import { toast } from 'sonner';
 import { Link } from 'react-router-dom';
 import {
@@ -35,14 +45,29 @@ import {
 export function DeploymentsPage() {
   const navigate = useNavigate();
   const location = useLocation();
+  const [searchParams, setSearchParams] = useSearchParams();
   const queryClient = useQueryClient();
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const [deploymentToDelete, setDeploymentToDelete] = useState<Deployment | null>(null);
+  const [rerunDialogOpen, setRerunDialogOpen] = useState(false);
+  const [deploymentToRerun, setDeploymentToRerun] = useState<Deployment | null>(null);
+  const [deletePipelineDialogOpen, setDeletePipelineDialogOpen] = useState(false);
+  const [pipelineToDelete, setPipelineToDelete] = useState<Pipeline | null>(null);
+  const [showInactivePipelines, setShowInactivePipelines] = useState(true);
+  
+  const activeTab = searchParams.get('tab') || 'deployments';
 
   // Force refetch when navigating to this page (e.g., after creating a deployment)
   useEffect(() => {
     queryClient.invalidateQueries({ queryKey: ['deployments'] });
   }, [location.key, queryClient]);
+
+  useEffect(() => {
+    document.title = 'Deployments - n8n Ops';
+    return () => {
+      document.title = 'n8n Ops';
+    };
+  }, []);
 
   const { data: deploymentsData, isLoading } = useQuery({
     queryKey: ['deployments'],
@@ -61,9 +86,10 @@ export function DeploymentsPage() {
     queryFn: () => apiClient.getEnvironments(),
   });
 
-  const { data: pipelines } = useQuery({
-    queryKey: ['pipelines'],
-    queryFn: () => apiClient.getPipelines(),
+  const { data: pipelines, isLoading: pipelinesLoading } = useQuery({
+    queryKey: ['pipelines', showInactivePipelines],
+    queryFn: () => apiClient.getPipelines({ includeInactive: showInactivePipelines }),
+    enabled: activeTab === 'pipelines', // Lazy-load: only fetch when Pipelines tab is active
   });
 
   const deployments = deploymentsData?.data?.deployments || [];
@@ -168,6 +194,20 @@ export function DeploymentsPage() {
     },
   });
 
+  const rerunMutation = useMutation({
+    mutationFn: (deploymentId: string) => apiClient.rerunDeployment(deploymentId),
+    onSuccess: (data) => {
+      queryClient.invalidateQueries({ queryKey: ['deployments'] });
+      toast.success(data.data.message || 'Deployment rerun started successfully');
+      setRerunDialogOpen(false);
+      setDeploymentToRerun(null);
+      navigate(`/deployments/${data.data.deploymentId}`);
+    },
+    onError: (error: any) => {
+      toast.error(error?.response?.data?.detail || 'Failed to rerun deployment');
+    },
+  });
+
   const handleDeleteClick = (e: React.MouseEvent, deployment: Deployment) => {
     e.stopPropagation();
     setDeploymentToDelete(deployment);
@@ -180,20 +220,127 @@ export function DeploymentsPage() {
     }
   };
 
+  const handleRerunClick = (e: React.MouseEvent, deployment: Deployment) => {
+    e.stopPropagation();
+    setDeploymentToRerun(deployment);
+    setRerunDialogOpen(true);
+  };
+
+  const handleConfirmRerun = () => {
+    if (deploymentToRerun) {
+      rerunMutation.mutate(deploymentToRerun.id);
+    }
+  };
+
+  const canRerunDeployment = (deployment: Deployment) => {
+    return ['failed', 'canceled', 'success'].includes(deployment.status);
+  };
+
+  const deletePipelineMutation = useMutation({
+    mutationFn: (id: string) => apiClient.deletePipeline(id),
+    onSuccess: () => {
+      toast.success('Pipeline deleted successfully');
+      queryClient.invalidateQueries({ queryKey: ['pipelines'] });
+      setDeletePipelineDialogOpen(false);
+      setPipelineToDelete(null);
+    },
+    onError: () => {
+      toast.error('Failed to delete pipeline');
+    },
+  });
+
+  const togglePipelineActiveMutation = useMutation({
+    mutationFn: ({ id, isActive }: { id: string; isActive: boolean }) =>
+      apiClient.updatePipeline(id, { isActive }),
+    onSuccess: (_, variables) => {
+      toast.success(`Pipeline ${variables.isActive ? 'activated' : 'deactivated'} successfully`);
+      queryClient.invalidateQueries({ queryKey: ['pipelines'] });
+    },
+    onError: () => {
+      toast.error('Failed to update pipeline status');
+    },
+  });
+
+  const duplicatePipelineMutation = useMutation({
+    mutationFn: (pipeline: Pipeline) =>
+      apiClient.createPipeline({
+        name: `${pipeline.name} (Copy)`,
+        description: pipeline.description,
+        isActive: false,
+        environmentIds: pipeline.environmentIds,
+        stages: pipeline.stages,
+      }),
+    onSuccess: () => {
+      toast.success('Pipeline duplicated successfully');
+      queryClient.invalidateQueries({ queryKey: ['pipelines'] });
+    },
+    onError: () => {
+      toast.error('Failed to duplicate pipeline');
+    },
+  });
+
+  const getEnvironmentPath = (pipeline: Pipeline): string => {
+    if (!environments?.data || !pipeline.environmentIds || pipeline.environmentIds.length === 0) return 'N/A';
+    const envNames = pipeline.environmentIds
+      .map((id) => {
+        const env = environments.data.find((e) => e.id === id);
+        return env?.name || id;
+      })
+      .join(' → ');
+    return envNames;
+  };
+
+  const handleDeletePipelineClick = (pipeline: Pipeline) => {
+    setPipelineToDelete(pipeline);
+    setDeletePipelineDialogOpen(true);
+  };
+
+  const handleDeletePipelineConfirm = () => {
+    if (pipelineToDelete) {
+      deletePipelineMutation.mutate(pipelineToDelete.id);
+    }
+  };
+
+  const handleTabChange = (value: string) => {
+    setSearchParams({ tab: value });
+  };
+
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-3xl font-bold">Deployments</h1>
           <p className="text-muted-foreground">
-            Track workflow deployments across environments
+            Track workflow deployments and manage pipelines
           </p>
         </div>
-        <Button onClick={handlePromoteWorkflows}>
-          <Rocket className="h-4 w-4 mr-2" />
-          New Deployment
-        </Button>
+        {activeTab === 'deployments' && (
+          <Button onClick={handlePromoteWorkflows}>
+            <Rocket className="h-4 w-4 mr-2" />
+            New Deployment
+          </Button>
+        )}
+        {activeTab === 'pipelines' && (
+          <Button onClick={() => navigate('/pipelines/new')}>
+            <Plus className="h-4 w-4 mr-2" />
+            Create Pipeline
+          </Button>
+        )}
       </div>
+
+      <Tabs value={activeTab} onValueChange={handleTabChange} className="space-y-6">
+        <TabsList>
+          <TabsTrigger value="deployments" className="flex items-center gap-2">
+            <Rocket className="h-4 w-4" />
+            Deployments
+          </TabsTrigger>
+          <TabsTrigger value="pipelines" className="flex items-center gap-2">
+            <GitBranch className="h-4 w-4" />
+            Pipelines
+          </TabsTrigger>
+        </TabsList>
+
+        <TabsContent value="deployments" className="space-y-6">
 
       {/* Summary Cards */}
       <div className="grid gap-6 md:grid-cols-4">
@@ -337,16 +484,32 @@ export function DeploymentsPage() {
                         {formatDuration(deployment.startedAt, deployment.finishedAt)}
                       </TableCell>
                       <TableCell>
-                        <Button
-                          type="button"
-                          variant="ghost"
-                          size="icon"
-                          onClick={(e) => handleDeleteClick(e, deployment)}
-                          disabled={deployment.status === 'running'}
-                          className="h-8 w-8"
-                        >
-                          <Trash2 className="h-4 w-4" />
-                        </Button>
+                        <div className="flex items-center gap-1">
+                          {canRerunDeployment(deployment) && (
+                            <Button
+                              type="button"
+                              variant="ghost"
+                              size="icon"
+                              onClick={(e) => handleRerunClick(e, deployment)}
+                              disabled={rerunMutation.isPending}
+                              className="h-8 w-8"
+                              title="Rerun deployment"
+                            >
+                              <RotateCcw className="h-4 w-4" />
+                            </Button>
+                          )}
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="icon"
+                            onClick={(e) => handleDeleteClick(e, deployment)}
+                            disabled={deployment.status === 'running'}
+                            className="h-8 w-8"
+                            title="Delete deployment"
+                          >
+                            <Trash2 className="h-4 w-4" />
+                          </Button>
+                        </div>
                       </TableCell>
                     </TableRow>
                   );
@@ -391,6 +554,227 @@ export function DeploymentsPage() {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+
+      {/* Rerun Confirmation Dialog */}
+      <AlertDialog open={rerunDialogOpen} onOpenChange={setRerunDialogOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Rerun Deployment</AlertDialogTitle>
+            <AlertDialogDescription>
+              This will create a new deployment using the same pipeline, source/target environments, and workflow selections as the original.
+              All gates (drift check, credential preflight, approvals) will be re-run, and fresh pre/post snapshots will be created.
+              {deploymentToRerun && (
+                <div className="mt-4 space-y-2">
+                  <div className="p-3 bg-muted rounded-md space-y-1">
+                    <p className="font-medium text-sm">Deployment Summary:</p>
+                    <p className="text-sm">
+                      <span className="font-medium">Pipeline:</span> {getPipelineName(deploymentToRerun.pipelineId)}
+                    </p>
+                    <p className="text-sm">
+                      <span className="font-medium">Stage:</span>{' '}
+                      {getEnvironmentName(deploymentToRerun.sourceEnvironmentId)} →{' '}
+                      {getEnvironmentName(deploymentToRerun.targetEnvironmentId)}
+                    </p>
+                    <p className="text-sm">
+                      <span className="font-medium">Workflows:</span> {deploymentToRerun.summaryJson?.total || 0} workflow(s)
+                    </p>
+                  </div>
+                  <div className="p-3 bg-blue-50 dark:bg-blue-950/30 rounded-md">
+                    <p className="text-sm font-medium text-blue-900 dark:text-blue-100">Gates that will run:</p>
+                    <ul className="text-sm text-blue-800 dark:text-blue-200 mt-1 list-disc list-inside space-y-0.5">
+                      <li>Drift check</li>
+                      <li>Credential preflight validation</li>
+                      <li>Approvals (if required)</li>
+                    </ul>
+                  </div>
+                </div>
+              )}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={handleConfirmRerun}
+              disabled={rerunMutation.isPending}
+            >
+              {rerunMutation.isPending ? 'Starting...' : 'Rerun Deployment'}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+        </TabsContent>
+
+        <TabsContent value="pipelines" className="space-y-6">
+          <Card>
+            <CardHeader>
+              <div className="flex items-center justify-between">
+                <div>
+                  <CardTitle>Deployment Pipelines</CardTitle>
+                  <CardDescription>
+                    Manage pipelines that define how workflows are deployed between environments
+                  </CardDescription>
+                </div>
+                <div className="flex items-center gap-2">
+                  <Checkbox
+                    id="show-inactive"
+                    checked={showInactivePipelines}
+                    onCheckedChange={(checked) => setShowInactivePipelines(checked === true)}
+                  />
+                  <Label
+                    htmlFor="show-inactive"
+                    className="text-sm font-normal cursor-pointer text-muted-foreground"
+                  >
+                    Show inactive pipelines
+                  </Label>
+                </div>
+              </div>
+            </CardHeader>
+            <CardContent>
+              {pipelinesLoading ? (
+                <div className="text-center py-8">Loading pipelines...</div>
+              ) : !pipelines?.data || pipelines.data.length === 0 ? (
+                <div className="text-center py-8 text-muted-foreground">
+                  <p className="mb-4">No pipelines found</p>
+                  <Button onClick={() => navigate('/pipelines/new')}>
+                    <Plus className="h-4 w-4 mr-2" />
+                    Create Your First Pipeline
+                  </Button>
+                </div>
+              ) : (
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>Pipeline Name</TableHead>
+                      <TableHead>Environment Path</TableHead>
+                      <TableHead>Status</TableHead>
+                      <TableHead>Last Modified</TableHead>
+                      <TableHead>Actions</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {pipelines.data.map((pipeline) => (
+                      <TableRow 
+                        key={pipeline.id}
+                        className={!pipeline.isActive ? 'opacity-60' : ''}
+                      >
+                        <TableCell className="font-medium">
+                          <Link
+                            to={`/pipelines/${pipeline.id}`}
+                            className={`${!pipeline.isActive ? 'text-muted-foreground' : 'text-primary'} hover:underline`}
+                          >
+                            {pipeline.name}
+                          </Link>
+                          {pipeline.description && (
+                            <p className="text-sm text-muted-foreground mt-1">
+                              {pipeline.description}
+                            </p>
+                          )}
+                        </TableCell>
+                        <TableCell>
+                          <div className="flex items-center gap-2 text-sm">
+                            {getEnvironmentPath(pipeline)}
+                          </div>
+                        </TableCell>
+                        <TableCell>
+                          {pipeline.isActive ? (
+                            <Badge variant="success" className="flex items-center gap-1 w-fit">
+                              <PlayCircle className="h-3 w-3" />
+                              Active
+                            </Badge>
+                          ) : (
+                            <Badge variant="outline" className="flex items-center gap-1 w-fit">
+                              <PauseCircle className="h-3 w-3" />
+                              Inactive
+                            </Badge>
+                          )}
+                        </TableCell>
+                        <TableCell className="text-sm text-muted-foreground">
+                          {new Date(pipeline.lastModifiedAt || pipeline.updatedAt).toLocaleDateString()}
+                        </TableCell>
+                        <TableCell>
+                          <div className="flex gap-2">
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              onClick={() => navigate(`/pipelines/${pipeline.id}`)}
+                              title="Edit pipeline"
+                            >
+                              <Edit className="h-3 w-3 mr-1" />
+                              Edit
+                            </Button>
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              onClick={() => duplicatePipelineMutation.mutate(pipeline)}
+                              title="Duplicate pipeline"
+                              disabled={duplicatePipelineMutation.isPending}
+                            >
+                              <Copy className="h-3 w-3 mr-1" />
+                              Duplicate
+                            </Button>
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              onClick={() => togglePipelineActiveMutation.mutate({ id: pipeline.id, isActive: !pipeline.isActive })}
+                              title={pipeline.isActive ? 'Deactivate' : 'Activate'}
+                              disabled={togglePipelineActiveMutation.isPending}
+                            >
+                              {pipeline.isActive ? (
+                                <>
+                                  <PauseCircle className="h-3 w-3 mr-1" />
+                                  Deactivate
+                                </>
+                              ) : (
+                                <>
+                                  <PlayCircle className="h-3 w-3 mr-1" />
+                                  Activate
+                                </>
+                              )}
+                            </Button>
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              onClick={() => handleDeletePipelineClick(pipeline)}
+                              title="Delete pipeline"
+                            >
+                              <Trash2 className="h-3 w-3 mr-1" />
+                              Delete
+                            </Button>
+                          </div>
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              )}
+            </CardContent>
+          </Card>
+
+          {/* Delete Pipeline Confirmation Dialog */}
+          <Dialog open={deletePipelineDialogOpen} onOpenChange={setDeletePipelineDialogOpen}>
+            <DialogContent className="max-w-md">
+              <DialogHeader>
+                <DialogTitle>Delete Pipeline</DialogTitle>
+                <DialogDescription>
+                  Are you sure you want to delete "{pipelineToDelete?.name}"? This action cannot be undone.
+                </DialogDescription>
+              </DialogHeader>
+              <DialogFooter>
+                <Button variant="outline" onClick={() => setDeletePipelineDialogOpen(false)}>
+                  Cancel
+                </Button>
+                <Button
+                  variant="destructive"
+                  onClick={handleDeletePipelineConfirm}
+                  disabled={deletePipelineMutation.isPending}
+                >
+                  {deletePipelineMutation.isPending ? 'Deleting...' : 'Yes, Delete'}
+                </Button>
+              </DialogFooter>
+            </DialogContent>
+          </Dialog>
+        </TabsContent>
+      </Tabs>
     </div>
   );
 }

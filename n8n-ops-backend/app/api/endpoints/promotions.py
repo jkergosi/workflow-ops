@@ -959,10 +959,11 @@ async def get_workflow_diff(
 
     except ValueError as e:
         logger.error(f"ValueError in get_workflow_diff: {str(e)}")
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=str(e)
-        )
+        msg = str(e)
+        # Environment type missing is a configuration/user error, not "not found"
+        if "Environment type is required" in msg:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=msg)
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=msg)
     except HTTPException:
         raise
     except Exception as e:
@@ -1058,6 +1059,8 @@ async def create_snapshot(
             created_at=datetime.utcnow()
         )
 
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -1083,6 +1086,8 @@ async def check_drift(
 
         return drift_check
 
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -1127,6 +1132,8 @@ async def compare_workflows(
             "data": [ws.dict() for ws in selections]
         }
 
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
     except HTTPException:
         raise
     except Exception as e:

@@ -36,6 +36,13 @@ type SortField = 'name' | 'description' | 'active' | 'executions' | 'updatedAt';
 type SortDirection = 'asc' | 'desc';
 
 export function WorkflowsPage() {
+  useEffect(() => {
+    document.title = 'Workflows - n8n Ops';
+    return () => {
+      document.title = 'n8n Ops';
+    };
+  }, []);
+
   const queryClient = useQueryClient();
   const selectedEnvironment = useAppStore((state) => state.selectedEnvironment);
   const setSelectedEnvironment = useAppStore((state) => state.setSelectedEnvironment);

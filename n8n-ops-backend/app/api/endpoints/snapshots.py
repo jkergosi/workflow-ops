@@ -164,8 +164,13 @@ async def create_manual_snapshot(
                 detail="No workflows found in environment to backup",
             )
 
-        # Export all workflows to GitHub
-        env_type = env_config.get("n8n_type", "dev")
+        # Export all workflows to GitHub (using environment type key for folder path)
+        env_type = env_config.get("n8n_type")
+        if not env_type:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Environment type is required for GitHub workflow operations. Set the environment type and try again.",
+            )
         commit_sha = None
         workflows_synced = 0
         reason = request.reason or "Manual backup"
@@ -174,7 +179,7 @@ async def create_manual_snapshot(
             try:
                 workflow_id = workflow.get("id")
                 full_workflow = await adapter.get_workflow(workflow_id)
-                
+
                 await github_service.sync_workflow_to_github(
                     workflow_id=workflow_id,
                     workflow_name=full_workflow.get("name"),
@@ -193,9 +198,10 @@ async def create_manual_snapshot(
                 detail="Failed to sync any workflows to GitHub",
             )
 
-        # Get the latest commit SHA
+        # Get the latest commit SHA (use sanitized environment type folder)
+        sanitized_folder = github_service._sanitize_foldername(env_type)
         try:
-            commits = github_service.repo.get_commits(path=f"workflows/{env_type}", sha=github_service.branch)
+            commits = github_service.repo.get_commits(path=f"workflows/{sanitized_folder}", sha=github_service.branch)
             if commits:
                 commit_sha = commits[0].sha
         except Exception as e:
@@ -344,9 +350,14 @@ async def compare_snapshots(
             branch=env_config.get("git_branch", "main")
         )
 
-        env_type = env_config.get("n8n_type", "dev")
+        env_type = env_config.get("n8n_type")
+        if not env_type:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Environment type is required for GitHub workflow operations. Set the environment type and try again.",
+            )
 
-        # Get workflows at each snapshot's commit
+        # Get workflows at each snapshot's commit (using environment type folder path)
         workflows1 = await github_service.get_all_workflows_from_github(
             environment_type=env_type,
             commit_sha=snap1.get("git_commit_sha")
@@ -515,9 +526,16 @@ async def restore_snapshot(
         # Create provider adapter
         adapter = ProviderRegistry.get_adapter_for_environment(env_config)
 
-        # Get all workflows from GitHub at the specific commit SHA
+        env_type = env_config.get("n8n_type")
+        if not env_type:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Environment type is required for GitHub workflow operations. Set the environment type and try again.",
+            )
+
+        # Get all workflows from GitHub at the specific commit SHA (using environment type folder path)
         workflows = await github_service.get_all_workflows_from_github(
-            environment_type=env_config.get("n8n_type", "dev"),
+            environment_type=env_type,
             commit_sha=commit_sha
         )
 

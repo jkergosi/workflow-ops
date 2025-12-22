@@ -50,6 +50,12 @@ import { useAppStore } from '@/store/use-app-store';
 import type { Snapshot, SnapshotComparison } from '@/types';
 
 export function SnapshotsPage() {
+  useEffect(() => {
+    document.title = 'Snapshots - n8n Ops';
+    return () => {
+      document.title = 'n8n Ops';
+    };
+  }, []);
   const queryClient = useQueryClient();
   const [searchParams, setSearchParams] = useSearchParams();
   const selectedEnvironment = useAppStore((state) => state.selectedEnvironment);

@@ -2,8 +2,88 @@
 // Kept for backward compatibility but can be any string or undefined
 export type EnvironmentType = string | undefined;
 
+export interface EnvironmentTypeConfig {
+  id: string;
+  tenantId: string;
+  key: string;
+  label: string;
+  sortOrder: number;
+  isActive: boolean;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
 // Provider type for multi-provider support (n8n, Make.com, etc.)
 export type Provider = "n8n" | "make";
+
+// Provider configuration for UI settings
+export interface ProviderConfig {
+  id: Provider;
+  displayName: string;
+}
+
+// Provider as purchasable product
+export interface ProviderInfo {
+  id: string;
+  name: string;
+  display_name: string;
+  icon?: string;
+  description?: string;
+  is_active: boolean;
+  created_at?: string;
+}
+
+export interface ProviderPlan {
+  id: string;
+  provider_id: string;
+  name: string;
+  display_name: string;
+  description?: string;
+  price_monthly: number;
+  price_yearly: number;
+  stripe_price_id_monthly?: string;
+  stripe_price_id_yearly?: string;
+  features: Record<string, boolean | string | number>;
+  max_environments: number;
+  max_workflows: number;
+  is_active: boolean;
+  sort_order: number;
+  created_at?: string;
+}
+
+export interface ProviderWithPlans extends ProviderInfo {
+  plans: ProviderPlan[];
+}
+
+export interface TenantProviderSubscription {
+  id: string;
+  tenant_id: string;
+  provider_id: string;
+  provider: ProviderInfo;
+  plan_id: string;
+  plan: ProviderPlan;
+  stripe_subscription_id?: string;
+  status: 'active' | 'canceled' | 'past_due' | 'trialing';
+  billing_cycle: 'monthly' | 'yearly';
+  current_period_start?: string;
+  current_period_end?: string;
+  cancel_at_period_end: boolean;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface ProviderCheckoutRequest {
+  provider_id: string;
+  plan_id: string;
+  billing_cycle: 'monthly' | 'yearly';
+  success_url: string;
+  cancel_url: string;
+}
+
+export interface ProviderCheckoutResponse {
+  checkout_url: string;
+  session_id: string;
+}
 
 export interface Environment {
   id: string;
@@ -644,6 +724,29 @@ export interface Promotion {
 export type TimeRange = '1h' | '6h' | '24h' | '7d' | '30d';
 export type EnvironmentStatus = 'healthy' | 'degraded' | 'unreachable';
 export type DriftState = 'in_sync' | 'drift' | 'unknown';
+export type SystemHealthStatus = 'healthy' | 'degraded' | 'critical';
+
+// Section 1: System Status
+export interface SystemStatusInsight {
+  message: string;
+  severity: 'info' | 'warning' | 'critical';
+  linkType?: 'workflow' | 'deployment' | 'error' | 'environment';
+  linkId?: string;
+}
+
+export interface SystemStatus {
+  status: SystemHealthStatus;
+  insights: SystemStatusInsight[];
+  failureDeltaPercent?: number;
+  failingWorkflowsCount: number;
+  lastFailedDeployment?: string;
+}
+
+// Section 2: KPI with Sparklines
+export interface SparklineDataPoint {
+  timestamp: string;
+  value: number;
+}
 
 export interface KPIMetrics {
   totalExecutions: number;
@@ -654,8 +757,31 @@ export interface KPIMetrics {
   p95DurationMs?: number;
   deltaExecutions?: number;
   deltaSuccessRate?: number;
+  // Sparkline data
+  executionsSparkline?: SparklineDataPoint[];
+  successRateSparkline?: SparklineDataPoint[];
+  durationSparkline?: SparklineDataPoint[];
+  failuresSparkline?: SparklineDataPoint[];
 }
 
+// Section 3: Error Intelligence
+export interface ErrorGroup {
+  errorType: string;
+  count: number;
+  firstSeen: string;
+  lastSeen: string;
+  affectedWorkflowCount: number;
+  affectedWorkflowIds: string[];
+  sampleMessage?: string;
+  isClassified?: boolean; // False if error type is a fallback, UI should show sample_message inline
+}
+
+export interface ErrorIntelligence {
+  errors: ErrorGroup[];
+  totalErrorCount: number;
+}
+
+// Section 4: Workflow Performance with Risk
 export interface WorkflowPerformance {
   workflowId: string;
   workflowName: string;
@@ -665,6 +791,18 @@ export interface WorkflowPerformance {
   errorRate: number;
   avgDurationMs: number;
   p95DurationMs?: number;
+  // Risk fields
+  riskScore?: number;
+  lastFailureAt?: string;
+  primaryErrorType?: string;
+}
+
+// Section 5: Environment Health with Credential Health
+export interface CredentialHealth {
+  totalCount: number;
+  validCount: number;
+  invalidCount: number;
+  unknownCount: number;
 }
 
 export interface EnvironmentHealthData {
@@ -677,9 +815,20 @@ export interface EnvironmentHealthData {
   activeWorkflows: number;
   totalWorkflows: number;
   lastDeploymentAt?: string;
+  lastDeploymentStatus?: string;
   lastSnapshotAt?: string;
   driftState: DriftState;
+  driftWorkflowCount?: number;
   lastCheckedAt?: string;
+  credentialHealth?: CredentialHealth;
+  apiReachable?: boolean;
+}
+
+// Section 6: Deployments with Impact
+export interface ImpactedWorkflow {
+  workflowId: string;
+  workflowName: string;
+  changeType: string;
 }
 
 export interface RecentDeployment {
@@ -690,6 +839,7 @@ export interface RecentDeployment {
   status: string;
   startedAt: string;
   finishedAt?: string;
+  impactedWorkflows?: ImpactedWorkflow[];
 }
 
 export interface PromotionSyncStats {
@@ -703,8 +853,11 @@ export interface PromotionSyncStats {
   recentDeployments: RecentDeployment[];
 }
 
+// Complete Overview
 export interface ObservabilityOverview {
+  systemStatus?: SystemStatus;
   kpiMetrics: KPIMetrics;
+  errorIntelligence?: ErrorIntelligence;
   workflowPerformance: WorkflowPerformance[];
   environmentHealth: EnvironmentHealthData[];
   promotionSyncStats?: PromotionSyncStats;

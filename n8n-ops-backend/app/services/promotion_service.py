@@ -187,8 +187,10 @@ class PromotionService:
         if not github_service.is_configured():
             raise ValueError("GitHub is not properly configured")
 
-        # Export all workflows to GitHub
-        env_type = env_config.get("n8n_type", "dev")
+        # Export all workflows to GitHub (using environment type key for folder path)
+        env_type = env_config.get("n8n_type")
+        if not env_type:
+            raise ValueError("Environment type is required for GitHub workflow operations")
         commit_sha = None
         workflows_synced = 0
 
@@ -196,7 +198,7 @@ class PromotionService:
             try:
                 workflow_id = workflow.get("id")
                 full_workflow = await adapter.get_workflow(workflow_id)
-                
+
                 # Sync to GitHub with environment-specific path
                 await github_service.sync_workflow_to_github(
                     workflow_id=workflow_id,
@@ -210,9 +212,10 @@ class PromotionService:
                 logger.error(f"Failed to sync workflow {workflow.get('id')}: {str(e)}")
                 continue
 
-        # Get the latest commit SHA
+        # Get the latest commit SHA (use sanitized environment type folder)
+        sanitized_folder = github_service._sanitize_foldername(env_type)
         try:
-            commits = github_service.repo.get_commits(path=f"workflows/{env_type}", sha=github_service.branch)
+            commits = github_service.repo.get_commits(path=f"workflows/{sanitized_folder}", sha=github_service.branch)
             if commits:
                 commit_sha = commits[0].sha
         except Exception as e:
@@ -305,9 +308,11 @@ class PromotionService:
             branch=env_config.get("git_branch", "main")
         )
 
-        env_type = env_config.get("n8n_type", "dev")
-        github_workflows = await github_service.get_all_workflows_from_github()
-        github_workflow_map = {wf.get("id"): wf for wf in github_workflows}
+        env_type = env_config.get("n8n_type")
+        if not env_type:
+            raise ValueError("Environment type is required for GitHub workflow operations")
+        # get_all_workflows_from_github returns Dict[workflow_id, workflow_data]
+        github_workflow_map = await github_service.get_all_workflows_from_github(environment_type=env_type)
 
         # Compare
         drift_details = []
@@ -491,15 +496,17 @@ class PromotionService:
         if not source_env or not target_env:
             return []
 
-        # Get workflows from GitHub for both environments
+        # Get workflows from GitHub for both environments (using environment type keys for folder paths)
         source_github = self._get_github_service(source_env)
         target_github = self._get_github_service(target_env)
 
-        source_workflows = await source_github.get_all_workflows_from_github()
-        target_workflows = await target_github.get_all_workflows_from_github()
+        source_env_type = source_env.get("n8n_type")
+        target_env_type = target_env.get("n8n_type")
+        if not source_env_type or not target_env_type:
+            raise ValueError("Environment type is required for GitHub workflow operations")
 
-        source_map = {wf.get("id"): wf for wf in source_workflows}
-        target_map = {wf.get("id"): wf for wf in target_workflows}
+        source_map = await source_github.get_all_workflows_from_github(environment_type=source_env_type)
+        target_map = await target_github.get_all_workflows_from_github(environment_type=target_env_type)
 
         selections = []
 
@@ -609,14 +616,16 @@ class PromotionService:
         # Optimize by fetching in parallel
         source_github = self._get_github_service(source_env)
         target_github = self._get_github_service(target_env)
-        
-        source_env_type = source_env.get("n8n_type", "dev")
-        target_env_type = target_env.get("n8n_type", "dev")
-        
+
+        source_env_type = source_env.get("n8n_type")
+        target_env_type = target_env.get("n8n_type")
+        if not source_env_type or not target_env_type:
+            raise ValueError("Environment type is required for GitHub workflow operations")
+
         # Fetch workflows in parallel for better performance
         source_workflows_dict, target_workflows_dict = await asyncio.gather(
             source_github.get_all_workflows_from_github(environment_type=source_env_type),
-            target_github.get_all_workflows_from_github(environment_type=target_env_type)
+            target_github.get_all_workflows_from_github(environment_type=target_env_type),
         )
         
         # get_all_workflows_from_github returns Dict[str, Dict[str, Any]] mapping workflow_id to workflow_data
@@ -656,6 +665,33 @@ class PromotionService:
                 target_wf = None
 
         workflow_name = source_wf.get("name", "Unknown")
+
+        # If still not found by ID, try matching by workflow NAME in target
+        # (workflows promoted across environments can have different IDs)
+        if not target_wf and source_wf:
+            source_name = source_wf.get("name")
+            if source_name:
+                logger.info(f"Trying name-based lookup for '{source_name}' in target...")
+
+                # First try GitHub by name (check all workflows in target env)
+                for wf_id, wf_data in target_workflows_dict.items():
+                    if wf_data.get("name") == source_name:
+                        target_wf = wf_data
+                        logger.info(f"Found target workflow by name in GitHub: {source_name} (ID: {wf_id})")
+                        break
+
+                # If not in GitHub, try N8N by name
+                if not target_wf:
+                    try:
+                        target_adapter = ProviderRegistry.get_adapter_for_environment(target_env)
+                        all_target_workflows = await target_adapter.get_workflows()
+                        for wf in all_target_workflows:
+                            if wf.get("name") == source_name:
+                                target_wf = wf
+                                logger.info(f"Found target workflow by name in N8N: {source_name}")
+                                break
+                    except Exception as e:
+                        logger.debug(f"Failed to search N8N by name: {e}")
 
         # Normalize workflows for comparison (same as compare_workflows)
         source_normalized = normalize_workflow_for_comparison(source_wf)
@@ -781,8 +817,10 @@ class PromotionService:
         
         # Get workflows from source to check their credentials
         source_github = self._get_github_service(source_env)
-        source_workflows = await source_github.get_all_workflows_from_github()
-        source_workflow_map = {wf.get("id"): wf for wf in source_workflows}
+        source_env_type = source_env.get("n8n_type")
+        if not source_env_type:
+            raise ValueError("Environment type is required for GitHub workflow operations")
+        source_workflow_map = await source_github.get_all_workflows_from_github(environment_type=source_env_type)
         
         # Check credentials for each selected workflow
         for selection in workflow_selections:
@@ -1177,9 +1215,11 @@ class PromotionService:
         warnings = []
         created_placeholders = []
 
-        # Get workflows from GitHub snapshot
-        source_workflows = await source_github.get_all_workflows_from_github()
-        source_workflow_map = {wf.get("id"): wf for wf in source_workflows}
+        # Get workflows from GitHub snapshot (using environment type folder path)
+        source_env_type = source_env.get("n8n_type")
+        if not source_env_type:
+            raise ValueError("Environment type is required for GitHub workflow operations")
+        source_workflow_map = await source_github.get_all_workflows_from_github(environment_type=source_env_type)
 
         # Track which workflows have placeholder credentials
         workflows_with_placeholders = set()

@@ -1,6 +1,6 @@
 // @ts-nocheck
 // TODO: Fix TypeScript errors in this file
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useEffect } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -21,6 +21,13 @@ import type { EnvironmentType } from '@/types';
 import { toast } from 'sonner';
 
 export function N8NUsersPage() {
+  useEffect(() => {
+    document.title = 'N8N Users - n8n Ops';
+    return () => {
+      document.title = 'n8n Ops';
+    };
+  }, []);
+
   const selectedEnvironment = useAppStore((state) => state.selectedEnvironment);
   const setSelectedEnvironment = useAppStore((state) => state.setSelectedEnvironment);
   const queryClient = useQueryClient();

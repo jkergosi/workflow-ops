@@ -113,6 +113,12 @@ const recentAlerts = [
 ];
 
 export function PerformancePage() {
+  useEffect(() => {
+    document.title = 'Performance - n8n Ops';
+    return () => {
+      document.title = 'n8n Ops';
+    };
+  }, []);
   const getStatusColor = (status: string) => {
     switch (status) {
       case 'healthy':

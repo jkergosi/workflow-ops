@@ -43,6 +43,13 @@ export function PipelineEditorPage() {
   const [stages, setStages] = useState<PipelineStage[]>([]);
 
   useEffect(() => {
+    document.title = isNew ? 'New Pipeline - n8n Ops' : 'Edit Pipeline - n8n Ops';
+    return () => {
+      document.title = 'n8n Ops';
+    };
+  }, [isNew]);
+
+  useEffect(() => {
     if (existingPipeline?.data) {
       const pipeline = existingPipeline.data;
       setFormData({

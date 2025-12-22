@@ -1,6 +1,6 @@
 // @ts-nocheck
 // TODO: Fix TypeScript errors in this file
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -38,6 +38,13 @@ import { apiClient } from '@/lib/api-client';
 import type { FeatureConfigAudit, FeatureAccessLog, Tenant } from '@/types';
 
 export function EntitlementsAuditPage() {
+  useEffect(() => {
+    document.title = 'Entitlements Audit - n8n Ops';
+    return () => {
+      document.title = 'n8n Ops';
+    };
+  }, []);
+
   const [activeTab, setActiveTab] = useState('config');
   const [searchTerm, setSearchTerm] = useState('');
   const [selectedTenantId, setSelectedTenantId] = useState<string>('');

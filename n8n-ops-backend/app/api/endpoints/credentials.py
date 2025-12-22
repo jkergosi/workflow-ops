@@ -1,6 +1,9 @@
 from fastapi import APIRouter, HTTPException, status
 from typing import List, Optional
 import json
+import logging
+
+logger = logging.getLogger(__name__)
 
 from app.services.database import db_service
 from app.services.provider_registry import ProviderRegistry
@@ -439,14 +442,27 @@ async def sync_credentials(environment_id: str):
         # Create provider adapter for this environment
         adapter = ProviderRegistry.get_adapter_for_environment(env)
 
+        # Test connection first
+        is_connected = await adapter.test_connection()
+        if not is_connected:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Cannot connect to provider instance. Please check environment configuration."
+            )
+
         # Fetch credentials from provider
         n8n_credentials = await adapter.get_credentials()
+        
+        if not n8n_credentials:
+            logger.warning(f"No credentials returned from N8N for environment {environment_id}")
+        
+        logger.info(f"Fetched {len(n8n_credentials) if n8n_credentials else 0} credentials from N8N for environment {environment_id}")
 
         # Sync to database
         results = await db_service.sync_credentials_from_n8n(
             MOCK_TENANT_ID,
             environment_id,
-            n8n_credentials
+            n8n_credentials or []
         )
 
         return {
@@ -458,6 +474,9 @@ async def sync_credentials(environment_id: str):
     except HTTPException:
         raise
     except Exception as e:
+        logger.error(f"Failed to sync credentials for environment {environment_id}: {str(e)}")
+        import traceback
+        logger.error(traceback.format_exc())
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to sync credentials: {str(e)}"

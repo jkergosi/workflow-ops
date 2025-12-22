@@ -42,6 +42,13 @@ import { InlineMappingDialog } from '@/components/promotion/InlineMappingDialog'
 import { WorkflowDiffDialog } from '@/components/promotion/WorkflowDiffDialog';
 
 export function PromotionPage() {
+  useEffect(() => {
+    document.title = 'New Deployment - n8n Ops';
+    return () => {
+      document.title = 'n8n Ops';
+    };
+  }, []);
+
   const navigate = useNavigate();
   const queryClient = useQueryClient();
 

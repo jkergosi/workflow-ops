@@ -161,7 +161,7 @@ describe('CredentialsPage', () => {
     it('should display page description', async () => {
       render(<CredentialsPage />);
 
-      expect(screen.getByText(/manage credentials for your n8n workflows/i)).toBeInTheDocument();
+      expect(screen.getByText(/manage physical credentials/i)).toBeInTheDocument();
     });
 
     it('should display Refresh button', async () => {
@@ -176,17 +176,17 @@ describe('CredentialsPage', () => {
       expect(screen.getByRole('button', { name: /sync from n8n/i })).toBeInTheDocument();
     });
 
-    it('should display Create Credential button', async () => {
+    it('should display Create Physical Credential button', async () => {
       render(<CredentialsPage />);
 
-      expect(screen.getByRole('button', { name: /create credential/i })).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: /create physical credential/i })).toBeInTheDocument();
     });
 
-    it('should display N8N Credentials card', async () => {
+    it('should display Credentials card', async () => {
       render(<CredentialsPage />);
 
       await waitFor(() => {
-        expect(screen.getByText('N8N Credentials')).toBeInTheDocument();
+        expect(screen.getAllByText('Credentials').length).toBeGreaterThan(0);
       });
     });
 
@@ -372,8 +372,8 @@ describe('CredentialsPage', () => {
     });
   });
 
-  describe('User Interactions - Create Credential', () => {
-    it('should open create dialog when clicking Create Credential button', async () => {
+  describe('User Interactions - Create Physical Credential', () => {
+    it('should open create dialog when clicking Create Physical Credential button', async () => {
       const user = userEvent.setup();
       render(<CredentialsPage />);
 
@@ -381,7 +381,7 @@ describe('CredentialsPage', () => {
         expect(screen.getByText('Slack Production')).toBeInTheDocument();
       });
 
-      const createButton = screen.getByRole('button', { name: /create credential/i });
+      const createButton = screen.getByRole('button', { name: /create physical credential/i });
       await user.click(createButton);
 
       await waitFor(() => {
@@ -389,7 +389,7 @@ describe('CredentialsPage', () => {
       });
 
       const dialog = screen.getByRole('dialog');
-      expect(within(dialog).getByText(/create credential/i)).toBeInTheDocument();
+      expect(within(dialog).getByText(/create physical credential/i)).toBeInTheDocument();
     });
 
     it('should have name input in create dialog', async () => {
@@ -400,7 +400,7 @@ describe('CredentialsPage', () => {
         expect(screen.getByText('Slack Production')).toBeInTheDocument();
       });
 
-      const createButton = screen.getByRole('button', { name: /create credential/i });
+      const createButton = screen.getByRole('button', { name: /create physical credential/i });
       await user.click(createButton);
 
       await waitFor(() => {
@@ -418,7 +418,7 @@ describe('CredentialsPage', () => {
         expect(screen.getByText('Slack Production')).toBeInTheDocument();
       });
 
-      const createButton = screen.getByRole('button', { name: /create credential/i });
+      const createButton = screen.getByRole('button', { name: /create physical credential/i });
       await user.click(createButton);
 
       await waitFor(() => {
@@ -437,7 +437,7 @@ describe('CredentialsPage', () => {
         expect(screen.getByText('Slack Production')).toBeInTheDocument();
       });
 
-      const createButton = screen.getByRole('button', { name: /create credential/i });
+      const createButton = screen.getByRole('button', { name: /create physical credential/i });
       await user.click(createButton);
 
       await waitFor(() => {
@@ -457,7 +457,7 @@ describe('CredentialsPage', () => {
         expect(screen.getByText('Slack Production')).toBeInTheDocument();
       });
 
-      const createButton = screen.getByRole('button', { name: /create credential/i });
+      const createButton = screen.getByRole('button', { name: /create physical credential/i });
       await user.click(createButton);
 
       await waitFor(() => {
@@ -473,7 +473,7 @@ describe('CredentialsPage', () => {
     });
   });
 
-  describe('User Interactions - Edit Credential', () => {
+  describe('User Interactions - Edit Physical Credential', () => {
     it('should have dropdown menu with Edit option for each credential', async () => {
       const user = userEvent.setup();
       render(<CredentialsPage />);
@@ -521,11 +521,11 @@ describe('CredentialsPage', () => {
       });
 
       const dialog = screen.getByRole('dialog');
-      expect(within(dialog).getByText(/edit credential/i)).toBeInTheDocument();
+      expect(within(dialog).getByText(/edit physical credential/i)).toBeInTheDocument();
     });
   });
 
-  describe('User Interactions - Delete Credential', () => {
+  describe('User Interactions - Delete Physical Credential', () => {
     it('should have dropdown menu with Delete option for each credential', async () => {
       const user = userEvent.setup();
       render(<CredentialsPage />);
@@ -572,7 +572,7 @@ describe('CredentialsPage', () => {
         expect(screen.getByRole('alertdialog')).toBeInTheDocument();
       });
 
-      expect(screen.getByText(/delete credential/i)).toBeInTheDocument();
+      expect(screen.getByText(/delete physical credential/i)).toBeInTheDocument();
     });
 
     it('should show warning for credentials used by workflows', async () => {

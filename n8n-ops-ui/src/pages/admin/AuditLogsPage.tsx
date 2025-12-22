@@ -1,6 +1,6 @@
 // @ts-nocheck
 // TODO: Fix TypeScript errors in this file
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useQuery, useMutation } from '@tanstack/react-query';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -40,7 +40,15 @@ import {
   Building2,
   CreditCard,
   AlertTriangle,
+  Eye,
 } from 'lucide-react';
+import {
+  Sheet,
+  SheetContent,
+  SheetDescription,
+  SheetHeader,
+  SheetTitle,
+} from '@/components/ui/sheet';
 import { apiClient } from '@/lib/api-client';
 import { toast } from 'sonner';
 import { Link } from 'react-router-dom';
@@ -58,12 +66,20 @@ const ACTION_PRESETS = [
 ];
 
 export function AuditLogsPage() {
+  useEffect(() => {
+    document.title = 'Audit Logs - n8n Ops';
+    return () => {
+      document.title = 'n8n Ops';
+    };
+  }, []);
   // Filter state
   const [searchTerm, setSearchTerm] = useState('');
   const [actionTypeFilter, setActionTypeFilter] = useState<string>('all');
   const [presetFilter, setPresetFilter] = useState<string>('all');
   const [page, setPage] = useState(1);
   const [pageSize] = useState(20);
+  const [detailSheetOpen, setDetailSheetOpen] = useState(false);
+  const [selectedLog, setSelectedLog] = useState<AuditLog | null>(null);
 
   // Fetch audit logs with filters
   const { data: logsData, isLoading, refetch } = useQuery({
@@ -424,7 +440,14 @@ export function AuditLogsPage() {
                     .map((log, index) => {
                       const { date, time } = formatTimestamp(log.timestamp);
                       return (
-                        <TableRow key={log.id || `log-${index}`}>
+                        <TableRow 
+                          key={log.id || `log-${index}`}
+                          className="cursor-pointer hover:bg-muted/50"
+                          onClick={() => {
+                            setSelectedLog(log);
+                            setDetailSheetOpen(true);
+                          }}
+                        >
                         <TableCell>
                           <div className="flex items-center gap-1 text-sm">
                             <Clock className="h-3 w-3 text-muted-foreground" />
@@ -467,18 +490,21 @@ export function AuditLogsPage() {
                           </Badge>
                         </TableCell>
                         <TableCell className="max-w-xs">
-                          <div className="text-sm text-muted-foreground truncate">
-                            {log.newValue && typeof log.newValue === 'object' ? (
-                              <code className="text-xs bg-muted px-2 py-1 rounded">
-                                {JSON.stringify(log.newValue).substring(0, 50)}...
-                              </code>
-                            ) : log.oldValue && log.newValue ? (
-                              <span>
-                                {String(log.oldValue)} → {String(log.newValue)}
-                              </span>
-                            ) : (
-                              <span>{log.newValue || log.oldValue || '-'}</span>
-                            )}
+                          <div className="flex items-center gap-2">
+                            <div className="text-sm text-muted-foreground truncate">
+                              {log.newValue && typeof log.newValue === 'object' ? (
+                                <code className="text-xs bg-muted px-2 py-1 rounded">
+                                  {JSON.stringify(log.newValue).substring(0, 50)}...
+                                </code>
+                              ) : log.oldValue && log.newValue ? (
+                                <span>
+                                  {String(log.oldValue)} → {String(log.newValue)}
+                                </span>
+                              ) : (
+                                <span>{log.newValue || log.oldValue || '-'}</span>
+                              )}
+                            </div>
+                            <Eye className="h-4 w-4 text-muted-foreground flex-shrink-0" />
                           </div>
                         </TableCell>
                         <TableCell className="font-mono text-xs">
@@ -522,6 +548,172 @@ export function AuditLogsPage() {
           )}
         </CardContent>
       </Card>
+
+      {/* Audit Log Detail Sheet */}
+      <Sheet open={detailSheetOpen} onOpenChange={setDetailSheetOpen}>
+        <SheetContent side="right" className="sm:max-w-2xl overflow-y-auto">
+          <SheetHeader>
+            <SheetTitle>Audit Log Details</SheetTitle>
+            <SheetDescription>
+              Complete information about this audit log entry
+            </SheetDescription>
+          </SheetHeader>
+          {selectedLog && (
+            <div className="mt-6 space-y-6">
+              {/* Basic Information */}
+              <div className="space-y-2">
+                <h3 className="text-sm font-semibold">Basic Information</h3>
+                <div className="grid grid-cols-2 gap-4 text-sm">
+                  <div>
+                    <span className="text-muted-foreground">Timestamp:</span>
+                    <p className="font-medium">
+                      {formatTimestamp(selectedLog.timestamp).date} {formatTimestamp(selectedLog.timestamp).time}
+                    </p>
+                  </div>
+                  <div>
+                    <span className="text-muted-foreground">Action Type:</span>
+                    <p className="font-medium">{formatActionType(selectedLog.actionType)}</p>
+                  </div>
+                  <div>
+                    <span className="text-muted-foreground">Action:</span>
+                    <p className="font-medium">{selectedLog.action}</p>
+                  </div>
+                  <div>
+                    <span className="text-muted-foreground">Log ID:</span>
+                    <p className="font-mono text-xs">{selectedLog.id}</p>
+                  </div>
+                </div>
+              </div>
+
+              {/* Actor Information */}
+              <div className="space-y-2">
+                <h3 className="text-sm font-semibold">Actor</h3>
+                <div className="grid grid-cols-2 gap-4 text-sm">
+                  <div>
+                    <span className="text-muted-foreground">Name:</span>
+                    <p className="font-medium">{selectedLog.actorName || 'N/A'}</p>
+                  </div>
+                  <div>
+                    <span className="text-muted-foreground">Email:</span>
+                    <p className="font-medium">{selectedLog.actorEmail || 'N/A'}</p>
+                  </div>
+                  {selectedLog.actorId && (
+                    <div>
+                      <span className="text-muted-foreground">Actor ID:</span>
+                      <p className="font-mono text-xs">{selectedLog.actorId}</p>
+                  </div>
+                  )}
+                </div>
+              </div>
+
+              {/* Resource Information */}
+              {(selectedLog.resourceType || selectedLog.resourceId || selectedLog.resourceName) && (
+                <div className="space-y-2">
+                  <h3 className="text-sm font-semibold">Resource</h3>
+                  <div className="grid grid-cols-2 gap-4 text-sm">
+                    {selectedLog.resourceType && (
+                      <div>
+                        <span className="text-muted-foreground">Type:</span>
+                        <p className="font-medium">{selectedLog.resourceType}</p>
+                      </div>
+                    )}
+                    {selectedLog.resourceName && (
+                      <div>
+                        <span className="text-muted-foreground">Name:</span>
+                        <p className="font-medium">{selectedLog.resourceName}</p>
+                      </div>
+                    )}
+                    {selectedLog.resourceId && (
+                      <div>
+                        <span className="text-muted-foreground">Resource ID:</span>
+                        <p className="font-mono text-xs">{selectedLog.resourceId}</p>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
+
+              {/* Tenant Information */}
+              {selectedLog.tenantId && (
+                <div className="space-y-2">
+                  <h3 className="text-sm font-semibold">Tenant</h3>
+                  <div className="grid grid-cols-2 gap-4 text-sm">
+                    <div>
+                      <span className="text-muted-foreground">Tenant Name:</span>
+                      <p className="font-medium">{selectedLog.tenantName || 'N/A'}</p>
+                    </div>
+                    <div>
+                      <span className="text-muted-foreground">Tenant ID:</span>
+                      <p className="font-mono text-xs">{selectedLog.tenantId}</p>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* Request Context */}
+              {(selectedLog.ipAddress || selectedLog.metadata) && (
+                <div className="space-y-2">
+                  <h3 className="text-sm font-semibold">Request Context</h3>
+                  <div className="grid grid-cols-2 gap-4 text-sm">
+                    {selectedLog.ipAddress && (
+                      <div>
+                        <span className="text-muted-foreground">IP Address:</span>
+                        <p className="font-mono text-xs">{selectedLog.ipAddress}</p>
+                      </div>
+                    )}
+                    {selectedLog.metadata && (
+                      <div className="col-span-2">
+                        <span className="text-muted-foreground">Metadata:</span>
+                        <div className="mt-1 rounded-lg bg-muted p-3">
+                          <pre className="whitespace-pre-wrap break-words text-xs font-mono">
+                            {JSON.stringify(selectedLog.metadata, null, 2)}
+                          </pre>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
+
+              {/* Old Value */}
+              {selectedLog.oldValue && (
+                <div className="space-y-2">
+                  <h3 className="text-sm font-semibold">Before</h3>
+                  <div className="rounded-lg bg-muted p-4">
+                    <pre className="whitespace-pre-wrap break-words text-sm font-mono max-h-64 overflow-y-auto">
+                      {typeof selectedLog.oldValue === 'object' 
+                        ? JSON.stringify(selectedLog.oldValue, null, 2)
+                        : String(selectedLog.oldValue)}
+                    </pre>
+                  </div>
+                </div>
+              )}
+
+              {/* New Value */}
+              {selectedLog.newValue && (
+                <div className="space-y-2">
+                  <h3 className="text-sm font-semibold">After</h3>
+                  <div className="rounded-lg bg-muted p-4">
+                    <pre className="whitespace-pre-wrap break-words text-sm font-mono max-h-64 overflow-y-auto">
+                      {typeof selectedLog.newValue === 'object' 
+                        ? JSON.stringify(selectedLog.newValue, null, 2)
+                        : String(selectedLog.newValue)}
+                    </pre>
+                  </div>
+                </div>
+              )}
+
+              {/* Reason */}
+              {selectedLog.reason && (
+                <div className="space-y-2">
+                  <h3 className="text-sm font-semibold">Reason</h3>
+                  <p className="text-sm">{selectedLog.reason}</p>
+                </div>
+              )}
+            </div>
+          )}
+        </SheetContent>
+      </Sheet>
     </div>
   );
 }

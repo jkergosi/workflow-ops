@@ -14,6 +14,13 @@ import { UserCircle, Save, Mail, User, Shield } from 'lucide-react';
 import { toast } from 'sonner';
 
 export function ProfilePage() {
+  useEffect(() => {
+    document.title = 'Profile - n8n Ops';
+    return () => {
+      document.title = 'n8n Ops';
+    };
+  }, []);
+
   const { user } = useAuth();
   const queryClient = useQueryClient();
   const [isEditing, setIsEditing] = useState(false);

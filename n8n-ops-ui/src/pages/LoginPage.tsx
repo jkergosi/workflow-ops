@@ -6,6 +6,13 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Loader2, Workflow } from 'lucide-react';
 
 export function LoginPage() {
+  useEffect(() => {
+    document.title = 'Login - n8n Ops';
+    return () => {
+      document.title = 'n8n Ops';
+    };
+  }, []);
+
   const { isAuthenticated, isLoading, needsOnboarding, login } = useAuth();
   const navigate = useNavigate();
 

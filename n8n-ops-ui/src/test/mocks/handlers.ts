@@ -1,6 +1,7 @@
 import { http, HttpResponse } from 'msw';
 
 const API_BASE = 'http://localhost:3000/api/v1';
+const API_BASE_4000 = 'http://localhost:4000/api/v1';
 
 // Default fixtures
 export const mockUsers = [
@@ -59,6 +60,39 @@ export const mockEnvironments = [
     n8n_base_url: 'https://prod.n8n.example.com',
     is_active: true,
     workflow_count: 3,
+    created_at: '2024-01-01T00:00:00Z',
+    updated_at: '2024-01-01T00:00:00Z',
+  },
+];
+
+export const mockEnvironmentTypes = [
+  {
+    id: 'envt-1',
+    tenant_id: 'tenant-1',
+    key: 'dev',
+    label: 'Development',
+    sort_order: 10,
+    is_active: true,
+    created_at: '2024-01-01T00:00:00Z',
+    updated_at: '2024-01-01T00:00:00Z',
+  },
+  {
+    id: 'envt-2',
+    tenant_id: 'tenant-1',
+    key: 'staging',
+    label: 'Staging',
+    sort_order: 20,
+    is_active: true,
+    created_at: '2024-01-01T00:00:00Z',
+    updated_at: '2024-01-01T00:00:00Z',
+  },
+  {
+    id: 'envt-3',
+    tenant_id: 'tenant-1',
+    key: 'production',
+    label: 'Production',
+    sort_order: 30,
+    is_active: true,
     created_at: '2024-01-01T00:00:00Z',
     updated_at: '2024-01-01T00:00:00Z',
   },
@@ -145,6 +179,80 @@ export const handlers = [
     return HttpResponse.json(mockUsers[0]);
   }),
 
+  // Admin: environment types (used by Settings + environment forms)
+  http.get(`${API_BASE}/admin/environment-types`, () => {
+    return HttpResponse.json(mockEnvironmentTypes);
+  }),
+  http.post(`${API_BASE}/admin/environment-types`, async ({ request }) => {
+    const body: any = await request.json();
+    return HttpResponse.json({
+      id: `envt-${Date.now()}`,
+      tenant_id: 'tenant-1',
+      key: body.key,
+      label: body.label,
+      sort_order: body.sort_order ?? 0,
+      is_active: body.is_active ?? true,
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    });
+  }),
+  http.patch(`${API_BASE}/admin/environment-types/:id`, async ({ params, request }) => {
+    const body: any = await request.json();
+    return HttpResponse.json({
+      id: params.id,
+      tenant_id: 'tenant-1',
+      key: body.key ?? 'dev',
+      label: body.label ?? 'Development',
+      sort_order: body.sort_order ?? 0,
+      is_active: body.is_active ?? true,
+      created_at: '2024-01-01T00:00:00Z',
+      updated_at: new Date().toISOString(),
+    });
+  }),
+  http.delete(`${API_BASE}/admin/environment-types/:id`, () => {
+    return new HttpResponse(null, { status: 204 });
+  }),
+  http.post(`${API_BASE}/admin/environment-types/reorder`, () => {
+    return HttpResponse.json(mockEnvironmentTypes);
+  }),
+
+  // Same handlers for tests that use API base :4000
+  http.get(`${API_BASE_4000}/admin/environment-types`, () => {
+    return HttpResponse.json(mockEnvironmentTypes);
+  }),
+  http.post(`${API_BASE_4000}/admin/environment-types`, async ({ request }) => {
+    const body: any = await request.json();
+    return HttpResponse.json({
+      id: `envt-${Date.now()}`,
+      tenant_id: 'tenant-1',
+      key: body.key,
+      label: body.label,
+      sort_order: body.sort_order ?? 0,
+      is_active: body.is_active ?? true,
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    });
+  }),
+  http.patch(`${API_BASE_4000}/admin/environment-types/:id`, async ({ params, request }) => {
+    const body: any = await request.json();
+    return HttpResponse.json({
+      id: params.id,
+      tenant_id: 'tenant-1',
+      key: body.key ?? 'dev',
+      label: body.label ?? 'Development',
+      sort_order: body.sort_order ?? 0,
+      is_active: body.is_active ?? true,
+      created_at: '2024-01-01T00:00:00Z',
+      updated_at: new Date().toISOString(),
+    });
+  }),
+  http.delete(`${API_BASE_4000}/admin/environment-types/:id`, () => {
+    return new HttpResponse(null, { status: 204 });
+  }),
+  http.post(`${API_BASE_4000}/admin/environment-types/reorder`, () => {
+    return HttpResponse.json(mockEnvironmentTypes);
+  }),
+
   // Environment endpoints
   http.get(`${API_BASE}/environments`, () => {
     return HttpResponse.json(mockEnvironments);
@@ -168,6 +276,10 @@ export const handlers = [
       updated_at: new Date().toISOString(),
     };
     return HttpResponse.json(newEnv, { status: 201 });
+  }),
+
+  http.delete(`${API_BASE}/environments/:id`, () => {
+    return new HttpResponse(null, { status: 204 });
   }),
 
   http.post(`${API_BASE}/environments/test-connection`, () => {
@@ -199,6 +311,10 @@ export const handlers = [
       return new HttpResponse(null, { status: 404 });
     }
     return HttpResponse.json(workflow);
+  }),
+
+  http.get(`${API_BASE}/workflows/:id/drift`, () => {
+    return HttpResponse.json({ data: { has_drift: false } });
   }),
 
   http.post(`${API_BASE}/workflows/:id/activate`, ({ params }) => {
@@ -313,6 +429,10 @@ export const handlers = [
     return HttpResponse.json(newPipeline, { status: 201 });
   }),
 
+  http.delete(`${API_BASE}/pipelines/:id`, () => {
+    return new HttpResponse(null, { status: 204 });
+  }),
+
   // Team endpoints
   http.get(`${API_BASE}/team/members`, () => {
     return HttpResponse.json(
@@ -330,6 +450,22 @@ export const handlers = [
       current_members: 2,
       can_add_members: true,
     });
+  }),
+
+  http.patch(`${API_BASE}/team/members/:id`, async ({ params, request }) => {
+    const updates: any = await request.json();
+    const base = mockUsers.find((u) => u.id === params.id) || mockUsers[0];
+    return HttpResponse.json({
+      ...base,
+      ...updates,
+      id: String(params.id),
+      created_at: '2024-01-01T00:00:00Z',
+      status: 'active',
+    });
+  }),
+
+  http.delete(`${API_BASE}/team/members/:id`, () => {
+    return new HttpResponse(null, { status: 204 });
   }),
 
   // Deployments
@@ -728,6 +864,19 @@ export const handlers = [
     });
   }),
 
+  http.get(`${API_BASE}/tenants/stats`, () => {
+    return HttpResponse.json({
+      totalTenants: 10,
+      activeTenants: 8,
+      suspendedTenants: 2,
+      trialTenants: 1,
+      paidTenants: 4,
+      byPlan: { free: 5, pro: 3, agency: 1, enterprise: 1 },
+      recentSignups: 2,
+      churnedThisMonth: 0,
+    });
+  }),
+
   http.get(`${API_BASE}/admin/tenants/:id`, ({ params }) => {
     return HttpResponse.json({
       id: params.id,
@@ -1085,6 +1234,17 @@ export const handlers = [
       { provider: 'n8n', displayName: 'n8n', isActive: true },
       { provider: 'local', displayName: 'Local', isActive: true },
     ]);
+  }),
+
+  http.get(`${API_BASE}/admin/providers/active`, () => {
+    return HttpResponse.json({
+      providers: [
+        { provider: 'n8n', displayName: 'n8n', isActive: true },
+        { provider: 'local', displayName: 'Local', isActive: true },
+      ],
+      total_providers: 2,
+      is_multi_provider: true,
+    });
   }),
 
   // Logical credentials endpoint

@@ -1,6 +1,7 @@
 // @ts-nocheck
 // TODO: Fix TypeScript errors in this file
 import { useQuery } from '@tanstack/react-query';
+import { useEffect } from 'react';
 import { Link } from 'react-router-dom';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
@@ -10,6 +11,12 @@ import { useAuth } from '@/lib/auth';
 import { Activity, Workflow, Server, Plus, Rocket } from 'lucide-react';
 
 export function DashboardPage() {
+  useEffect(() => {
+    document.title = 'Dashboard - n8n Ops';
+    return () => {
+      document.title = 'n8n Ops';
+    };
+  }, []);
   const { user, hasEnvironment } = useAuth();
 
   const { data: environments, isLoading: loadingEnvs } = useQuery({

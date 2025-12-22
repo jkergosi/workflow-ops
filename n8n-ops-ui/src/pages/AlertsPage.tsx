@@ -1,6 +1,6 @@
 // @ts-nocheck
 // TODO: Fix TypeScript errors in this file
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -59,7 +59,7 @@ import type {
 const defaultSlackConfig: SlackConfig = {
   webhook_url: '',
   channel: '',
-  username: 'N8N Ops',
+  username: '',
   icon_emoji: ':bell:',
 };
 
@@ -82,6 +82,12 @@ const defaultWebhookConfig: WebhookConfig = {
 };
 
 export function AlertsPage() {
+  useEffect(() => {
+    document.title = 'Alerts - n8n Ops';
+    return () => {
+      document.title = 'n8n Ops';
+    };
+  }, []);
   const queryClient = useQueryClient();
   const [createChannelOpen, setCreateChannelOpen] = useState(false);
   const [editChannelOpen, setEditChannelOpen] = useState(false);

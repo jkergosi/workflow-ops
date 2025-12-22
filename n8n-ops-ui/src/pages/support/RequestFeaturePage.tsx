@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useMutation, useQuery } from '@tanstack/react-query';
 import { toast } from 'sonner';
@@ -22,6 +22,13 @@ interface FeatureFormData {
 }
 
 export function RequestFeaturePage() {
+  useEffect(() => {
+    document.title = 'Request Feature - n8n Ops';
+    return () => {
+      document.title = 'n8n Ops';
+    };
+  }, []);
+
   const navigate = useNavigate();
 
   const [formData, setFormData] = useState<FeatureFormData>({

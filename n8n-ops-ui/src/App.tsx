@@ -25,7 +25,6 @@ import { CredentialsPage } from '@/pages/CredentialsPage';
 import { EnvironmentSetupPage } from '@/pages/EnvironmentSetupPage';
 import { RestorePage } from '@/pages/RestorePage';
 import { ProfilePage } from '@/pages/ProfilePage';
-import { PipelinesPage } from '@/pages/PipelinesPage';
 import { PipelineEditorPage } from '@/pages/PipelineEditorPage';
 import { PromotionPage } from '@/pages/PromotionPage';
 import {
@@ -196,7 +195,7 @@ function App() {
                 <Route path="/snapshots" element={<RoleProtectedRoute><SnapshotsPage /></RoleProtectedRoute>} />
                 <Route path="/deployments" element={<RoleProtectedRoute><DeploymentsPage /></RoleProtectedRoute>} />
                 <Route path="/deployments/:id" element={<RoleProtectedRoute><DeploymentDetailPage /></RoleProtectedRoute>} />
-                <Route path="/pipelines" element={<RoleProtectedRoute><PipelinesPage /></RoleProtectedRoute>} />
+                <Route path="/pipelines" element={<Navigate to="/deployments?tab=pipelines" replace />} />
                 <Route path="/pipelines/new" element={<RoleProtectedRoute><PipelineEditorPage /></RoleProtectedRoute>} />
                 <Route path="/pipelines/:id" element={<RoleProtectedRoute><PipelineEditorPage /></RoleProtectedRoute>} />
                 <Route path="/promote" element={<RoleProtectedRoute><PromotionPage /></RoleProtectedRoute>} />

@@ -26,6 +26,13 @@ type SortField = 'workflowName' | 'status' | 'startedAt' | 'executionTime';
 type SortDirection = 'asc' | 'desc';
 
 export function ExecutionsPage() {
+  useEffect(() => {
+    document.title = 'Executions - n8n Ops';
+    return () => {
+      document.title = 'n8n Ops';
+    };
+  }, []);
+
   const selectedEnvironment = useAppStore((state) => state.selectedEnvironment);
   const setSelectedEnvironment = useAppStore((state) => state.setSelectedEnvironment);
   const queryClient = useQueryClient();
@@ -434,7 +441,7 @@ export function ExecutionsPage() {
 
       <Card>
         <CardHeader>
-          <CardTitle>Executions in {selectedEnvironment}</CardTitle>
+          <CardTitle>Executions in {currentEnvironment?.name || currentEnvironment?.type || selectedEnvironment}</CardTitle>
           <CardDescription>
             View execution history for workflows in the selected environment
           </CardDescription>

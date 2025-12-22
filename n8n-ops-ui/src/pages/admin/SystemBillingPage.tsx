@@ -1,6 +1,6 @@
 // @ts-nocheck
 // TODO: Fix TypeScript errors in this file
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
@@ -43,6 +43,13 @@ import { toast } from 'sonner';
 import type { BillingMetrics, PlanDistributionItem, RecentCharge, FailedPayment, DunningTenant } from '@/types';
 
 export function SystemBillingPage() {
+  useEffect(() => {
+    document.title = 'System Billing - n8n Ops';
+    return () => {
+      document.title = 'n8n Ops';
+    };
+  }, []);
+
   // Filter state
   const [showOnlyDunning, setShowOnlyDunning] = useState(false);
   const [transactionTypeFilter, setTransactionTypeFilter] = useState<string>('all');

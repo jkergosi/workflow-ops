@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -131,6 +131,12 @@ const securitySettings = {
 };
 
 export function SecurityPage() {
+  useEffect(() => {
+    document.title = 'Security - n8n Ops';
+    return () => {
+      document.title = 'n8n Ops';
+    };
+  }, []);
   const [createKeyOpen, setCreateKeyOpen] = useState(false);
   const [keyForm, setKeyForm] = useState({
     name: '',

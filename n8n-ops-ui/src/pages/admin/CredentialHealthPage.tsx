@@ -38,6 +38,13 @@ import { Combobox } from '@/components/ui/combobox';
 import type { N8NCredentialRef } from '@/types/credentials';
 
 export function CredentialHealthPage() {
+  useEffect(() => {
+    document.title = 'Credential Health - n8n Ops';
+    return () => {
+      document.title = 'n8n Ops';
+    };
+  }, []);
+
   const queryClient = useQueryClient();
   const [selectedEnvId, setSelectedEnvId] = useState<string | undefined>(undefined);
   const [selectedProvider, setSelectedProvider] = useState<string | undefined>(undefined);
@@ -110,7 +117,7 @@ export function CredentialHealthPage() {
       apiClient.createLogicalCredential(data),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['logical-credentials'] });
-      toast.success('Logical credential created');
+      toast.success('Credential alias created');
       closeLogicalDialog();
     },
     onError: (error: any) => {
@@ -122,7 +129,7 @@ export function CredentialHealthPage() {
     mutationFn: ({ id, data }: { id: string; data: any }) => apiClient.updateLogicalCredential(id, data),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['logical-credentials'] });
-      toast.success('Logical credential updated');
+      toast.success('Credential alias updated');
       closeLogicalDialog();
     },
     onError: (error: any) => {
@@ -135,7 +142,7 @@ export function CredentialHealthPage() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['logical-credentials'] });
       queryClient.invalidateQueries({ queryKey: ['credential-mappings'] });
-      toast.success('Logical credential deleted');
+      toast.success('Credential alias deleted');
       setDeleteLogicalId(null);
     },
     onError: (error: any) => {
@@ -281,7 +288,7 @@ export function CredentialHealthPage() {
 
   const handleSaveMapping = () => {
     if (!mappingLogicalId || !mappingEnvId || !mappingPhysicalId) {
-      toast.error('Logical credential, environment, and physical credential ID are required');
+      toast.error('Credential alias, environment, and physical credential ID are required');
       return;
     }
 
@@ -323,7 +330,7 @@ export function CredentialHealthPage() {
         <div>
           <h1 className="text-3xl font-bold">Credential Health</h1>
           <p className="text-muted-foreground">
-            Manage logical credentials and their environment mappings.
+            Manage credential aliases and their environment mappings.
           </p>
         </div>
       </div>
@@ -387,9 +394,9 @@ export function CredentialHealthPage() {
             <div>
               <CardTitle className="flex items-center gap-2">
                 <Shield className="h-5 w-5" />
-                Logical Credentials
+                Credential Aliases
               </CardTitle>
-              <CardDescription>Provider-agnostic credential aliases</CardDescription>
+              <CardDescription>Environment-agnostic credential aliases</CardDescription>
             </div>
             <Button size="sm" onClick={openCreateLogical}>
               <Plus className="h-4 w-4 mr-1" />
@@ -413,7 +420,7 @@ export function CredentialHealthPage() {
                   {logicalCreds.length === 0 && (
                     <TableRow>
                       <TableCell colSpan={4} className="text-center text-sm text-muted-foreground">
-                        No logical credentials defined
+                        No credential aliases defined
                       </TableCell>
                     </TableRow>
                   )}
@@ -464,8 +471,8 @@ export function CredentialHealthPage() {
               <Table>
                 <TableHeader>
                   <TableRow>
-                    <TableHead>Logical</TableHead>
-                    <TableHead>Physical</TableHead>
+                    <TableHead>Credential Alias</TableHead>
+                    <TableHead>Physical Credential</TableHead>
                     <TableHead>Status</TableHead>
                     <TableHead className="w-[80px]">Actions</TableHead>
                   </TableRow>
@@ -515,9 +522,9 @@ export function CredentialHealthPage() {
       <Dialog open={showLogicalDialog} onOpenChange={setShowLogicalDialog}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>{editingLogical ? 'Edit' : 'Create'} Logical Credential</DialogTitle>
+            <DialogTitle>{editingLogical ? 'Edit' : 'Create'} Credential Alias</DialogTitle>
             <DialogDescription>
-              Define a provider-agnostic credential alias that can be mapped to physical credentials per environment.
+              Define an environment-agnostic credential alias that can be mapped to physical credentials per environment.
             </DialogDescription>
           </DialogHeader>
           <div className="grid gap-4 py-4">
@@ -579,15 +586,15 @@ export function CredentialHealthPage() {
           <DialogHeader>
             <DialogTitle>{editingMapping ? 'Edit' : 'Create'} Credential Mapping</DialogTitle>
             <DialogDescription>
-              Map a logical credential to a physical credential in a specific environment.
+              Map a credential alias to a physical credential in a specific environment. Mapping = alias → physical credential per environment.
             </DialogDescription>
           </DialogHeader>
           <div className="grid gap-4 py-4">
             <div className="grid gap-2">
-              <Label htmlFor="logical">Logical Credential *</Label>
+              <Label htmlFor="logical">Credential Alias *</Label>
               <Select value={mappingLogicalId} onValueChange={setMappingLogicalId} disabled={!!editingMapping}>
                 <SelectTrigger>
-                  <SelectValue placeholder="Select logical credential" />
+                  <SelectValue placeholder="Select credential alias" />
                 </SelectTrigger>
                 <SelectContent>
                   {logicalCreds.map((c: any) => (
@@ -670,7 +677,7 @@ export function CredentialHealthPage() {
       <AlertDialog open={!!deleteLogicalId} onOpenChange={() => setDeleteLogicalId(null)}>
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>Delete Logical Credential?</AlertDialogTitle>
+            <AlertDialogTitle>Delete Credential Alias?</AlertDialogTitle>
             <AlertDialogDescription>
               This will also delete all mappings for this credential. This action cannot be undone.
             </AlertDialogDescription>

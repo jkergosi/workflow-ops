@@ -8,6 +8,7 @@ import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import {
   Dialog,
   DialogContent,
@@ -45,9 +46,23 @@ export function EnvironmentsPage() {
   useEffect(() => {
     refreshEntitlements();
   }, [refreshEntitlements]);
+
+  useEffect(() => {
+    document.title = 'Environments - n8n Ops';
+    return () => {
+      document.title = 'n8n Ops';
+    };
+  }, []);
   const [testingInDialog, setTestingInDialog] = useState(false);
   const [backupDialogOpen, setBackupDialogOpen] = useState(false);
   const [downloadDialogOpen, setDownloadDialogOpen] = useState(false);
+
+  const { data: environmentTypesData } = useQuery({
+    queryKey: ['environment-types'],
+    queryFn: () => apiClient.getEnvironmentTypes(),
+  });
+
+  const environmentTypes = (environmentTypesData?.data || []).filter((t) => t.isActive);
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const [selectedEnvForAction, setSelectedEnvForAction] = useState<Environment | null>(null);
   const [syncingEnvId, setSyncingEnvId] = useState<string | null>(null);
@@ -147,7 +162,7 @@ export function EnvironmentsPage() {
   });
 
   const updateMutation = useMutation({
-    mutationFn: (data: { id: string; updates: { name?: string; base_url?: string; api_key?: string; git_repo_url?: string; git_branch?: string; git_pat?: string } }) =>
+    mutationFn: (data: { id: string; updates: { name?: string; type?: string; base_url?: string; api_key?: string; git_repo_url?: string; git_branch?: string; git_pat?: string } }) =>
       api.updateEnvironment(data.id, data.updates),
     onSuccess: () => {
       toast.success('Environment updated successfully');
@@ -368,6 +383,7 @@ export function EnvironmentsPage() {
         id: editingEnv.id,
         updates: {
           name: formData.name,
+          type: formData.type,
           base_url: formData.baseUrl,
           api_key: formData.apiKey,
           allow_upload: formData.allowUpload,
@@ -558,14 +574,27 @@ export function EnvironmentsPage() {
 
             <div className="space-y-2">
               <Label htmlFor="type">Type (Optional)</Label>
-              <Input
-                id="type"
-                value={formData.type || ''}
-                onChange={(e) =>
-                  setFormData({ ...formData, type: e.target.value || undefined })
-                }
-                placeholder="e.g., dev, staging, production, qa"
-              />
+              <Select
+                value={(formData.type as string) || '__none__'}
+                onValueChange={(v) => setFormData({ ...formData, type: v === '__none__' ? undefined : v })}
+              >
+                <SelectTrigger id="type">
+                  <SelectValue placeholder="Select type (optional)" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="__none__">None</SelectItem>
+                  {environmentTypes.map((t) => (
+                    <SelectItem key={t.id} value={t.key}>
+                      {t.label}
+                    </SelectItem>
+                  ))}
+                  {formData.type && !environmentTypes.some((t) => t.key === formData.type) && (
+                    <SelectItem value={formData.type}>
+                      {String(formData.type)} (Custom)
+                    </SelectItem>
+                  )}
+                </SelectContent>
+              </Select>
               <p className="text-xs text-muted-foreground">
                 Optional metadata for categorization and display. Not used for business logic.
               </p>

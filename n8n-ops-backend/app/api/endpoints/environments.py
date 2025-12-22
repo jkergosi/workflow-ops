@@ -1,6 +1,7 @@
 from fastapi import APIRouter, HTTPException, status, Depends, BackgroundTasks
 from typing import List
 from datetime import datetime
+import logging
 
 from app.schemas.environment import (
     EnvironmentCreate,
@@ -23,6 +24,7 @@ from app.services.background_job_service import (
 )
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 # TODO: Replace with actual tenant ID from authenticated user
 MOCK_TENANT_ID = "00000000-0000-0000-0000-000000000000"
@@ -455,7 +457,8 @@ async def sync_environment(
 
         # Sync executions
         try:
-            executions = await adapter.get_executions(limit=100)
+            # Fetch more executions (increase limit to 1000 to get more recent executions)
+            executions = await adapter.get_executions(limit=1000)
             synced_executions = await db_service.sync_executions_from_n8n(
                 MOCK_TENANT_ID,
                 environment_id,
@@ -463,6 +466,7 @@ async def sync_environment(
             )
             sync_results["executions"]["synced"] = len(synced_executions)
         except Exception as e:
+            logger.error(f"Failed to sync executions for environment {environment_id}: {str(e)}")
             sync_results["executions"]["errors"].append(str(e))
 
         # Sync credentials
@@ -480,13 +484,17 @@ async def sync_environment(
         # Sync users
         try:
             users = await adapter.get_users()
+            if not users:
+                logger.warning(f"No users returned from N8N for environment {environment_id}")
+            logger.info(f"Fetched {len(users) if users else 0} users from N8N for environment {environment_id}")
             synced_users = await db_service.sync_n8n_users_from_n8n(
                 MOCK_TENANT_ID,
                 environment_id,
-                users
+                users or []
             )
             sync_results["users"]["synced"] = len(synced_users)
         except Exception as e:
+            logger.error(f"Failed to sync users for environment {environment_id}: {str(e)}")
             sync_results["users"]["errors"].append(str(e))
 
         # Sync tags
@@ -597,10 +605,13 @@ async def sync_users_only(environment_id: str):
         # Sync users only
         try:
             users = await adapter.get_users()
+            if not users:
+                logger.warning(f"No users returned from N8N for environment {environment_id}")
+            logger.info(f"Fetched {len(users) if users else 0} users from N8N for environment {environment_id}")
             synced_users = await db_service.sync_n8n_users_from_n8n(
                 MOCK_TENANT_ID,
                 environment_id,
-                users
+                users or []
             )
 
             return {
@@ -609,6 +620,9 @@ async def sync_users_only(environment_id: str):
                 "synced": len(synced_users)
             }
         except Exception as e:
+            logger.error(f"Failed to sync users for environment {environment_id}: {str(e)}")
+            import traceback
+            logger.error(traceback.format_exc())
             return {
                 "success": False,
                 "message": f"Failed to sync users: {str(e)}",
@@ -651,7 +665,13 @@ async def sync_executions_only(environment_id: str):
 
         # Sync executions only
         try:
-            executions = await adapter.get_executions(limit=100)
+            # Fetch more executions (increase limit to 1000 to get more recent executions)
+            # N8N API supports pagination, but for sync we'll fetch a larger batch
+            executions = await adapter.get_executions(limit=1000)
+            
+            if not executions:
+                logger.warning(f"No executions returned from N8N for environment {environment_id}")
+            
             synced_executions = await db_service.sync_executions_from_n8n(
                 MOCK_TENANT_ID,
                 environment_id,
@@ -664,6 +684,9 @@ async def sync_executions_only(environment_id: str):
                 "synced": len(synced_executions)
             }
         except Exception as e:
+            logger.error(f"Failed to sync executions for environment {environment_id}: {str(e)}")
+            import traceback
+            logger.error(traceback.format_exc())
             return {
                 "success": False,
                 "message": f"Failed to sync executions: {str(e)}",

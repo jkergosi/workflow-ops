@@ -1,6 +1,6 @@
 // @ts-nocheck
 // TODO: Fix TypeScript errors in this file
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useEffect } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
@@ -70,6 +70,12 @@ function UsageHistoryChart({ data, label }: { data: number[]; label: string }) {
 }
 
 export function UsagePage() {
+  useEffect(() => {
+    document.title = 'Usage - n8n Ops';
+    return () => {
+      document.title = 'n8n Ops';
+    };
+  }, []);
   const [topMetric, setTopMetric] = useState('workflows');
   const [topPeriod, setTopPeriod] = useState('all');
 

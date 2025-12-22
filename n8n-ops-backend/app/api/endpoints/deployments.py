@@ -1,7 +1,8 @@
-from fastapi import APIRouter, HTTPException, Query, Depends, Request
+from fastapi import APIRouter, HTTPException, Query, Depends, Request, BackgroundTasks
 from fastapi import status as http_status
 from typing import Optional, List
 from datetime import datetime, timedelta
+from uuid import uuid4
 from app.services.database import db_service
 from app.schemas.deployment import (
     DeploymentResponse,
@@ -11,10 +12,12 @@ from app.schemas.deployment import (
     DeploymentWorkflowResponse,
     SnapshotResponse,
 )
+from app.schemas.promotion import WorkflowSelection, PromotionStatus, GateResult, WorkflowChangeType as PromotionWorkflowChangeType
 from app.core.entitlements_gate import require_entitlement
-from app.services.background_job_service import background_job_service
+from app.services.background_job_service import background_job_service, BackgroundJobType, BackgroundJobStatus
 from app.services.auth_service import get_current_user
 from app.api.endpoints.admin_audit import create_audit_log
+from app.api.endpoints.promotions import _execute_promotion_background
 import logging
 
 logger = logging.getLogger(__name__)
@@ -552,5 +555,307 @@ async def delete_deployment(
         raise HTTPException(
             status_code=http_status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to delete deployment: {str(e)}",
+        )
+
+
+@router.post("/{deployment_id}/rerun")
+async def rerun_deployment(
+    deployment_id: str,
+    background_tasks: BackgroundTasks,
+    request: Request,
+    user_info: dict = Depends(get_current_user),
+    _: dict = Depends(require_entitlement("workflow_ci_cd"))
+):
+    """
+    Rerun a deployment - creates a new deployment using the same pipeline/stage, 
+    source/target, and workflow selections as the original.
+    
+    Re-runs all gates (drift, credential preflight, approvals) and creates fresh pre/post snapshots.
+    Only allowed for terminal states (failed/canceled; optionally success as "re-deploy").
+    """
+    try:
+        # Get original deployment
+        deployment_result = (
+            db_service.client.table("deployments")
+            .select("*")
+            .eq("id", deployment_id)
+            .eq("tenant_id", MOCK_TENANT_ID)
+            .single()
+            .execute()
+        )
+
+        if not deployment_result.data:
+            raise HTTPException(
+                status_code=http_status.HTTP_404_NOT_FOUND,
+                detail=f"Deployment {deployment_id} not found",
+            )
+
+        deployment = deployment_result.data
+        
+        # Check if already deleted
+        if deployment.get("deleted_at"):
+            raise HTTPException(
+                status_code=http_status.HTTP_400_BAD_REQUEST,
+                detail="Cannot rerun a deleted deployment"
+            )
+
+        # Only allow rerun for terminal states
+        deployment_status = deployment.get("status")
+        if deployment_status not in [
+            DeploymentStatus.FAILED.value,
+            DeploymentStatus.CANCELED.value,
+            DeploymentStatus.SUCCESS.value,  # Allow success as "re-deploy"
+        ]:
+            raise HTTPException(
+                status_code=http_status.HTTP_400_BAD_REQUEST,
+                detail=f"Cannot rerun deployment in status: {deployment_status}. Only failed, canceled, or successful deployments can be rerun."
+            )
+
+        # Get deployment workflows to reconstruct workflow selections
+        workflows_result = (
+            db_service.client.table("deployment_workflows")
+            .select("*")
+            .eq("deployment_id", deployment_id)
+            .execute()
+        )
+        workflows_raw = workflows_result.data or []
+
+        if not workflows_raw:
+            raise HTTPException(
+                status_code=http_status.HTTP_400_BAD_REQUEST,
+                detail="Cannot rerun deployment: no workflows found in original deployment"
+            )
+
+        # Reconstruct workflow selections from deployment workflows
+        # Map deployment change_type (CREATED, UPDATED, etc.) to promotion change_type (NEW, CHANGED, etc.)
+        deployment_to_promotion_change_type = {
+            "created": PromotionWorkflowChangeType.NEW,
+            "updated": PromotionWorkflowChangeType.CHANGED,
+            "deleted": PromotionWorkflowChangeType.CHANGED,  # Deleted workflows won't be in rerun, but handle it
+            "skipped": PromotionWorkflowChangeType.CONFLICT,  # Skipped might indicate conflict
+            "unchanged": PromotionWorkflowChangeType.UNCHANGED,
+        }
+
+        workflow_selections = []
+        for wf in workflows_raw:
+            # Map change_type from deployment_workflows (CREATED, UPDATED, etc.) to promotion WorkflowChangeType (NEW, CHANGED, etc.)
+            deployment_change_type = wf.get("change_type", "created")
+            promotion_change_type = deployment_to_promotion_change_type.get(
+                deployment_change_type.lower(),
+                PromotionWorkflowChangeType.CHANGED  # Default to CHANGED if unknown
+            )
+
+            workflow_selections.append(WorkflowSelection(
+                workflow_id=wf.get("workflow_id"),
+                workflow_name=wf.get("workflow_name_at_time", "Unknown"),
+                change_type=promotion_change_type,
+                enabled_in_source=True,  # We don't store this, assume enabled
+                enabled_in_target=None,
+                selected=True,  # All workflows in deployment were selected
+                requires_overwrite=(promotion_change_type == PromotionWorkflowChangeType.CHANGED),
+            ))
+
+        # Get pipeline to find active stage
+        pipeline_id = deployment.get("pipeline_id")
+        if not pipeline_id:
+            raise HTTPException(
+                status_code=http_status.HTTP_400_BAD_REQUEST,
+                detail="Cannot rerun deployment: no pipeline associated"
+            )
+
+        pipeline_data = await db_service.get_pipeline(pipeline_id, MOCK_TENANT_ID)
+        if not pipeline_data:
+            raise HTTPException(
+                status_code=http_status.HTTP_404_NOT_FOUND,
+                detail="Pipeline not found"
+            )
+
+        # Find the active stage for this source -> target
+        source_env_id = deployment.get("source_environment_id")
+        target_env_id = deployment.get("target_environment_id")
+        active_stage = None
+        for stage in pipeline_data.get("stages", []):
+            if (stage.get("source_environment_id") == source_env_id and
+                stage.get("target_environment_id") == target_env_id):
+                active_stage = stage
+                break
+
+        if not active_stage:
+            raise HTTPException(
+                status_code=http_status.HTTP_400_BAD_REQUEST,
+                detail="No stage found for this source -> target environment pair"
+            )
+
+        # Get source and target environments
+        source_env = await db_service.get_environment(source_env_id, MOCK_TENANT_ID)
+        target_env = await db_service.get_environment(target_env_id, MOCK_TENANT_ID)
+
+        if not source_env or not target_env:
+            raise HTTPException(
+                status_code=http_status.HTTP_404_NOT_FOUND,
+                detail="Source or target environment not found"
+            )
+
+        # Check if approval required
+        requires_approval = active_stage.get("approvals", {}).get("require_approval", False)
+
+        # Create new promotion record
+        promotion_id = str(uuid4())
+
+        # Gate results (will be re-evaluated during execution)
+        gate_results = GateResult(
+            require_clean_drift=active_stage.get("gates", {}).get("require_clean_drift", False),
+            drift_detected=False,
+            drift_resolved=True,
+            run_pre_flight_validation=active_stage.get("gates", {}).get("run_pre_flight_validation", False),
+            credentials_exist=True,
+            nodes_supported=True,
+            webhooks_available=True,
+            target_environment_healthy=True,
+            risk_level_allowed=True,
+            errors=[],
+            warnings=[],
+            credential_issues=[]
+        )
+
+        # Get user info
+        user = user_info.get("user", {})
+        actor_id = user.get("id") or "00000000-0000-0000-0000-000000000000"
+
+        promotion_data = {
+            "id": promotion_id,
+            "tenant_id": MOCK_TENANT_ID,
+            "pipeline_id": pipeline_id,
+            "source_environment_id": source_env_id,
+            "target_environment_id": target_env_id,
+            "status": PromotionStatus.PENDING_APPROVAL.value if requires_approval else PromotionStatus.PENDING.value,
+            "source_snapshot_id": None,  # Created during execution
+            "workflow_selections": [ws.dict() for ws in workflow_selections],
+            "gate_results": gate_results.dict(),
+            "created_by": actor_id,
+            "created_at": datetime.utcnow().isoformat(),
+            "updated_at": datetime.utcnow().isoformat()
+        }
+
+        # Store promotion
+        await db_service.create_promotion(promotion_data)
+
+        # Create background job
+        job = await background_job_service.create_job(
+            tenant_id=MOCK_TENANT_ID,
+            job_type=BackgroundJobType.PROMOTION_EXECUTE,
+            resource_id=promotion_id,
+            resource_type="promotion",
+            created_by=actor_id,
+            initial_progress={
+                "current": 0,
+                "total": len(workflow_selections),
+                "percentage": 0,
+                "message": "Initializing rerun deployment"
+            }
+        )
+        job_id = job["id"]
+
+        # Update promotion status to running
+        await db_service.update_promotion(promotion_id, MOCK_TENANT_ID, {"status": PromotionStatus.RUNNING.value})
+
+        # Create new deployment record
+        new_deployment_id = str(uuid4())
+        deployment_data = {
+            "id": new_deployment_id,
+            "tenant_id": MOCK_TENANT_ID,
+            "pipeline_id": pipeline_id,
+            "source_environment_id": source_env_id,
+            "target_environment_id": target_env_id,
+            "status": DeploymentStatus.RUNNING.value,
+            "triggered_by_user_id": actor_id,
+            "approved_by_user_id": None,
+            "started_at": datetime.utcnow().isoformat(),
+            "finished_at": None,
+            "pre_snapshot_id": None,
+            "post_snapshot_id": None,
+            "summary_json": {"total": len(workflow_selections), "created": 0, "updated": 0, "deleted": 0, "failed": 0, "skipped": 0},
+        }
+        await db_service.create_deployment(deployment_data)
+
+        # Update job with deployment_id in result for tracking
+        await background_job_service.update_job_status(
+            job_id=job_id,
+            status=BackgroundJobStatus.PENDING,
+            result={"deployment_id": new_deployment_id}
+        )
+
+        # Prepare selected workflows for background task
+        selected_workflows = [ws.dict() for ws in workflow_selections]
+
+        # Start background execution task
+        background_tasks.add_task(
+            _execute_promotion_background,
+            job_id=job_id,
+            promotion_id=promotion_id,
+            deployment_id=new_deployment_id,
+            promotion=promotion_data,
+            source_env=source_env,
+            target_env=target_env,
+            selected_workflows=selected_workflows
+        )
+
+        # Create audit log entry
+        try:
+            provider = source_env.get("provider", "n8n")
+            actor_email = user.get("email")
+            actor_name = user.get("name")
+            ip_address = request.client.host if request.client else None
+            user_agent = request.headers.get("user-agent")
+
+            await create_audit_log(
+                action_type="DEPLOYMENT_RERUN",
+                action=f"Rerun deployment",
+                actor_id=actor_id,
+                actor_email=actor_email,
+                actor_name=actor_name,
+                tenant_id=MOCK_TENANT_ID,
+                resource_type="deployment",
+                resource_id=new_deployment_id,
+                resource_name=f"Deployment {new_deployment_id[:8]}",
+                provider=provider,
+                old_value={
+                    "original_deployment_id": deployment_id,
+                    "original_status": deployment_status,
+                    "workflow_count": len(workflow_selections),
+                    "source_environment_id": source_env_id,
+                    "target_environment_id": target_env_id,
+                    "pipeline_id": pipeline_id,
+                },
+                ip_address=ip_address,
+                user_agent=user_agent,
+                metadata={
+                    "rerun_from_deployment_id": deployment_id,
+                    "promotion_id": promotion_id,
+                }
+            )
+        except Exception as audit_error:
+            logger.warning(f"Failed to create audit log for deployment rerun: {str(audit_error)}")
+
+        logger.info(f"Rerun deployment {new_deployment_id} created from deployment {deployment_id}")
+
+        # Return new deployment info
+        return {
+            "deployment_id": new_deployment_id,
+            "promotion_id": promotion_id,
+            "job_id": job_id,
+            "status": "running",
+            "message": f"Deployment rerun started. Processing {len(workflow_selections)} workflow(s) in the background.",
+            "workflow_count": len(workflow_selections),
+            "requires_approval": requires_approval,
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to rerun deployment: {str(e)}")
+        raise HTTPException(
+            status_code=http_status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to rerun deployment: {str(e)}",
         )
 

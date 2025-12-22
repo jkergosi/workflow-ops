@@ -26,6 +26,13 @@ type SortField = 'name' | 'workflows' | 'createdAt' | 'updatedAt';
 type SortDirection = 'asc' | 'desc';
 
 export function TagsPage() {
+  useEffect(() => {
+    document.title = 'Tags - n8n Ops';
+    return () => {
+      document.title = 'n8n Ops';
+    };
+  }, []);
+
   const selectedEnvironment = useAppStore((state) => state.selectedEnvironment);
   const setSelectedEnvironment = useAppStore((state) => state.setSelectedEnvironment);
   const queryClient = useQueryClient();

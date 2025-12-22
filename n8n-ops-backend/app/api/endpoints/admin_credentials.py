@@ -252,17 +252,28 @@ async def credential_preflight_check(
 
     # Get GitHub service for source environment (fallback for workflow data)
     from app.services.github_service import GitHubService
-    source_github = GitHubService(
-        repo=source_env.get("github_repo"),
-        branch=source_env.get("github_branch", "main"),
-        token=source_env.get("github_token")
-    )
+    source_github = None
+    source_env_type = source_env.get("n8n_type")
+    if source_env.get("git_repo_url") and source_env.get("git_pat"):
+        if not source_env_type:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Environment type is required for GitHub workflow operations. Set the environment type and try again.",
+            )
+        repo_url = source_env.get("git_repo_url", "").rstrip('/').replace('.git', '')
+        repo_parts = repo_url.split("/")
+        source_github = GitHubService(
+            token=source_env.get("git_pat"),
+            repo_owner=repo_parts[-2] if len(repo_parts) >= 2 else "",
+            repo_name=repo_parts[-1] if len(repo_parts) >= 1 else "",
+            branch=source_env.get("git_branch", "main"),
+        )
     
     # Try to get all workflows from GitHub at once for efficiency
     github_workflows = {}
-    if source_github.is_configured():
+    if source_github and source_github.is_configured():
         try:
-            github_workflows = await source_github.get_all_workflows_from_github()
+            github_workflows = await source_github.get_all_workflows_from_github(environment_type=source_env_type)
         except Exception as e:
             logger.warning(f"Failed to fetch workflows from GitHub: {e}")
     

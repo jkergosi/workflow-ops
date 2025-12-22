@@ -310,15 +310,37 @@ class N8NClient:
     async def get_executions(self, limit: int = 100) -> List[Dict[str, Any]]:
         """Fetch executions from N8N"""
         async with httpx.AsyncClient() as client:
+            # N8N API supports filtering by status and workflowId, but for sync we want all recent executions
+            # The API returns executions sorted by most recent first
+            params = {"limit": limit}
             response = await client.get(
                 f"{self.base_url}/api/v1/executions",
                 headers=self.headers,
-                params={"limit": limit},
+                params=params,
                 timeout=30.0
             )
             response.raise_for_status()
             data = response.json()
-            return data.get("data", []) if isinstance(data, dict) else data
+            
+            # Handle different response formats
+            if isinstance(data, dict):
+                # N8N v1 API returns {"data": [...]}
+                executions = data.get("data", [])
+            elif isinstance(data, list):
+                # Some versions might return array directly
+                executions = data
+            else:
+                executions = []
+            
+            # Log if we got executions to help debug
+            import logging
+            logger = logging.getLogger(__name__)
+            if executions:
+                logger.info(f"Fetched {len(executions)} executions from N8N (limit={limit})")
+            else:
+                logger.warning(f"No executions returned from N8N API (limit={limit}, status={response.status_code})")
+            
+            return executions
 
     async def get_credentials(self) -> List[Dict[str, Any]]:
         """Fetch all credentials from N8N via the credentials API.
@@ -326,6 +348,9 @@ class N8NClient:
         N8N's public API supports GET /credentials to list credentials.
         This returns credential metadata (name, type, id) but NOT the actual credential data.
         """
+        import logging
+        logger = logging.getLogger(__name__)
+        
         try:
             async with httpx.AsyncClient() as client:
                 response = await client.get(
@@ -335,31 +360,50 @@ class N8NClient:
                 )
                 response.raise_for_status()
                 data = response.json()
-                credentials = data.get("data", []) if isinstance(data, dict) else data
+                
+                # Handle different response formats
+                if isinstance(data, dict):
+                    # N8N v1 API returns {"data": [...]}
+                    credentials = data.get("data", [])
+                elif isinstance(data, list):
+                    # Some versions might return array directly
+                    credentials = data
+                else:
+                    credentials = []
+                
+                if credentials:
+                    logger.info(f"Fetched {len(credentials)} credentials from N8N API")
+                else:
+                    logger.warning(f"No credentials returned from N8N API (status={response.status_code})")
 
                 # Also enrich with workflow usage info by scanning workflows
-                workflows = await self.get_workflows()
-                credentials_usage = self._extract_credential_usage_from_workflows(workflows)
+                try:
+                    workflows = await self.get_workflows()
+                    credentials_usage = self._extract_credential_usage_from_workflows(workflows)
 
-                # Merge usage info into credentials
-                for cred in credentials:
-                    cred_id = cred.get("id")
-                    if cred_id and cred_id in credentials_usage:
-                        cred["used_by_workflows"] = credentials_usage[cred_id]
-                    else:
-                        cred["used_by_workflows"] = []
+                    # Merge usage info into credentials
+                    for cred in credentials:
+                        cred_id = cred.get("id")
+                        if cred_id and cred_id in credentials_usage:
+                            cred["used_by_workflows"] = credentials_usage[cred_id]
+                        else:
+                            cred["used_by_workflows"] = []
+                except Exception as workflow_error:
+                    logger.warning(f"Failed to enrich credentials with workflow usage: {str(workflow_error)}")
+                    # Continue without workflow usage info
 
                 return credentials
         except httpx.HTTPStatusError as e:
-            import logging
             # Don't fallback to workflow extraction - that creates phantom credentials
             # that get cached as if they were real N8N credentials
-            logging.warning(f"N8N credentials API not available (status {e.response.status_code}). "
+            logger.warning(f"N8N credentials API not available (status {e.response.status_code}). "
                           "Credentials will not be available. Check N8N API key permissions.")
+            logger.debug(f"Credentials API error response: {e.response.text if hasattr(e.response, 'text') else 'N/A'}")
             return []
         except Exception as e:
-            import logging
-            logging.warning(f"Failed to fetch credentials: {str(e)}. Returning empty list.")
+            logger.error(f"Failed to fetch credentials from N8N: {str(e)}")
+            import traceback
+            logger.error(traceback.format_exc())
             return []
 
     def _extract_credential_usage_from_workflows(self, workflows: List[Dict[str, Any]]) -> Dict[str, List[Dict[str, Any]]]:
@@ -524,6 +568,9 @@ class N8NClient:
 
     async def get_users(self) -> List[Dict[str, Any]]:
         """Fetch all users from N8N instance"""
+        import logging
+        logger = logging.getLogger(__name__)
+        
         async with httpx.AsyncClient() as client:
             try:
                 response = await client.get(
@@ -533,13 +580,38 @@ class N8NClient:
                 )
                 response.raise_for_status()
                 data = response.json()
-                return data.get("data", []) if isinstance(data, dict) else data
+                
+                # Handle different response formats
+                if isinstance(data, dict):
+                    # N8N v1 API returns {"data": [...]}
+                    users = data.get("data", [])
+                elif isinstance(data, list):
+                    # Some versions might return array directly
+                    users = data
+                else:
+                    users = []
+                
+                if users:
+                    logger.info(f"Fetched {len(users)} users from N8N API")
+                else:
+                    logger.warning(f"No users returned from N8N API (status={response.status_code})")
+                
+                return users
             except httpx.HTTPStatusError as e:
                 # If users endpoint returns 401/403, it may not be accessible
                 # Return empty list instead of failing
                 if e.response.status_code in [401, 403, 404]:
+                    logger.warning(f"N8N users API not available (status {e.response.status_code}). "
+                                  "Users will not be available. Check N8N API key permissions.")
+                    logger.debug(f"Users API error response: {e.response.text if hasattr(e.response, 'text') else 'N/A'}")
                     return []
+                logger.error(f"Failed to fetch users from N8N: HTTP {e.response.status_code}")
                 raise
+            except Exception as e:
+                logger.error(f"Failed to fetch users from N8N: {str(e)}")
+                import traceback
+                logger.error(traceback.format_exc())
+                return []
 
     async def get_tags(self) -> List[Dict[str, Any]]:
         """Fetch all tags from N8N instance"""

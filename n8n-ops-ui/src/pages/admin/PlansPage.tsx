@@ -1,6 +1,6 @@
 // @ts-nocheck
 // TODO: Fix TypeScript errors in this file
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -171,6 +171,12 @@ const planPricing = {
 };
 
 export function PlansPage() {
+  useEffect(() => {
+    document.title = 'Plans - n8n Ops';
+    return () => {
+      document.title = 'n8n Ops';
+    };
+  }, []);
   const [editDialogOpen, setEditDialogOpen] = useState(false);
   const [selectedPlan, setSelectedPlan] = useState<string | null>(null);
 

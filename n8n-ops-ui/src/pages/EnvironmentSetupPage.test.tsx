@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { screen, waitFor } from '@testing-library/react';
+import { fireEvent, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { http, HttpResponse } from 'msw';
 import { EnvironmentSetupPage } from './EnvironmentSetupPage';
@@ -62,7 +62,8 @@ describe('EnvironmentSetupPage', () => {
     it('should display N8N instance section', async () => {
       render(<EnvironmentSetupPage />);
 
-      expect(screen.getByText(/n8n instance/i)).toBeInTheDocument();
+      // "N8N instance" appears in multiple helper texts; assert the section heading specifically
+      expect(screen.getByRole('heading', { name: /n8n instance/i })).toBeInTheDocument();
     });
 
     it('should display GitHub integration section', async () => {
@@ -162,10 +163,12 @@ describe('EnvironmentSetupPage', () => {
       render(<EnvironmentSetupPage />);
 
       const typeSelect = screen.getByLabelText(/type/i);
-      await userEvent.click(typeSelect);
+      typeSelect.focus();
+      fireEvent.keyDown(typeSelect, { key: 'Enter' });
 
       await waitFor(() => {
-        expect(screen.getByText('Development')).toBeInTheDocument();
+        const listbox = screen.getByRole('listbox');
+        expect(within(listbox).getByRole('option', { name: 'Development' })).toBeInTheDocument();
       });
     });
 
@@ -173,10 +176,12 @@ describe('EnvironmentSetupPage', () => {
       render(<EnvironmentSetupPage />);
 
       const typeSelect = screen.getByLabelText(/type/i);
-      await userEvent.click(typeSelect);
+      typeSelect.focus();
+      fireEvent.keyDown(typeSelect, { key: 'Enter' });
 
       await waitFor(() => {
-        expect(screen.getByText('Staging')).toBeInTheDocument();
+        const listbox = screen.getByRole('listbox');
+        expect(within(listbox).getByRole('option', { name: 'Staging' })).toBeInTheDocument();
       });
     });
 
@@ -184,10 +189,12 @@ describe('EnvironmentSetupPage', () => {
       render(<EnvironmentSetupPage />);
 
       const typeSelect = screen.getByLabelText(/type/i);
-      await userEvent.click(typeSelect);
+      typeSelect.focus();
+      fireEvent.keyDown(typeSelect, { key: 'Enter' });
 
       await waitFor(() => {
-        expect(screen.getByText('Production')).toBeInTheDocument();
+        const listbox = screen.getByRole('listbox');
+        expect(within(listbox).getByRole('option', { name: 'Production' })).toBeInTheDocument();
       });
     });
   });

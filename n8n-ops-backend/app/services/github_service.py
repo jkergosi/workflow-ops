@@ -48,30 +48,53 @@ class GitHubService:
         # Ensure it's not empty
         return sanitized if sanitized else 'unnamed_workflow'
 
+    def _sanitize_foldername(self, name: str) -> str:
+        """Sanitize environment type key for use as folder name"""
+        # Replace spaces and invalid characters with underscores
+        sanitized = re.sub(r'[<>:"/\\|?*\s]', '_', name)
+        # Remove leading/trailing underscores and dots
+        sanitized = sanitized.strip('_.')
+        # Collapse multiple underscores
+        sanitized = re.sub(r'_+', '_', sanitized)
+        # Ensure it's not empty
+        return sanitized if sanitized else 'default'
+
+    def _workflows_base_path(self, environment_type: str) -> str:
+        """Return the workflows folder path for a given environment type key."""
+        if not environment_type or not str(environment_type).strip():
+            raise ValueError("environment_type is required for GitHub workflow operations")
+        sanitized_folder = self._sanitize_foldername(str(environment_type))
+        return f"workflows/{sanitized_folder}"
+
     async def sync_workflow_to_github(
         self,
         workflow_id: str,
         workflow_name: str,
         workflow_data: Dict[str, Any],
         commit_message: Optional[str] = None,
-        environment_type: Optional[str] = None
+        environment_type: str = None,
     ) -> bool:
-        """Sync a workflow to GitHub repository"""
+        """Sync a workflow to GitHub repository.
+
+        Args:
+            workflow_id: The workflow ID (used for filename)
+            workflow_name: The workflow name (stored in comment for reference)
+            workflow_data: The workflow data to save
+            commit_message: Optional commit message
+            environment_type: Environment type key for folder path (e.g., 'dev', 'staging', 'production')
+        """
         if not self.is_configured() or not self.repo:
             raise ValueError("GitHub is not properly configured")
 
         try:
-            # Use sanitized workflow name as filename
-            sanitized_name = self._sanitize_filename(workflow_name)
-            # Use environment-specific path if provided (e.g., workflows/dev/, workflows/staging/)
-            if environment_type:
-                file_path = f"workflows/{environment_type}/{sanitized_name}.json"
-            else:
-                file_path = f"workflows/{sanitized_name}.json"
+            # Use workflow ID as filename (IDs are unique and stable)
+            sanitized_id = self._sanitize_filename(workflow_id)
+            base_path = self._workflows_base_path(environment_type)
+            file_path = f"{base_path}/{sanitized_id}.json"
 
-            # Add workflow ID comment to the data
+            # Add workflow name comment to the data (name for human readability, ID is the filename)
             workflow_with_comment = {
-                "_comment": f"Workflow ID: {workflow_id}",
+                "_comment": f"Workflow: {workflow_name} (ID: {workflow_id})",
                 **workflow_data
             }
 
@@ -111,42 +134,18 @@ class GitHubService:
             print(f"Error syncing workflow to GitHub: {str(e)}")
             raise
 
-    async def get_workflow_from_github(self, workflow_id: str, environment_type: Optional[str] = None) -> Optional[Dict[str, Any]]:
-        """Get a single workflow from GitHub by ID"""
-        if not self.is_configured() or not self.repo:
-            return None
-
-        try:
-            # Try with environment_type path first if provided
-            if environment_type:
-                file_path = f"workflows/{environment_type}/{workflow_id}.json"
-                try:
-                    file_content = self.repo.get_contents(file_path, ref=self.branch)
-                    content = base64.b64decode(file_content.content).decode('utf-8')
-                    return json.loads(content)
-                except GithubException:
-                    pass  # Fall through to try without environment_type
-            
-            # Try without environment_type path
-            file_path = f"workflows/{workflow_id}.json"
-            file_content = self.repo.get_contents(file_path, ref=self.branch)
-            content = base64.b64decode(file_content.content).decode('utf-8')
-            return json.loads(content)
-        except GithubException:
-            return None
-
     async def get_all_workflows_from_github(
         self,
-        environment_type: Optional[str] = None,
+        environment_type: str = None,
         commit_sha: Optional[str] = None
     ) -> Dict[str, Dict[str, Any]]:
         """
         Get all workflows from GitHub, optionally at a specific commit.
-        
+
         Args:
-            environment_type: Filter by environment folder (e.g., 'dev', 'staging', 'prod')
+            environment_type: Environment type key for folder path (e.g., 'dev', 'staging', 'production')
             commit_sha: Specific Git commit SHA to fetch from. If None, uses current branch HEAD.
-            
+
         Returns:
             Dict mapping workflow_id to workflow_data
         """
@@ -156,11 +155,8 @@ class GitHubService:
         try:
             workflows = {}
             ref = commit_sha or self.branch
-            
-            if environment_type:
-                base_path = f"workflows/{environment_type}"
-            else:
-                base_path = "workflows"
+
+            base_path = self._workflows_base_path(environment_type)
             
             try:
                 contents = self.repo.get_contents(base_path, ref=ref)
@@ -214,16 +210,36 @@ class GitHubService:
         if workflow_data.get("id"):
             return workflow_data["id"]
         comment = workflow_data.get("_comment", "")
+        # Handle new format: "Workflow: {name} (ID: {id})"
+        if "(ID:" in comment:
+            id_part = comment.split("(ID:")[-1]
+            return id_part.rstrip(")").strip()
+        # Handle old format: "Workflow ID: {id}"
         if "Workflow ID:" in comment:
             return comment.split("Workflow ID:")[-1].strip()
         return None
 
-    async def get_workflow_by_name(self, workflow_name: str) -> Optional[Dict[str, Any]]:
+    def _extract_workflow_name(self, workflow_data: Dict[str, Any]) -> Optional[str]:
+        """Extract workflow name from workflow data or _comment field."""
+        if workflow_data.get("name"):
+            return workflow_data["name"]
+        comment = workflow_data.get("_comment", "")
+        # Handle new format: "Workflow: {name} (ID: {id})"
+        if comment.startswith("Workflow:") and "(ID:" in comment:
+            name_part = comment.split("Workflow:")[-1].split("(ID:")[0]
+            return name_part.strip()
+        return None
+
+    async def get_workflow_by_name(self, workflow_name: str, environment_type: str = None) -> Optional[Dict[str, Any]]:
         """
         Get a workflow from GitHub by its name.
 
+        Since files are saved by ID, this method scans all workflow files
+        and searches by name inside the workflow data.
+
         Args:
-            workflow_name: The workflow name (will be sanitized to match filename)
+            workflow_name: The workflow name to search for
+            environment_type: Environment type key for folder path
 
         Returns:
             Workflow data dict with commit info, or None if not found
@@ -232,10 +248,85 @@ class GitHubService:
             return None
 
         try:
-            sanitized_name = self._sanitize_filename(workflow_name)
-            file_path = f"workflows/{sanitized_name}.json"
+            base_path = self._workflows_base_path(environment_type)
 
-            file_content = self.repo.get_contents(file_path, ref=self.branch)
+            # Get all files in the workflows folder
+            try:
+                contents = self.repo.get_contents(base_path, ref=self.branch)
+            except GithubException as e:
+                if e.status == 404:
+                    return None
+                raise
+
+            if not isinstance(contents, list):
+                contents = [contents]
+
+            # Scan each file and look for matching name
+            for content_file in contents:
+                if content_file.type == "dir":
+                    continue  # Skip subdirectories when searching at top level
+                if not content_file.name.endswith('.json'):
+                    continue
+
+                # Parse the file and check the name
+                workflow_data = self._parse_workflow_file(content_file, self.branch)
+                if not workflow_data:
+                    continue
+
+                # Check if name matches (from workflow data or comment)
+                wf_name = workflow_data.get("name") or self._extract_workflow_name(workflow_data)
+                if wf_name == workflow_name:
+                    # Found the workflow, get commit info
+                    file_path = content_file.path
+                    commits = self.repo.get_commits(path=file_path, sha=self.branch)
+                    latest_commit = None
+                    try:
+                        latest_commit = commits[0] if commits.totalCount > 0 else None
+                    except Exception:
+                        pass
+
+                    return {
+                        "workflow": workflow_data,
+                        "commit_sha": latest_commit.sha if latest_commit else None,
+                        "commit_date": latest_commit.commit.author.date.isoformat() if latest_commit else None,
+                        "commit_message": latest_commit.commit.message if latest_commit else None,
+                        "file_path": file_path
+                    }
+
+            return None
+
+        except GithubException as e:
+            if e.status == 404:
+                return None
+            raise
+
+    async def get_workflow_by_id(self, workflow_id: str, environment_type: str = None) -> Optional[Dict[str, Any]]:
+        """
+        Get a workflow from GitHub by its ID (direct file lookup).
+
+        Since files are saved by ID, this is a direct file lookup.
+
+        Args:
+            workflow_id: The workflow ID (matches filename)
+            environment_type: Environment type key for folder path
+
+        Returns:
+            Workflow data dict with commit info, or None if not found
+        """
+        if not self.is_configured() or not self.repo:
+            return None
+
+        try:
+            sanitized_id = self._sanitize_filename(workflow_id)
+            base_path = self._workflows_base_path(environment_type)
+            file_path = f"{base_path}/{sanitized_id}.json"
+
+            try:
+                file_content = self.repo.get_contents(file_path, ref=self.branch)
+            except GithubException as e:
+                if e.status == 404:
+                    return None
+                raise
 
             # Decode base64 content
             content = base64.b64decode(file_content.content).decode('utf-8')
@@ -249,8 +340,7 @@ class GitHubService:
             except Exception:
                 pass
 
-            # Add metadata
-            result = {
+            return {
                 "workflow": workflow_data,
                 "commit_sha": latest_commit.sha if latest_commit else None,
                 "commit_date": latest_commit.commit.author.date.isoformat() if latest_commit else None,
@@ -258,19 +348,43 @@ class GitHubService:
                 "file_path": file_path
             }
 
-            return result
-
         except GithubException as e:
             if e.status == 404:
                 return None
             raise
 
-    async def get_workflow_commit_info(self, workflow_name: str) -> Optional[Dict[str, Any]]:
+    async def get_workflow_commit_info(self, workflow_name: str, environment_type: str = None) -> Optional[Dict[str, Any]]:
         """
-        Get just the commit info for a workflow without fetching content.
+        Get just the commit info for a workflow by name without fetching full content.
+
+        Since files are saved by ID, this scans files to find matching name.
 
         Args:
-            workflow_name: The workflow name
+            workflow_name: The workflow name to search for
+            environment_type: Environment type key for folder path
+
+        Returns:
+            Dict with commit info or None
+        """
+        # Reuse get_workflow_by_name which already handles the scanning
+        result = await self.get_workflow_by_name(workflow_name, environment_type)
+        if not result:
+            return None
+
+        return {
+            "sha": result.get("commit_sha"),
+            "date": result.get("commit_date"),
+            "message": result.get("commit_message"),
+            "author": None  # Not available from get_workflow_by_name, but rarely needed
+        }
+
+    async def get_workflow_commit_info_by_id(self, workflow_id: str, environment_type: str = None) -> Optional[Dict[str, Any]]:
+        """
+        Get just the commit info for a workflow by ID (direct file lookup).
+
+        Args:
+            workflow_id: The workflow ID (matches filename)
+            environment_type: Environment type key for folder path
 
         Returns:
             Dict with commit info or None
@@ -279,8 +393,9 @@ class GitHubService:
             return None
 
         try:
-            sanitized_name = self._sanitize_filename(workflow_name)
-            file_path = f"workflows/{sanitized_name}.json"
+            sanitized_id = self._sanitize_filename(workflow_id)
+            base_path = self._workflows_base_path(environment_type)
+            file_path = f"{base_path}/{sanitized_id}.json"
 
             # Check if file exists
             try:
@@ -315,14 +430,25 @@ class GitHubService:
         self,
         workflow_id: str,
         workflow_name: str,
-        commit_message: Optional[str] = None
+        commit_message: Optional[str] = None,
+        environment_type: str = None
     ) -> bool:
-        """Delete a workflow from GitHub"""
+        """Delete a workflow from GitHub.
+
+        Args:
+            workflow_id: The workflow ID (used for filename)
+            workflow_name: The workflow name (used for commit message)
+            commit_message: Optional commit message
+            environment_type: Environment type key for folder path
+        """
         if not self.is_configured() or not self.repo:
             raise ValueError("GitHub is not properly configured")
 
         try:
-            file_path = f"workflows/{workflow_id}.json"
+            # Use workflow ID as filename (consistent with sync_workflow_to_github)
+            sanitized_id = self._sanitize_filename(workflow_id)
+            base_path = self._workflows_base_path(environment_type)
+            file_path = f"{base_path}/{sanitized_id}.json"
 
             if not commit_message:
                 commit_message = f"Delete workflow: {workflow_name}"

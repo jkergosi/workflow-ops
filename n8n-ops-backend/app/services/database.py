@@ -1,8 +1,11 @@
+import logging
 from supabase import create_client, Client
 from app.core.config import settings
 from typing import List, Dict, Any, Optional
 from datetime import datetime
 from uuid import uuid4
+
+logger = logging.getLogger(__name__)
 
 
 class DatabaseService:
@@ -18,7 +21,25 @@ class DatabaseService:
     async def get_environments(self, tenant_id: str) -> List[Dict[str, Any]]:
         """Get all environments for a tenant"""
         response = self.client.table("environments").select("*").eq("tenant_id", tenant_id).execute()
-        return response.data
+        environments = response.data or []
+
+        # Sort environments based on Environment Types sort order (system-configurable).
+        # Falls back to lexicographic type and then name when types aren't configured.
+        try:
+            env_types = await self.get_environment_types(tenant_id, ensure_defaults=True)
+            order_map = {t.get("key"): int(t.get("sort_order", 0)) for t in (env_types or []) if t.get("key")}
+
+            def sort_key(env: Dict[str, Any]):
+                env_type = env.get("n8n_type")
+                # Unknown/None types go last
+                type_order = order_map.get(env_type, 10_000)
+                name = (env.get("n8n_name") or env.get("name") or "").lower()
+                return (type_order, str(env_type or "").lower(), name)
+
+            return sorted(environments, key=sort_key)
+        except Exception:
+            # If environment types table isn't present, don't break.
+            return environments
 
     async def get_environment(self, environment_id: str, tenant_id: str) -> Optional[Dict[str, Any]]:
         """Get a specific environment"""
@@ -44,6 +65,51 @@ class DatabaseService:
         """Delete an environment"""
         self.client.table("environments").delete().eq("id", environment_id).eq("tenant_id", tenant_id).execute()
         return True
+
+    # Environment type operations (system-configurable ordering)
+    async def get_environment_types(self, tenant_id: str, ensure_defaults: bool = False) -> List[Dict[str, Any]]:
+        """Get environment types for a tenant (sorted by sort_order)."""
+        response = self.client.table("environment_types").select("*").eq("tenant_id", tenant_id).order("sort_order").execute()
+        types = response.data or []
+
+        if types or not ensure_defaults:
+            return types
+
+        # Seed defaults for the tenant if none exist
+        defaults = [
+            {"tenant_id": tenant_id, "key": "dev", "label": "Development", "sort_order": 10, "is_active": True},
+            {"tenant_id": tenant_id, "key": "staging", "label": "Staging", "sort_order": 20, "is_active": True},
+            {"tenant_id": tenant_id, "key": "production", "label": "Production", "sort_order": 30, "is_active": True},
+        ]
+        # Upsert by tenant_id+key (unique constraint in migration)
+        self.client.table("environment_types").upsert(defaults).execute()
+        response2 = self.client.table("environment_types").select("*").eq("tenant_id", tenant_id).order("sort_order").execute()
+        return response2.data or []
+
+    async def create_environment_type(self, data: Dict[str, Any]) -> Dict[str, Any]:
+        response = self.client.table("environment_types").insert(data).execute()
+        return response.data[0]
+
+    async def update_environment_type(self, env_type_id: str, tenant_id: str, data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        response = (
+            self.client.table("environment_types")
+            .update(data)
+            .eq("id", env_type_id)
+            .eq("tenant_id", tenant_id)
+            .execute()
+        )
+        return response.data[0] if response.data else None
+
+    async def delete_environment_type(self, env_type_id: str, tenant_id: str) -> bool:
+        self.client.table("environment_types").delete().eq("id", env_type_id).eq("tenant_id", tenant_id).execute()
+        return True
+
+    async def reorder_environment_types(self, tenant_id: str, ordered_ids: List[str]) -> List[Dict[str, Any]]:
+        # Update sort_order based on list position
+        updates = [{"id": _id, "tenant_id": tenant_id, "sort_order": idx * 10} for idx, _id in enumerate(ordered_ids)]
+        self.client.table("environment_types").upsert(updates).execute()
+        response = self.client.table("environment_types").select("*").eq("tenant_id", tenant_id).order("sort_order").execute()
+        return response.data or []
 
     async def update_environment_workflow_count(self, environment_id: str, tenant_id: str, count: int) -> Optional[Dict[str, Any]]:
         """Update the workflow count for an environment"""
@@ -213,6 +279,47 @@ class DatabaseService:
         """Delete an execution record"""
         self.client.table("executions").delete().eq("id", execution_id).eq("tenant_id", tenant_id).execute()
         return True
+
+    async def get_failed_executions(
+        self,
+        tenant_id: str,
+        since: str,
+        until: str,
+        environment_id: str = None
+    ) -> List[Dict[str, Any]]:
+        """Get failed executions in a time period for error intelligence"""
+        query = self.client.table("executions").select(
+            "id, workflow_id, environment_id, status, started_at, finished_at, data"
+        ).eq("tenant_id", tenant_id).eq("status", "error")
+
+        if environment_id:
+            query = query.eq("environment_id", environment_id)
+
+        # Apply time range filter
+        query = query.gte("started_at", since).lte("started_at", until)
+        query = query.order("started_at", desc=True).limit(500)
+
+        response = query.execute()
+        return response.data
+
+    async def get_last_workflow_failure(
+        self,
+        tenant_id: str,
+        workflow_id: str,
+        environment_id: str = None
+    ) -> Optional[Dict[str, Any]]:
+        """Get the last failed execution for a specific workflow"""
+        query = self.client.table("executions").select(
+            "id, workflow_id, environment_id, status, started_at, finished_at, data"
+        ).eq("tenant_id", tenant_id).eq("workflow_id", workflow_id).eq("status", "error")
+
+        if environment_id:
+            query = query.eq("environment_id", environment_id)
+
+        query = query.order("started_at", desc=True).limit(1)
+
+        response = query.execute()
+        return response.data[0] if response.data else None
 
     # Tag operations
     async def create_tag(self, tag_data: Dict[str, Any]) -> Dict[str, Any]:
@@ -888,15 +995,21 @@ class DatabaseService:
         environment_id: Optional[str] = None
     ) -> Dict[str, Any]:
         """Get execution statistics for a time range"""
+        import logging
+        logger = logging.getLogger(__name__)
+        
         query = self.client.table("executions").select("status, execution_time").eq(
             "tenant_id", tenant_id
         ).gte("started_at", since).lt("started_at", until)
 
         if environment_id:
             query = query.eq("environment_id", environment_id)
+            logger.info(f"get_execution_stats: Filtering by environment_id={environment_id}")
 
+        logger.info(f"get_execution_stats: Query params - tenant_id={tenant_id}, since={since}, until={until}, environment_id={environment_id}")
         response = query.execute()
         executions = response.data
+        logger.info(f"get_execution_stats: Found {len(executions)} executions")
 
         total = len(executions)
         success = sum(1 for e in executions if e.get("status") == "success")
@@ -952,7 +1065,7 @@ class DatabaseService:
             if wf_id not in workflow_stats:
                 workflow_stats[wf_id] = {
                     "workflow_id": wf_id,
-                    "workflow_name": e.get("workflow_name") or wf_id,
+                    "workflow_name": e.get("workflow_name"),  # May be None, we'll look it up later
                     "execution_count": 0,
                     "success_count": 0,
                     "failure_count": 0,
@@ -968,6 +1081,33 @@ class DatabaseService:
 
             if e.get("execution_time") is not None:
                 stats["durations"].append(e["execution_time"])
+
+        # Look up workflow names from workflows table for any missing names
+        missing_name_ids = [wf_id for wf_id, stats in workflow_stats.items() if not stats["workflow_name"]]
+        if missing_name_ids:
+            try:
+                # Build query to get workflow names
+                workflows_query = self.client.table("workflows").select(
+                    "n8n_workflow_id, name"
+                ).eq("tenant_id", tenant_id).eq("is_deleted", False).in_("n8n_workflow_id", missing_name_ids)
+
+                if environment_id:
+                    workflows_query = workflows_query.eq("environment_id", environment_id)
+
+                workflows_response = workflows_query.execute()
+                workflow_name_map = {w["n8n_workflow_id"]: w["name"] for w in workflows_response.data if w.get("n8n_workflow_id")}
+
+                # Update workflow_stats with looked-up names
+                for wf_id in missing_name_ids:
+                    if wf_id in workflow_name_map:
+                        workflow_stats[wf_id]["workflow_name"] = workflow_name_map[wf_id]
+                    else:
+                        workflow_stats[wf_id]["workflow_name"] = wf_id  # Fallback to ID
+            except Exception as e:
+                logger.warning(f"Failed to look up workflow names: {e}")
+                # Fallback to using IDs
+                for wf_id in missing_name_ids:
+                    workflow_stats[wf_id]["workflow_name"] = wf_id
 
         # Calculate final stats and sort
         result = []
@@ -1292,6 +1432,223 @@ class DatabaseService:
             query = query.eq("tenant_id", tenant_id)
         response = query.order("created_at", desc=True).limit(limit).execute()
         return response.data
+
+
+    # ---------- Provider Operations ----------
+
+    async def get_providers(self, active_only: bool = True) -> List[Dict[str, Any]]:
+        """Get all providers"""
+        query = self.client.table("providers").select("*")
+        if active_only:
+            query = query.eq("is_active", True)
+        response = query.order("name").execute()
+        return response.data or []
+
+    async def get_provider(self, provider_id: str) -> Optional[Dict[str, Any]]:
+        """Get a specific provider by ID"""
+        try:
+            response = self.client.table("providers").select("*").eq("id", provider_id).single().execute()
+            return response.data
+        except Exception:
+            return None
+
+    async def get_provider_by_name(self, name: str) -> Optional[Dict[str, Any]]:
+        """Get a provider by name"""
+        try:
+            response = self.client.table("providers").select("*").eq("name", name).single().execute()
+            return response.data
+        except Exception:
+            return None
+
+    async def get_provider_plans(self, provider_id: str, active_only: bool = True) -> List[Dict[str, Any]]:
+        """Get plans for a specific provider"""
+        query = self.client.table("provider_plans").select("*").eq("provider_id", provider_id)
+        if active_only:
+            query = query.eq("is_active", True)
+        response = query.order("sort_order").execute()
+        return response.data or []
+
+    async def get_provider_plan(self, plan_id: str) -> Optional[Dict[str, Any]]:
+        """Get a specific plan by ID"""
+        try:
+            response = self.client.table("provider_plans").select("*").eq("id", plan_id).single().execute()
+            return response.data
+        except Exception:
+            return None
+
+    async def get_providers_with_plans(self, active_only: bool = True) -> List[Dict[str, Any]]:
+        """Get all providers with their plans"""
+        providers = await self.get_providers(active_only)
+        for provider in providers:
+            provider["plans"] = await self.get_provider_plans(provider["id"], active_only)
+        return providers
+
+    # Tenant Provider Subscription operations
+    async def get_tenant_provider_subscriptions(self, tenant_id: str) -> List[Dict[str, Any]]:
+        """Get all provider subscriptions for a tenant"""
+        response = self.client.table("tenant_provider_subscriptions").select("*").eq("tenant_id", tenant_id).execute()
+        subscriptions = response.data or []
+
+        # Enrich with provider and plan details
+        for sub in subscriptions:
+            sub["provider"] = await self.get_provider(sub["provider_id"])
+            sub["plan"] = await self.get_provider_plan(sub["plan_id"]) if sub.get("plan_id") else None
+
+        return subscriptions
+
+    async def get_tenant_provider_subscription(
+        self,
+        tenant_id: str,
+        provider_id: str
+    ) -> Optional[Dict[str, Any]]:
+        """Get a specific provider subscription for a tenant"""
+        try:
+            response = (
+                self.client.table("tenant_provider_subscriptions")
+                .select("*")
+                .eq("tenant_id", tenant_id)
+                .eq("provider_id", provider_id)
+                .single()
+                .execute()
+            )
+            sub = response.data
+            if sub:
+                sub["provider"] = await self.get_provider(sub["provider_id"])
+                sub["plan"] = await self.get_provider_plan(sub["plan_id"]) if sub.get("plan_id") else None
+            return sub
+        except Exception:
+            return None
+
+    async def get_tenant_provider_subscription_by_stripe_id(
+        self,
+        stripe_subscription_id: str
+    ) -> Optional[Dict[str, Any]]:
+        """Get a subscription by its Stripe subscription ID"""
+        try:
+            response = (
+                self.client.table("tenant_provider_subscriptions")
+                .select("*")
+                .eq("stripe_subscription_id", stripe_subscription_id)
+                .single()
+                .execute()
+            )
+            return response.data
+        except Exception:
+            return None
+
+    async def create_tenant_provider_subscription(
+        self,
+        subscription_data: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """Create a provider subscription for a tenant"""
+        subscription_data["created_at"] = datetime.utcnow().isoformat()
+        subscription_data["updated_at"] = datetime.utcnow().isoformat()
+        response = self.client.table("tenant_provider_subscriptions").insert(subscription_data).execute()
+        return response.data[0]
+
+    async def update_tenant_provider_subscription(
+        self,
+        subscription_id: str,
+        tenant_id: str,
+        subscription_data: Dict[str, Any]
+    ) -> Optional[Dict[str, Any]]:
+        """Update a provider subscription"""
+        subscription_data["updated_at"] = datetime.utcnow().isoformat()
+        response = (
+            self.client.table("tenant_provider_subscriptions")
+            .update(subscription_data)
+            .eq("id", subscription_id)
+            .eq("tenant_id", tenant_id)
+            .execute()
+        )
+        return response.data[0] if response.data else None
+
+    async def update_tenant_provider_subscription_by_provider(
+        self,
+        tenant_id: str,
+        provider_id: str,
+        subscription_data: Dict[str, Any]
+    ) -> Optional[Dict[str, Any]]:
+        """Update a provider subscription by provider ID"""
+        subscription_data["updated_at"] = datetime.utcnow().isoformat()
+        response = (
+            self.client.table("tenant_provider_subscriptions")
+            .update(subscription_data)
+            .eq("tenant_id", tenant_id)
+            .eq("provider_id", provider_id)
+            .execute()
+        )
+        return response.data[0] if response.data else None
+
+    async def delete_tenant_provider_subscription(
+        self,
+        subscription_id: str,
+        tenant_id: str
+    ) -> bool:
+        """Delete a provider subscription"""
+        self.client.table("tenant_provider_subscriptions").delete().eq("id", subscription_id).eq("tenant_id", tenant_id).execute()
+        return True
+
+    async def get_active_provider_subscriptions(self, tenant_id: str) -> List[Dict[str, Any]]:
+        """Get only active provider subscriptions for a tenant"""
+        response = (
+            self.client.table("tenant_provider_subscriptions")
+            .select("*")
+            .eq("tenant_id", tenant_id)
+            .eq("status", "active")
+            .execute()
+        )
+        subscriptions = response.data or []
+
+        # Enrich with provider and plan details
+        for sub in subscriptions:
+            sub["provider"] = await self.get_provider(sub["provider_id"])
+            sub["plan"] = await self.get_provider_plan(sub["plan_id"]) if sub.get("plan_id") else None
+
+        return subscriptions
+
+    # Admin Provider Management
+    async def update_provider(self, provider_id: str, update_data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """Update a provider"""
+        response = (
+            self.client.table("providers")
+            .update(update_data)
+            .eq("id", provider_id)
+            .execute()
+        )
+        return response.data[0] if response.data else None
+
+    async def get_all_provider_plans(self, provider_id: str) -> List[Dict[str, Any]]:
+        """Get all plans for a provider (including inactive)"""
+        response = (
+            self.client.table("provider_plans")
+            .select("*")
+            .eq("provider_id", provider_id)
+            .order("sort_order")
+            .execute()
+        )
+        return response.data or []
+
+    async def create_provider_plan(self, plan_data: Dict[str, Any]) -> Dict[str, Any]:
+        """Create a new provider plan"""
+        plan_data["created_at"] = datetime.utcnow().isoformat()
+        response = self.client.table("provider_plans").insert(plan_data).execute()
+        return response.data[0]
+
+    async def update_provider_plan(self, plan_id: str, update_data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """Update a provider plan"""
+        response = (
+            self.client.table("provider_plans")
+            .update(update_data)
+            .eq("id", plan_id)
+            .execute()
+        )
+        return response.data[0] if response.data else None
+
+    async def delete_provider_plan(self, plan_id: str) -> bool:
+        """Delete a provider plan"""
+        self.client.table("provider_plans").delete().eq("id", plan_id).execute()
+        return True
 
 
 # Global instance

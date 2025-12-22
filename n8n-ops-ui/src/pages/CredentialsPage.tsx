@@ -1,6 +1,6 @@
 // @ts-nocheck
 // TODO: Fix TypeScript errors in this file
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useEffect } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -132,6 +132,12 @@ const CREDENTIAL_TYPE_FIELDS: Record<string, { name: string; fields: { key: stri
 };
 
 export function CredentialsPage() {
+  useEffect(() => {
+    document.title = 'Credentials - n8n Ops';
+    return () => {
+      document.title = 'n8n Ops';
+    };
+  }, []);
   const selectedEnvironment = useAppStore((state) => state.selectedEnvironment);
   const setSelectedEnvironment = useAppStore((state) => state.setSelectedEnvironment);
   const queryClient = useQueryClient();
@@ -216,7 +222,7 @@ export function CredentialsPage() {
     mutationFn: ({ id, data }: { id: string; data: { name?: string; data?: Record<string, any> } }) =>
       apiClient.updateCredential(id, data),
     onSuccess: () => {
-      toast.success('Credential updated successfully');
+      toast.success('Physical credential updated successfully');
       queryClient.invalidateQueries({ queryKey: ['physical-credentials'] });
       setEditDialogOpen(false);
       resetForm();
@@ -311,6 +317,19 @@ export function CredentialsPage() {
     },
   });
 
+  // Delete mapping mutation (unmap)
+  const deleteMappingMutation = useMutation({
+    mutationFn: (mappingId: string) => apiClient.deleteCredentialMapping(mappingId),
+    onSuccess: () => {
+      toast.success('Mapping removed successfully');
+      queryClient.invalidateQueries({ queryKey: ['credential-matrix'] });
+    },
+    onError: (error: any) => {
+      const message = error.response?.data?.detail || 'Failed to remove mapping';
+      toast.error(message);
+    },
+  });
+
   // Handler for opening mapping dialog
   const handleCreateMapping = (logicalId: string, envId: string) => {
     setMappingLogicalId(logicalId);
@@ -335,6 +354,11 @@ export function CredentialsPage() {
       physical_name: selectedCred.name,
       physical_type: selectedCred.type,
     });
+  };
+
+  // Handler for unmapping
+  const handleUnmapMapping = (mappingId: string) => {
+    deleteMappingMutation.mutate(mappingId);
   };
 
   // Get logical credential name for display
@@ -569,7 +593,7 @@ export function CredentialsPage() {
       <Alert>
         <Info className="h-4 w-4" />
         <AlertDescription>
-          Credential secrets are encrypted and stored securely in N8N. Only metadata (name, type) is cached locally.
+          Physical credential secrets are encrypted and stored securely in N8N. Only metadata (name, type) is cached locally.
           Actual secrets are never visible or stored in this application.
         </AlertDescription>
       </Alert>
@@ -578,11 +602,11 @@ export function CredentialsPage() {
         <TabsList>
           <TabsTrigger value="credentials" className="gap-2">
             <Key className="h-4 w-4" />
-            Physical Credentials
+            Credentials
           </TabsTrigger>
           <TabsTrigger value="matrix" className="gap-2">
             <Grid3X3 className="h-4 w-4" />
-            Credential Matrix
+            Mapping
           </TabsTrigger>
           <TabsTrigger value="discover" className="gap-2">
             <Search className="h-4 w-4" />
@@ -599,10 +623,10 @@ export function CredentialsPage() {
             <CardHeader>
               <CardTitle className="flex items-center gap-2">
                 <Key className="h-5 w-5" />
-                N8N Credentials
+                Credentials
               </CardTitle>
               <CardDescription>
-                Credentials used by workflows in your N8N environments.
+                Physical credentials exist in N8N and hold secrets. These are used by workflows in your N8N environments.
               </CardDescription>
             </CardHeader>
             <CardContent>
@@ -661,7 +685,7 @@ export function CredentialsPage() {
               {credentials?.data?.length === 0 && (
                 <div className="space-y-2">
                   <p className="text-xs text-muted-foreground max-w-md mx-auto">
-                    Click "Create Credential" to add a new credential, or "Sync from N8N" to import existing credentials.
+                    Click "Create Physical Credential" to add a new physical credential, or "Sync from N8N" to import existing credentials.
                   </p>
                   <Button onClick={openCreateDialog} size="sm" variant="outline">
                     <Plus className="h-4 w-4 mr-2" />
@@ -799,7 +823,7 @@ export function CredentialsPage() {
         </TabsContent>
 
         <TabsContent value="matrix">
-          <CredentialMatrix onCreateMapping={handleCreateMapping} />
+          <CredentialMatrix onCreateMapping={handleCreateMapping} onUnmapMapping={handleUnmapMapping} />
         </TabsContent>
 
         <TabsContent value="discover">
@@ -910,9 +934,9 @@ export function CredentialsPage() {
       <Dialog open={editDialogOpen} onOpenChange={setEditDialogOpen}>
         <DialogContent className="max-w-lg">
           <DialogHeader>
-            <DialogTitle>Edit Credential</DialogTitle>
+            <DialogTitle>Edit Physical Credential</DialogTitle>
             <DialogDescription>
-              Update the credential name or data. Leave data fields empty to keep existing values.
+              Update the physical credential name or data. Leave data fields empty to keep existing values.
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-4 py-4">
@@ -1010,7 +1034,7 @@ export function CredentialsPage() {
           <DialogHeader>
             <DialogTitle>Create Credential Mapping</DialogTitle>
             <DialogDescription>
-              Map logical credential "{getMappingLogicalName()}" to a physical credential in {getMappingEnvName()}.
+              Map credential alias "{getMappingLogicalName()}" to a physical credential in {getMappingEnvName()}. This creates a mapping: alias → physical credential per environment.
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-4 py-4">

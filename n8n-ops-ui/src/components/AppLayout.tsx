@@ -34,6 +34,7 @@ import {
 } from '@/components/ui/command';
 import { ThemeToggle } from '@/components/ThemeToggle';
 import { useTheme } from '@/components/ThemeProvider';
+import { ProviderSelector } from '@/components/ProviderSelector';
 import {
   LayoutDashboard,
   LayoutGrid,
@@ -61,7 +62,6 @@ import {
   Key,
   HelpCircle,
   Palette,
-  GitMerge,
   ChevronRight,
   ChevronDown,
   ChevronUp,
@@ -101,7 +101,6 @@ const navigationSections: NavSection[] = [
   {
     title: 'Operations',
     items: [
-      { id: 'pipelines', name: 'Pipelines', href: '/pipelines', icon: GitMerge, requiredPlan: 'pro', feature: 'workflow_ci_cd' },
       { id: 'deployments', name: 'Deployments', href: '/deployments', icon: Rocket, requiredPlan: 'pro', feature: 'workflow_ci_cd' },
       { id: 'snapshots', name: 'Snapshots', href: '/snapshots', icon: Camera, feature: 'snapshots_enabled' },
     ],
@@ -249,7 +248,7 @@ export function AppLayout() {
           </div>
 
           {/* Navigation */}
-          <nav className="flex-1 px-2 py-4 overflow-y-auto">
+          <nav className="flex-1 px-2 py-4 overflow-y-auto custom-scrollbar">
             {navigationSections.map((section, sectionIndex) => {
               const isExpanded = expandedSections[section.title] ?? true;
               return (
@@ -493,6 +492,10 @@ export function AppLayout() {
                   </Select>
                 </div>
               )}
+
+              {/* Provider Selector */}
+              <ProviderSelector />
+
               <Badge variant="outline" className="hidden sm:flex text-xs h-7">
                 Environment: <span className="ml-1 font-semibold">dev</span>
               </Badge>

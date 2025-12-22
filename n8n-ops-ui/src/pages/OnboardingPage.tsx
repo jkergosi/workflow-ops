@@ -35,6 +35,13 @@ const STEPS = [
 ];
 
 export function OnboardingPage() {
+  useEffect(() => {
+    document.title = 'Onboarding - n8n Ops';
+    return () => {
+      document.title = 'n8n Ops';
+    };
+  }, []);
+
   const navigate = useNavigate();
   const { needsOnboarding, user, tenant } = useAuth();
   const [currentStep, setCurrentStep] = useState<OnboardingStep>(1);
