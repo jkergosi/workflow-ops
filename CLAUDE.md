@@ -64,10 +64,14 @@ npm run dev -- --port <FRONTEND_PORT>
 - **Snapshots**: Git-backed environment state versioning
 - **Restore**: Restore workflows from snapshots
 - **Deployments**: Track promotion history and rollback
-- **Observability**: Health monitoring, alerts, and metrics
+- **Observability**: Health monitoring, alerts, execution analytics
+- **Alerts**: Configurable alerting for workflow failures
 - **Team Management**: Role-based access (admin, developer, viewer)
 - **Billing**: Stripe integration with free/pro/enterprise tiers
-- **Admin Portal**: 14 admin pages for system management
+- **Support**: Ticket system for user assistance
+- **Entitlements**: Plan-based feature access with overrides
+- **Admin Portal**: 15 admin pages for system management
+- **Real-time Updates**: SSE-based live notifications
 
 ## Dev Mode Authentication
 
@@ -86,16 +90,16 @@ n8n-ops/
 │   ├── CLAUDE.md                # Backend-specific docs
 │   ├── app/
 │   │   ├── main.py              # App entry, router registration
-│   │   ├── api/endpoints/       # 24 API routers
-│   │   ├── services/            # 18 business logic services
-│   │   ├── schemas/             # 14 Pydantic model files
+│   │   ├── api/endpoints/       # 29 API routers
+│   │   ├── services/            # 21 business logic services
+│   │   ├── schemas/             # 18 Pydantic model files
 │   │   └── core/                # Config, feature gates
 │   ├── migrations/              # SQL migrations
-│   └── tests/                   # 25 pytest test files
+│   └── tests/                   # 30 pytest test files
 ├── n8n-ops-ui/                  # React frontend
 │   ├── CLAUDE.md                # Frontend-specific docs
 │   └── src/
-│       ├── pages/               # 22 pages + 14 admin pages
+│       ├── pages/               # 23 pages + 15 admin pages
 │       ├── components/          # UI, workflow, pipeline components
 │       ├── lib/                 # API client, auth, features
 │       ├── store/               # Zustand state

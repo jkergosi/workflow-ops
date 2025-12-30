@@ -65,6 +65,8 @@ def normalize_workflow_for_comparison(workflow: Dict[str, Any]) -> Dict[str, Any
         settings_exclude = [
             'executionOrder', 'saveDataErrorExecution', 'saveDataSuccessExecution',
             'callerPolicy', 'timezone', 'saveManualExecutions',
+            # n8n settings where null and false are semantically equivalent
+            'availableInMCP',
         ]
         for field in settings_exclude:
             normalized['settings'].pop(field, None)

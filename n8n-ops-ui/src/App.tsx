@@ -5,11 +5,14 @@ import { AuthProvider, useAuth } from '@/lib/auth';
 import { FeaturesProvider } from '@/lib/features';
 import { ThemeProvider } from '@/components/ThemeProvider';
 import { Toaster } from 'sonner';
+import { ErrorBoundary } from '@/components/ErrorBoundary';
+import { ServiceStatusIndicator } from '@/components/ServiceStatusIndicator';
 import { AppLayout } from '@/components/AppLayout';
 import { LoginPage } from '@/pages/LoginPage';
 import { OnboardingPage } from '@/pages/OnboardingPage';
 import { DashboardPage } from '@/pages/DashboardPage';
 import { EnvironmentsPage } from '@/pages/EnvironmentsPage';
+import { EnvironmentDetailPage } from '@/pages/EnvironmentDetailPage';
 import { WorkflowsPage } from '@/pages/WorkflowsPage';
 import { WorkflowDetailPage } from '@/pages/WorkflowDetailPage';
 import { ExecutionsPage } from '@/pages/ExecutionsPage';
@@ -18,6 +21,8 @@ import { DeploymentsPage } from '@/pages/DeploymentsPage';
 import { DeploymentDetailPage } from '@/pages/DeploymentDetailPage';
 import { ObservabilityPage } from '@/pages/ObservabilityPage';
 import { AlertsPage } from '@/pages/AlertsPage';
+import { ActivityCenterPage } from '@/pages/ActivityCenterPage';
+import { ActivityDetailPage } from '@/pages/ActivityDetailPage';
 import { TeamPage } from '@/pages/TeamPage';
 import { BillingPage } from '@/pages/BillingPage';
 import { N8NUsersPage } from '@/pages/N8NUsersPage';
@@ -26,7 +31,7 @@ import { EnvironmentSetupPage } from '@/pages/EnvironmentSetupPage';
 import { RestorePage } from '@/pages/RestorePage';
 import { ProfilePage } from '@/pages/ProfilePage';
 import { PipelineEditorPage } from '@/pages/PipelineEditorPage';
-import { PromotionPage } from '@/pages/PromotionPage';
+import { NewDeploymentPage } from '@/pages/NewDeploymentPage';
 import {
   TenantsPage,
   TenantDetailPage,
@@ -164,10 +169,13 @@ function App() {
   return (
     <ThemeProvider defaultTheme="system" storageKey="n8n-ops-theme">
       <QueryClientProvider client={queryClient}>
-        <AuthProvider>
-          <FeaturesProvider>
-            <BrowserRouter>
-              <Routes>
+        <ErrorBoundary showDetails={true}>
+          <AuthProvider>
+            <FeaturesProvider>
+              <BrowserRouter>
+                {/* Service Status Indicator - shows when services are unhealthy */}
+                <ServiceStatusIndicator position="fixed" />
+                <Routes>
               <Route path="/login" element={<LoginPage />} />
               <Route
                 path="/onboarding"
@@ -187,6 +195,7 @@ function App() {
                 <Route path="/" element={<RoleProtectedRoute><DashboardPage /></RoleProtectedRoute>} />
                 <Route path="/environments" element={<RoleProtectedRoute><EnvironmentsPage /></RoleProtectedRoute>} />
                 <Route path="/environments/new" element={<RoleProtectedRoute><EnvironmentSetupPage /></RoleProtectedRoute>} />
+                <Route path="/environments/:id" element={<RoleProtectedRoute><EnvironmentDetailPage /></RoleProtectedRoute>} />
                 <Route path="/environments/:id/edit" element={<RoleProtectedRoute><EnvironmentSetupPage /></RoleProtectedRoute>} />
                 <Route path="/environments/:id/restore" element={<RoleProtectedRoute><RestorePage /></RoleProtectedRoute>} />
                 <Route path="/workflows" element={<RoleProtectedRoute><WorkflowsPage /></RoleProtectedRoute>} />
@@ -198,9 +207,11 @@ function App() {
                 <Route path="/pipelines" element={<Navigate to="/deployments?tab=pipelines" replace />} />
                 <Route path="/pipelines/new" element={<RoleProtectedRoute><PipelineEditorPage /></RoleProtectedRoute>} />
                 <Route path="/pipelines/:id" element={<RoleProtectedRoute><PipelineEditorPage /></RoleProtectedRoute>} />
-                <Route path="/promote" element={<RoleProtectedRoute><PromotionPage /></RoleProtectedRoute>} />
+                <Route path="/deployments/new" element={<RoleProtectedRoute><NewDeploymentPage /></RoleProtectedRoute>} />
                 <Route path="/observability" element={<RoleProtectedRoute><ObservabilityPage /></RoleProtectedRoute>} />
                 <Route path="/alerts" element={<RoleProtectedRoute><AlertsPage /></RoleProtectedRoute>} />
+                <Route path="/activity" element={<RoleProtectedRoute><ActivityCenterPage /></RoleProtectedRoute>} />
+                <Route path="/activity/:id" element={<RoleProtectedRoute><ActivityDetailPage /></RoleProtectedRoute>} />
                 <Route path="/n8n-users" element={<RoleProtectedRoute><N8NUsersPage /></RoleProtectedRoute>} />
                 <Route path="/credentials" element={<RoleProtectedRoute><CredentialsPage /></RoleProtectedRoute>} />
                 <Route path="/team" element={<RoleProtectedRoute><TeamPage /></RoleProtectedRoute>} />
@@ -244,8 +255,9 @@ function App() {
             />
           </FeaturesProvider>
         </AuthProvider>
-        <ReactQueryDevtools initialIsOpen={false} />
-      </QueryClientProvider>
+      </ErrorBoundary>
+      <ReactQueryDevtools initialIsOpen={false} />
+    </QueryClientProvider>
     </ThemeProvider>
   );
 }

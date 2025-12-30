@@ -104,15 +104,51 @@ class ApiClient {
       (error) => Promise.reject(error)
     );
 
-    // Add response interceptor for error handling
+    // Add response interceptor for error handling with retry logic
     this.client.interceptors.response.use(
       (response) => response,
-      (error) => {
+      async (error) => {
+        const config = error.config;
+
+        // Network errors - retry with exponential backoff
+        if (!error.response && (error.code === 'ECONNABORTED' || error.code === 'ERR_NETWORK' || error.message === 'Network Error')) {
+          if (!config._retryCount) config._retryCount = 0;
+          if (config._retryCount < 3) {
+            config._retryCount++;
+            const delay = Math.pow(2, config._retryCount) * 1000;
+            console.log(`[ApiClient] Network error, retrying in ${delay}ms (attempt ${config._retryCount}/3)`);
+            await new Promise(resolve => setTimeout(resolve, delay));
+            return this.client(config);
+          }
+          console.error('[ApiClient] Max retries exceeded for network error');
+        }
+
+        // 503 Service Unavailable - don't retry, trigger health check
+        if (error.response?.status === 503) {
+          console.warn('[ApiClient] Service unavailable (503)');
+          // Import dynamically to avoid circular dependency
+          import('./health-service').then(({ healthService }) => {
+            healthService.checkHealth();
+          }).catch(() => {
+            // Ignore import errors
+          });
+          // Create a user-friendly error
+          const serviceError = new Error('Service temporarily unavailable. Please try again later.');
+          (serviceError as any).isServiceUnavailable = true;
+          (serviceError as any).response = error.response;
+          return Promise.reject(serviceError);
+        }
+
+        // 401 Unauthorized
         if (error.response?.status === 401) {
           // TEMPORARY: In dev mode, don't redirect on 401 for dev endpoints
           const url = error.config?.url || '';
           if (url.includes('/auth/dev/')) {
             // Don't redirect for dev endpoints - they don't require auth
+            return Promise.reject(error);
+          }
+          // Don't redirect if it's a health check failure
+          if (url.includes('/health')) {
             return Promise.reject(error);
           }
           // Handle unauthorized - redirect to login (only for non-dev endpoints)
@@ -122,6 +158,18 @@ class ApiClient {
             window.location.href = '/login';
           }
         }
+
+        // 500+ errors - retry once for server errors
+        if (error.response?.status >= 500 && error.response?.status !== 503) {
+          if (!config._retryCount) config._retryCount = 0;
+          if (config._retryCount < 1) {
+            config._retryCount++;
+            console.log(`[ApiClient] Server error ${error.response.status}, retrying once`);
+            await new Promise(resolve => setTimeout(resolve, 1000));
+            return this.client(config);
+          }
+        }
+
         return Promise.reject(error);
       }
     );
@@ -282,8 +330,31 @@ class ApiClient {
   }
 
   async getEnvironment(id: string): Promise<{ data: Environment }> {
-    const response = await this.client.get<Environment>(`/environments/${id}`);
-    return { data: response.data };
+    const response = await this.client.get<any>(`/environments/${id}`);
+    // Transform snake_case to camelCase (same as getEnvironments)
+    const env = response.data;
+    const data: Environment = {
+      ...env,
+      id: env.id,
+      tenantId: env.tenant_id,
+      provider: env.provider || 'n8n',  // Default to n8n for backward compatibility
+      name: env.n8n_name,
+      type: env.n8n_type,
+      baseUrl: env.n8n_base_url,
+      apiKey: env.n8n_api_key,
+      n8nEncryptionKey: env.n8n_encryption_key,
+      isActive: env.is_active,
+      allowUpload: env.allow_upload ?? false,
+      lastConnected: env.last_connected,
+      lastBackup: env.last_backup,
+      workflowCount: env.workflow_count || 0,
+      gitRepoUrl: env.git_repo_url,
+      gitBranch: env.git_branch,
+      gitPat: env.git_pat,
+      createdAt: env.created_at,
+      updatedAt: env.updated_at,
+    };
+    return { data };
   }
 
   async createEnvironment(environment: {
@@ -447,18 +518,83 @@ class ApiClient {
 
   async syncEnvironment(environmentId: string): Promise<{
     data: {
-      success: boolean;
+      job_id: string;
+      status: string;
       message: string;
-      results: {
-        workflows: { synced: number; errors: string[] };
-        executions: { synced: number; errors: string[] };
-        credentials: { synced: number; errors: string[] };
-        users: { synced: number; errors: string[] };
-        tags: { synced: number; errors: string[] };
-      };
     };
   }> {
     const response = await this.client.post(`/environments/${environmentId}/sync`);
+    return { data: response.data };
+  }
+
+  async getBackgroundJob(jobId: string): Promise<{
+    data: {
+      id: string;
+      job_type: string;
+      status: string;
+      progress: {
+        current: number;
+        total: number;
+        percentage: number;
+        message: string;
+      };
+      result?: any;
+      error_message?: string;
+      error_details?: any;
+      created_at: string;
+      started_at?: string;
+      completed_at?: string;
+    };
+  }> {
+    const response = await this.client.get(`/background-jobs/${jobId}`);
+    return { data: response.data };
+  }
+
+  async getEnvironmentJobs(environmentId: string): Promise<{
+    data: Array<{
+      id: string;
+      job_type: string;
+      status: string;
+      progress: any;
+      created_at: string;
+    }>;
+  }> {
+    const response = await this.client.get(`/background-jobs`, {
+      params: { resource_type: 'environment', resource_id: environmentId, limit: 10 }
+    });
+    return { data: response.data };
+  }
+
+  async getAllBackgroundJobs(params?: {
+    resource_type?: string;
+    resource_id?: string;
+    job_type?: string;
+    status?: string;
+    limit?: number;
+    offset?: number;
+  }): Promise<{
+    data: {
+      jobs: Array<{
+        id: string;
+        job_type: string;
+        status: string;
+        resource_type: string;
+        resource_id: string;
+        progress: {
+          current: number;
+          total: number;
+          percentage: number;
+          message: string;
+        };
+        created_at: string;
+        started_at?: string;
+        completed_at?: string;
+        error_message?: string;
+      }>;
+      total: number;
+    };
+  }> {
+    const response = await this.client.get(`/background-jobs`, { params });
     return { data: response.data };
   }
 
@@ -594,17 +730,14 @@ class ApiClient {
     return { data: response.data };
   }
 
-  async syncWorkflowsToGithub(environment: EnvironmentType): Promise<{
+  async syncWorkflowsToGithub(environment: EnvironmentType, force: boolean = false): Promise<{
     data: {
-      success: boolean;
-      synced: number;
-      skipped: number;
-      failed: number;
-      workflows: Workflow[];
-      errors: string[];
+      job_id: string;
+      status: string;
+      message: string;
     };
   }> {
-    const params = buildEnvironmentParams(environment);
+    const params = { ...buildEnvironmentParams(environment), force };
     const response = await this.client.post('/workflows/sync-to-github', null, { params });
     return { data: response.data };
   }
@@ -817,8 +950,8 @@ class ApiClient {
     await this.client.delete(`/pipelines/${id}`);
   }
 
-  // Promotion endpoints
-  async initiatePromotion(request: PromotionInitiateRequest): Promise<{ data: any }> {
+  // Deployment endpoints (formerly promotions)
+  async initiateDeployment(request: PromotionInitiateRequest): Promise<{ data: any }> {
     // Transform camelCase to snake_case for backend
     const payload = {
       pipeline_id: request.pipelineId,
@@ -834,32 +967,33 @@ class ApiClient {
         requires_overwrite: ws.requiresOverwrite,
       })) || [],
     };
-    const response = await this.client.post('/promotions/initiate', payload);
+    const response = await this.client.post('/deployments/initiate', payload);
     return { data: response.data };
   }
 
-  async executePromotion(promotionId: string): Promise<{ data: any }> {
-    const response = await this.client.post(`/promotions/execute/${promotionId}`);
+  async executeDeployment(deploymentId: string, scheduledAt?: string): Promise<{ data: any }> {
+    const payload = scheduledAt ? { scheduled_at: scheduledAt } : undefined;
+    const response = await this.client.post(`/deployments/execute/${deploymentId}`, payload);
     return { data: response.data };
   }
 
-  async getPromotionJob(promotionId: string): Promise<{ data: any }> {
-    const response = await this.client.get(`/promotions/${promotionId}/job`);
+  async getDeploymentJob(deploymentId: string): Promise<{ data: any }> {
+    const response = await this.client.get(`/deployments/${deploymentId}/job`);
     return { data: response.data };
   }
 
-  async approvePromotion(promotionId: string, approval: PromotionApprovalRequest): Promise<{ data: PromotionApprovalResponse }> {
-    const response = await this.client.post<PromotionApprovalResponse>(`/promotions/approvals/${promotionId}/approve`, approval);
+  async approveDeployment(deploymentId: string, approval: PromotionApprovalRequest): Promise<{ data: PromotionApprovalResponse }> {
+    const response = await this.client.post<PromotionApprovalResponse>(`/deployments/approvals/${deploymentId}/approve`, approval);
     return { data: response.data };
   }
 
-  async getPromotion(promotionId: string): Promise<{ data: PromotionResponse }> {
-    const response = await this.client.get<PromotionResponse>(`/promotions/${promotionId}`);
+  async getDeploymentInitiation(deploymentId: string): Promise<{ data: PromotionResponse }> {
+    const response = await this.client.get<PromotionResponse>(`/deployments/initiate/${deploymentId}`);
     return { data: response.data };
   }
 
-  async getPromotions(): Promise<{ data: PromotionResponse[] }> {
-    const response = await this.client.get<PromotionResponse[]>('/promotions');
+  async getDeploymentInitiations(): Promise<{ data: PromotionResponse[] }> {
+    const response = await this.client.get<PromotionResponse[]>('/deployments/initiate');
     return { data: response.data };
   }
 
@@ -960,6 +1094,7 @@ class ApiClient {
       status: d.status,
       triggeredByUserId: d.triggered_by_user_id,
       approvedByUserId: d.approved_by_user_id,
+      scheduledAt: d.scheduled_at,
       startedAt: d.started_at,
       finishedAt: d.finished_at,
       preSnapshotId: d.pre_snapshot_id,
@@ -987,6 +1122,11 @@ class ApiClient {
 
   async deleteDeployment(deploymentId: string): Promise<void> {
     await this.client.delete(`/deployments/${deploymentId}`);
+  }
+
+  async cancelScheduledDeployment(deploymentId: string): Promise<{ data: { message: string } }> {
+    const response = await this.client.post(`/deployments/${deploymentId}/cancel`);
+    return { data: response.data };
   }
 
   async rerunDeployment(deploymentId: string): Promise<{
@@ -1037,6 +1177,7 @@ class ApiClient {
       status: d.status,
       triggeredByUserId: d.triggered_by_user_id,
       approvedByUserId: d.approved_by_user_id,
+      scheduledAt: d.scheduled_at,
       startedAt: d.started_at,
       finishedAt: d.finished_at,
       preSnapshotId: d.pre_snapshot_id,

@@ -212,6 +212,20 @@ class DatabaseService:
         response = self.client.table("deployment_workflows").select("*").eq("deployment_id", deployment_id).execute()
         return response.data
 
+    async def update_deployment_workflow(self, deployment_id: str, workflow_id: str, update_data: Dict[str, Any]) -> Dict[str, Any]:
+        """Update a deployment workflow record by deployment_id and workflow_id"""
+        response = self.client.table("deployment_workflows").update(update_data).eq(
+            "deployment_id", deployment_id
+        ).eq("workflow_id", workflow_id).execute()
+        return response.data[0] if response.data else None
+
+    async def create_deployment_workflows_batch(self, workflows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Create multiple deployment workflow records in a batch"""
+        if not workflows:
+            return []
+        response = self.client.table("deployment_workflows").insert(workflows).execute()
+        return response.data
+
     # Execution operations
     async def create_execution(self, execution_data: Dict[str, Any]) -> Dict[str, Any]:
         """Create an execution record"""

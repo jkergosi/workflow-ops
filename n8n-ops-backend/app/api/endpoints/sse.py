@@ -499,3 +499,233 @@ async def emit_counts_update(tenant_id: str = MOCK_TENANT_ID):
         }
     )
     await sse_pubsub.publish(event)
+
+
+# === Background Job Progress Events ===
+
+async def emit_sync_progress(
+    job_id: str,
+    environment_id: str,
+    status: str,
+    current_step: str,
+    current: int,
+    total: int,
+    message: Optional[str] = None,
+    errors: Optional[dict] = None,
+    tenant_id: str = MOCK_TENANT_ID
+):
+    """Emit a sync.progress event."""
+    from app.schemas.sse import SyncProgressPayload
+    payload = SyncProgressPayload(
+        job_id=job_id,
+        environment_id=environment_id,
+        status=status,
+        current_step=current_step,
+        current=current,
+        total=total,
+        message=message,
+        errors=errors
+    )
+    event = SSEEvent(
+        type="sync.progress",
+        tenant_id=tenant_id,
+        env_id=environment_id,
+        payload=payload.model_dump()
+    )
+    await sse_pubsub.publish(event)
+
+
+async def emit_backup_progress(
+    job_id: str,
+    environment_id: str,
+    status: str,
+    current: int,
+    total: int,
+    current_workflow_name: Optional[str] = None,
+    message: Optional[str] = None,
+    errors: Optional[list] = None,
+    tenant_id: str = MOCK_TENANT_ID
+):
+    """Emit a backup.progress event."""
+    from app.schemas.sse import BackupProgressPayload
+    payload = BackupProgressPayload(
+        job_id=job_id,
+        environment_id=environment_id,
+        status=status,
+        current=current,
+        total=total,
+        current_workflow_name=current_workflow_name,
+        message=message,
+        errors=errors
+    )
+    event = SSEEvent(
+        type="backup.progress",
+        tenant_id=tenant_id,
+        env_id=environment_id,
+        payload=payload.model_dump()
+    )
+    await sse_pubsub.publish(event)
+
+
+async def emit_restore_progress(
+    job_id: str,
+    environment_id: str,
+    status: str,
+    current: int,
+    total: int,
+    current_workflow_name: Optional[str] = None,
+    message: Optional[str] = None,
+    errors: Optional[list] = None,
+    tenant_id: str = MOCK_TENANT_ID
+):
+    """Emit a restore.progress event."""
+    from app.schemas.sse import RestoreProgressPayload
+    payload = RestoreProgressPayload(
+        job_id=job_id,
+        environment_id=environment_id,
+        status=status,
+        current=current,
+        total=total,
+        current_workflow_name=current_workflow_name,
+        message=message,
+        errors=errors
+    )
+    event = SSEEvent(
+        type="restore.progress",
+        tenant_id=tenant_id,
+        env_id=environment_id,
+        payload=payload.model_dump()
+    )
+    await sse_pubsub.publish(event)
+
+
+@router.get("/stream")
+async def sse_background_jobs_stream(
+    request: Request,
+    env_id: Optional[str] = None,
+    job_id: Optional[str] = None,
+    token: Optional[str] = None
+):
+    """
+    Generic SSE stream for background jobs (sync, backup, restore).
+    
+    Query params:
+    - env_id: Filter by environment ID
+    - job_id: Filter by specific job ID
+    - token: Auth token (required since EventSource can't send headers)
+    """
+    # Validate token manually since EventSource can't send headers
+    from app.services.auth_service import get_current_user
+    from fastapi.security import HTTPAuthorizationCredentials
+    from fastapi import HTTPException, status
+    
+    # Create credentials object from query param token
+    if token:
+        credentials = HTTPAuthorizationCredentials(scheme="Bearer", credentials=token)
+    else:
+        # Try to get from Authorization header as fallback
+        auth_header = request.headers.get("Authorization", "")
+        if auth_header.startswith("Bearer "):
+            token = auth_header.replace("Bearer ", "")
+            credentials = HTTPAuthorizationCredentials(scheme="Bearer", credentials=token)
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Authentication required. Provide token as query parameter: ?token=YOUR_TOKEN"
+            )
+    
+    # Validate user
+    try:
+        user_info = await get_current_user(credentials)
+        # Check entitlement
+        from app.services.entitlements_service import entitlements_service
+        tenant = user_info.get("tenant")
+        if not tenant:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Authentication required"
+            )
+        tenant_id = tenant["id"]
+        await entitlements_service.enforce_flag(tenant_id, "environment_basic")
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"SSE auth validation failed: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Authentication failed"
+        )
+
+    # tenant_id is now set from authenticated user
+    async def event_generator():
+        subscription_id = None
+        try:
+            # Determine scope based on filters
+            if job_id:
+                scope = f"background_jobs_job:{job_id}"
+            elif env_id:
+                scope = f"background_jobs_env:{env_id}"
+            else:
+                scope = "background_jobs_list"
+            
+            subscription_id = await sse_pubsub.subscribe(tenant_id, scope)
+            logger.info(f"SSE client connected for background jobs: {subscription_id} (scope={scope})")
+
+            # Stream events
+            last_keepalive = datetime.now(UTC)
+
+            while True:
+                # Check if client disconnected
+                if await request.is_disconnected():
+                    logger.info(f"SSE client disconnected: {subscription_id}")
+                    break
+
+                # Try to get next event
+                try:
+                    async for event in sse_pubsub.get_events(subscription_id):
+                        if await request.is_disconnected():
+                            break
+
+                        # Send the event
+                        yield _format_sse_message(
+                            event.type,
+                            event.payload,
+                            event.event_id
+                        )
+
+                        # Update keepalive timer
+                        last_keepalive = datetime.now(UTC)
+
+                        # Only process one event per iteration to check disconnect
+                        break
+
+                except asyncio.TimeoutError:
+                    pass
+
+                # Send keepalive if needed
+                elapsed = (datetime.now(UTC) - last_keepalive).total_seconds()
+                if elapsed >= KEEPALIVE_INTERVAL:
+                    yield _format_keepalive()
+                    last_keepalive = datetime.now(UTC)
+
+                # Small sleep to prevent tight loop
+                await asyncio.sleep(0.1)
+
+        except asyncio.CancelledError:
+            logger.info(f"SSE stream cancelled: {subscription_id}")
+        except Exception as e:
+            logger.error(f"SSE stream error: {e}")
+        finally:
+            if subscription_id:
+                await sse_pubsub.unsubscribe(subscription_id)
+                logger.info(f"SSE subscription cleaned up: {subscription_id}")
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        }
+    )

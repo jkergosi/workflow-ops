@@ -2,7 +2,7 @@ from fastapi import FastAPI, Request, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from app.core.config import settings
-from app.api.endpoints import environments, workflows, executions, tags, billing, teams, n8n_users, tenants, auth, restore, promotions, dev, credentials, pipelines, deployments, snapshots, observability, notifications, admin_entitlements, admin_audit, admin_billing, admin_usage, admin_credentials, admin_providers, support, admin_support, admin_environment_types, sse, providers
+from app.api.endpoints import environments, workflows, executions, tags, billing, teams, n8n_users, tenants, auth, restore, promotions, dev, credentials, pipelines, deployments, snapshots, observability, notifications, admin_entitlements, admin_audit, admin_billing, admin_usage, admin_credentials, admin_providers, support, admin_support, admin_environment_types, sse, providers, background_jobs, health
 from app.services.background_job_service import background_job_service
 from datetime import datetime, timedelta
 import logging
@@ -87,8 +87,8 @@ app.include_router(
 
 app.include_router(
     promotions.router,
-    prefix=f"{settings.API_V1_PREFIX}/promotions",
-    tags=["promotions"]
+    prefix=f"{settings.API_V1_PREFIX}/deployments",
+    tags=["deployments"]
 )
 
 app.include_router(
@@ -119,6 +119,12 @@ app.include_router(
     sse.router,
     prefix=f"{settings.API_V1_PREFIX}/sse",
     tags=["sse"]
+)
+
+app.include_router(
+    background_jobs.router,
+    prefix=f"{settings.API_V1_PREFIX}/background-jobs",
+    tags=["background-jobs"]
 )
 
 app.include_router(
@@ -199,6 +205,12 @@ app.include_router(
     tags=["providers"]
 )
 
+app.include_router(
+    health.router,
+    prefix=f"{settings.API_V1_PREFIX}/health",
+    tags=["health"]
+)
+
 
 @app.get("/")
 async def root():
@@ -219,6 +231,7 @@ async def startup_event():
     """
     Cleanup stale background jobs and deployments on startup.
     This handles cases where the server crashed or restarted while jobs were running.
+    Also starts the deployment scheduler.
     """
     try:
         logger.info("Cleaning up stale background jobs on startup...")
@@ -227,6 +240,11 @@ async def startup_event():
             f"Startup cleanup complete: {cleanup_result['cleaned_count']} jobs cleaned "
             f"({cleanup_result['stale_running']} running, {cleanup_result['stale_pending']} pending)"
         )
+        
+        # Start deployment scheduler
+        from app.services.deployment_scheduler import start_scheduler
+        await start_scheduler()
+        logger.info("Deployment scheduler started")
         
         # Also cleanup stale deployments directly (in case job cleanup didn't catch them)
         try:
@@ -266,6 +284,17 @@ async def startup_event():
             
     except Exception as e:
         logger.error(f"Failed to cleanup stale jobs on startup: {str(e)}", exc_info=True)
+
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    """Stop the deployment scheduler on shutdown."""
+    try:
+        from app.services.deployment_scheduler import stop_scheduler
+        await stop_scheduler()
+        logger.info("Deployment scheduler stopped")
+    except Exception as e:
+        logger.error(f"Error stopping deployment scheduler: {str(e)}")
 
 
 @app.exception_handler(Exception)

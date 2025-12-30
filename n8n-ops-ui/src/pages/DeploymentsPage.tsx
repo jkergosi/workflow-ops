@@ -54,6 +54,8 @@ export function DeploymentsPage() {
   const [deletePipelineDialogOpen, setDeletePipelineDialogOpen] = useState(false);
   const [pipelineToDelete, setPipelineToDelete] = useState<Pipeline | null>(null);
   const [showInactivePipelines, setShowInactivePipelines] = useState(true);
+  const [cancelDialogOpen, setCancelDialogOpen] = useState(false);
+  const [deploymentToCancel, setDeploymentToCancel] = useState<Deployment | null>(null);
   
   const activeTab = searchParams.get('tab') || 'deployments';
 
@@ -89,7 +91,7 @@ export function DeploymentsPage() {
   const { data: pipelines, isLoading: pipelinesLoading } = useQuery({
     queryKey: ['pipelines', showInactivePipelines],
     queryFn: () => apiClient.getPipelines({ includeInactive: showInactivePipelines }),
-    enabled: activeTab === 'pipelines', // Lazy-load: only fetch when Pipelines tab is active
+    // Fetch pipelines for both tabs: deployments needs names, pipelines tab needs full data
   });
 
   const deployments = deploymentsData?.data?.deployments || [];
@@ -107,6 +109,8 @@ export function DeploymentsPage() {
         return 'destructive';
       case 'running':
         return 'secondary';
+      case 'scheduled':
+        return 'default';
       case 'pending':
         return 'outline';
       case 'canceled':
@@ -124,10 +128,36 @@ export function DeploymentsPage() {
         return <XCircle className="h-4 w-4 text-red-500" />;
       case 'running':
         return <Loader2 className="h-4 w-4 animate-spin text-blue-500" />;
+      case 'scheduled':
+        return <Clock className="h-4 w-4 text-blue-500" />;
       case 'pending':
         return <Clock className="h-4 w-4 text-amber-500" />;
       default:
         return <AlertCircle className="h-4 w-4 text-gray-500" />;
+    }
+  };
+
+  const formatScheduledTime = (scheduledAt: string) => {
+    const scheduled = new Date(scheduledAt);
+    const now = new Date();
+    const diffMs = scheduled.getTime() - now.getTime();
+    
+    if (diffMs < 0) {
+      return 'Overdue';
+    }
+    
+    const diffMins = Math.floor(diffMs / 60000);
+    const diffHours = Math.floor(diffMins / 60);
+    const diffDays = Math.floor(diffHours / 24);
+    
+    if (diffDays > 0) {
+      return `In ${diffDays} day${diffDays !== 1 ? 's' : ''}`;
+    } else if (diffHours > 0) {
+      return `In ${diffHours} hour${diffHours !== 1 ? 's' : ''}`;
+    } else if (diffMins > 0) {
+      return `In ${diffMins} minute${diffMins !== 1 ? 's' : ''}`;
+    } else {
+      return 'Starting soon';
     }
   };
 
@@ -178,7 +208,7 @@ export function DeploymentsPage() {
   };
 
   const handlePromoteWorkflows = () => {
-    navigate('/promote');
+    navigate('/deployments/new');
   };
 
   const deleteMutation = useMutation({
@@ -208,6 +238,19 @@ export function DeploymentsPage() {
     },
   });
 
+  const cancelMutation = useMutation({
+    mutationFn: (deploymentId: string) => apiClient.cancelScheduledDeployment(deploymentId),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['deployments'] });
+      toast.success('Scheduled deployment cancelled successfully');
+      setCancelDialogOpen(false);
+      setDeploymentToCancel(null);
+    },
+    onError: (error: any) => {
+      toast.error(error?.response?.data?.detail || 'Failed to cancel scheduled deployment');
+    },
+  });
+
   const handleDeleteClick = (e: React.MouseEvent, deployment: Deployment) => {
     e.stopPropagation();
     setDeploymentToDelete(deployment);
@@ -229,6 +272,18 @@ export function DeploymentsPage() {
   const handleConfirmRerun = () => {
     if (deploymentToRerun) {
       rerunMutation.mutate(deploymentToRerun.id);
+    }
+  };
+
+  const handleCancelClick = (e: React.MouseEvent, deployment: Deployment) => {
+    e.stopPropagation();
+    setDeploymentToCancel(deployment);
+    setCancelDialogOpen(true);
+  };
+
+  const handleConfirmCancel = () => {
+    if (deploymentToCancel) {
+      cancelMutation.mutate(deploymentToCancel.id);
     }
   };
 
@@ -467,10 +522,16 @@ export function DeploymentsPage() {
                       </TableCell>
                       <TableCell>
                         <div className="flex flex-col items-center gap-1">
-                          <Badge variant={getStatusVariant(deployment.status)}>
+                          <Badge variant={getStatusVariant(deployment.status)} className="flex items-center gap-1">
+                            {getStatusIcon(deployment.status)}
                             {deployment.status}
                           </Badge>
-                          {progressText && (
+                          {deployment.status === 'scheduled' && (deployment as any).scheduledAt && (
+                            <span className="text-xs text-muted-foreground">
+                              {formatScheduledTime((deployment as any).scheduledAt)}
+                            </span>
+                          )}
+                          {progressText && deployment.status !== 'scheduled' && (
                             <span className="text-xs text-muted-foreground">
                               {progressText}
                             </span>
@@ -478,13 +539,33 @@ export function DeploymentsPage() {
                         </div>
                       </TableCell>
                       <TableCell className="text-sm text-muted-foreground">
-                        {new Date(deployment.startedAt).toLocaleString()}
+                        {deployment.status === 'scheduled' && deployment.scheduledAt ? (
+                          <div className="flex flex-col">
+                            <span>{new Date(deployment.scheduledAt).toLocaleString()}</span>
+                            <span className="text-xs">{formatScheduledTime(deployment.scheduledAt)}</span>
+                          </div>
+                        ) : (
+                          deployment.startedAt ? new Date(deployment.startedAt).toLocaleString() : '—'
+                        )}
                       </TableCell>
                       <TableCell className="text-sm text-muted-foreground">
-                        {formatDuration(deployment.startedAt, deployment.finishedAt)}
+                        {deployment.status === 'scheduled' ? '—' : formatDuration(deployment.startedAt, deployment.finishedAt)}
                       </TableCell>
                       <TableCell>
                         <div className="flex items-center gap-1">
+                          {deployment.status === 'scheduled' && (
+                            <Button
+                              type="button"
+                              variant="ghost"
+                              size="icon"
+                              onClick={(e) => handleCancelClick(e, deployment)}
+                              disabled={cancelMutation.isPending}
+                              className="h-8 w-8"
+                              title="Cancel scheduled deployment"
+                            >
+                              <XCircle className="h-4 w-4" />
+                            </Button>
+                          )}
                           {canRerunDeployment(deployment) && (
                             <Button
                               type="button"
@@ -503,7 +584,7 @@ export function DeploymentsPage() {
                             variant="ghost"
                             size="icon"
                             onClick={(e) => handleDeleteClick(e, deployment)}
-                            disabled={deployment.status === 'running'}
+                            disabled={deployment.status === 'running' || deployment.status === 'scheduled'}
                             className="h-8 w-8"
                             title="Delete deployment"
                           >
@@ -556,6 +637,38 @@ export function DeploymentsPage() {
       </AlertDialog>
 
       {/* Rerun Confirmation Dialog */}
+      <AlertDialog open={cancelDialogOpen} onOpenChange={setCancelDialogOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Cancel Scheduled Deployment</AlertDialogTitle>
+            <AlertDialogDescription>
+              Are you sure you want to cancel this scheduled deployment? This action cannot be undone.
+              {deploymentToCancel && deploymentToCancel.scheduledAt && (
+                <div className="mt-2 p-2 bg-muted rounded text-sm">
+                  Scheduled for: {new Date(deploymentToCancel.scheduledAt).toLocaleString()}
+                </div>
+              )}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Keep Scheduled</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={handleConfirmCancel}
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+            >
+              {cancelMutation.isPending ? (
+                <>
+                  <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                  Cancelling...
+                </>
+              ) : (
+                'Cancel Deployment'
+              )}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
       <AlertDialog open={rerunDialogOpen} onOpenChange={setRerunDialogOpen}>
         <AlertDialogContent>
           <AlertDialogHeader>

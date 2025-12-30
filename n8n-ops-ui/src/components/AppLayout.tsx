@@ -34,7 +34,6 @@ import {
 } from '@/components/ui/command';
 import { ThemeToggle } from '@/components/ThemeToggle';
 import { useTheme } from '@/components/ThemeProvider';
-import { ProviderSelector } from '@/components/ProviderSelector';
 import {
   LayoutDashboard,
   LayoutGrid,
@@ -101,6 +100,7 @@ const navigationSections: NavSection[] = [
   {
     title: 'Operations',
     items: [
+      { id: 'activity', name: 'Activity', href: '/activity', icon: History },
       { id: 'deployments', name: 'Deployments', href: '/deployments', icon: Rocket, requiredPlan: 'pro', feature: 'workflow_ci_cd' },
       { id: 'snapshots', name: 'Snapshots', href: '/snapshots', icon: Camera, feature: 'snapshots_enabled' },
     ],
@@ -222,7 +222,8 @@ export function AppLayout() {
       {/* Sidebar */}
       <div
         className={cn(
-          'fixed inset-y-0 left-0 z-50 bg-card/95 backdrop-blur supports-[backdrop-filter]:bg-card/80 border-r transform transition-all duration-200 ease-in-out',
+          'fixed inset-y-0 left-0 z-50 bg-card border-r shadow-sm transform transition-all duration-200 ease-in-out',
+          'dark:bg-card/95 dark:backdrop-blur dark:supports-[backdrop-filter]:bg-card/80',
           sidebarOpen 
             ? 'w-64 translate-x-0' 
             : 'w-16 -translate-x-full lg:translate-x-0'
@@ -230,7 +231,7 @@ export function AppLayout() {
       >
         <div className="flex flex-col h-full">
           {/* Logo */}
-          <div className="flex items-center justify-between h-16 px-4 border-b relative">
+          <div className="flex items-center justify-between h-16 px-4 border-b bg-muted/50 dark:bg-transparent relative">
             <div className={cn("flex items-center gap-2.5", !sidebarOpen && "justify-center w-full")}>
               <div className="w-8 h-8 rounded-lg bg-primary flex items-center justify-center shadow-sm">
                 <Workflow className="h-5 w-5 text-primary-foreground" />
@@ -434,7 +435,7 @@ export function AppLayout() {
         )}
       >
         {/* Top Bar */}
-        <div className="sticky top-0 z-40 h-14 bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/80 border-b">
+        <div className="sticky top-0 z-40 h-14 bg-background border-b shadow-sm dark:bg-background/95 dark:backdrop-blur dark:supports-[backdrop-filter]:bg-background/80">
           <div className="flex items-center justify-between h-full px-4 lg:px-6">
             <div className="flex items-center gap-3 flex-1">
               <Button
@@ -492,9 +493,6 @@ export function AppLayout() {
                   </Select>
                 </div>
               )}
-
-              {/* Provider Selector */}
-              <ProviderSelector />
 
               <Badge variant="outline" className="hidden sm:flex text-xs h-7">
                 Environment: <span className="ml-1 font-semibold">dev</span>
@@ -646,8 +644,10 @@ export function AppLayout() {
         </CommandDialog>
 
         {/* Page Content */}
-        <main className="p-6">
-          <Outlet />
+        <main className="p-6 bg-muted/30 min-h-[calc(100vh-3.5rem)]">
+          <div className="max-w-7xl mx-auto">
+            <Outlet />
+          </div>
         </main>
       </div>
 

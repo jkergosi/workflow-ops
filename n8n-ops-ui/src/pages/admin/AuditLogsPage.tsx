@@ -41,6 +41,7 @@ import {
   CreditCard,
   AlertTriangle,
   Eye,
+  Server,
 } from 'lucide-react';
 import {
   Sheet,
@@ -492,7 +493,51 @@ export function AuditLogsPage() {
                         <TableCell className="max-w-xs">
                           <div className="flex items-center gap-2">
                             <div className="text-sm text-muted-foreground truncate">
-                              {log.newValue && typeof log.newValue === 'object' ? (
+                              {log.resourceType && log.resourceId ? (
+                                <div className="flex items-center gap-1">
+                                  {log.resourceType === 'environment' ? (
+                                    <Link
+                                      to={`/environments/${log.resourceId}`}
+                                      className="text-primary hover:underline text-xs flex items-center gap-1"
+                                      onClick={(e) => e.stopPropagation()}
+                                    >
+                                      <Server className="h-3 w-3" />
+                                      {log.resourceName || log.resourceId.substring(0, 8)}...
+                                    </Link>
+                                  ) : log.resourceType === 'promotion' ? (
+                                    <Link
+                                      to={`/deployments/${log.resourceId}`}
+                                      className="text-primary hover:underline text-xs flex items-center gap-1"
+                                      onClick={(e) => e.stopPropagation()}
+                                    >
+                                      <Activity className="h-3 w-3" />
+                                      Deployment {log.resourceId.substring(0, 8)}...
+                                    </Link>
+                                  ) : log.resourceType === 'workflow' ? (
+                                    <Link
+                                      to={`/workflows/${log.resourceId}`}
+                                      className="text-primary hover:underline text-xs flex items-center gap-1"
+                                      onClick={(e) => e.stopPropagation()}
+                                    >
+                                      <Workflow className="h-3 w-3" />
+                                      {log.resourceName || log.resourceId.substring(0, 8)}...
+                                    </Link>
+                                  ) : log.resourceType === 'tenant' ? (
+                                    <Link
+                                      to={`/admin/tenants/${log.resourceId}`}
+                                      className="text-primary hover:underline text-xs flex items-center gap-1"
+                                      onClick={(e) => e.stopPropagation()}
+                                    >
+                                      <Building2 className="h-3 w-3" />
+                                      {log.resourceName || log.resourceId.substring(0, 8)}...
+                                    </Link>
+                                  ) : (
+                                    <span className="text-xs">
+                                      {log.resourceType}: {log.resourceId.substring(0, 8)}...
+                                    </span>
+                                  )}
+                                </div>
+                              ) : log.newValue && typeof log.newValue === 'object' ? (
                                 <code className="text-xs bg-muted px-2 py-1 rounded">
                                   {JSON.stringify(log.newValue).substring(0, 50)}...
                                 </code>
@@ -624,9 +669,45 @@ export function AuditLogsPage() {
                       </div>
                     )}
                     {selectedLog.resourceId && (
-                      <div>
+                      <div className="col-span-2">
                         <span className="text-muted-foreground">Resource ID:</span>
-                        <p className="font-mono text-xs">{selectedLog.resourceId}</p>
+                        <div className="mt-1">
+                          {selectedLog.resourceType === 'environment' ? (
+                            <Link
+                              to={`/environments/${selectedLog.resourceId}`}
+                              className="font-mono text-xs text-primary hover:underline flex items-center gap-1"
+                            >
+                              {selectedLog.resourceId}
+                              <ExternalLink className="h-3 w-3" />
+                            </Link>
+                          ) : selectedLog.resourceType === 'promotion' ? (
+                            <Link
+                              to={`/deployments/${selectedLog.resourceId}`}
+                              className="font-mono text-xs text-primary hover:underline flex items-center gap-1"
+                            >
+                              {selectedLog.resourceId}
+                              <ExternalLink className="h-3 w-3" />
+                            </Link>
+                          ) : selectedLog.resourceType === 'workflow' ? (
+                            <Link
+                              to={`/workflows/${selectedLog.resourceId}`}
+                              className="font-mono text-xs text-primary hover:underline flex items-center gap-1"
+                            >
+                              {selectedLog.resourceId}
+                              <ExternalLink className="h-3 w-3" />
+                            </Link>
+                          ) : selectedLog.resourceType === 'tenant' ? (
+                            <Link
+                              to={`/admin/tenants/${selectedLog.resourceId}`}
+                              className="font-mono text-xs text-primary hover:underline flex items-center gap-1"
+                            >
+                              {selectedLog.resourceId}
+                              <ExternalLink className="h-3 w-3" />
+                            </Link>
+                          ) : (
+                            <p className="font-mono text-xs">{selectedLog.resourceId}</p>
+                          )}
+                        </div>
                       </div>
                     )}
                   </div>

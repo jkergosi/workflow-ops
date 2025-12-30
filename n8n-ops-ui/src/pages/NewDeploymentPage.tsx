@@ -7,6 +7,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Checkbox } from '@/components/ui/checkbox';
+import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import {
   Select,
@@ -41,7 +42,7 @@ import { CredentialPreflightDialog } from '@/components/promotion/CredentialPref
 import { InlineMappingDialog } from '@/components/promotion/InlineMappingDialog';
 import { WorkflowDiffDialog } from '@/components/promotion/WorkflowDiffDialog';
 
-export function PromotionPage() {
+export function NewDeploymentPage() {
   useEffect(() => {
     document.title = 'New Deployment - n8n Ops';
     return () => {
@@ -56,12 +57,15 @@ export function PromotionPage() {
   const [selectedStageIndex, setSelectedStageIndex] = useState<number>(-1);
   const [workflowSelections, setWorkflowSelections] = useState<WorkflowSelection[]>([]);
   const [showReviewDialog, setShowReviewDialog] = useState(false);
-  const [promotionId, setPromotionId] = useState<string | null>(null);
+  const [deploymentId, setDeploymentId] = useState<string | null>(null);
+  const [initiateResponse, setInitiateResponse] = useState<any>(null);
   const [dependencyWarnings, setDependencyWarnings] = useState<Record<string, Array<{workflowId: string; workflowName: string; reason: string; message: string}>>>({});
   const [isLoadingWorkflows, setIsLoadingWorkflows] = useState(false);
 
   // Credential preflight state
   const [showPreflightDialog, setShowPreflightDialog] = useState(false);
+  const [executionMode, setExecutionMode] = useState<'now' | 'schedule'>('now');
+  const [scheduledDateTime, setScheduledDateTime] = useState<string>('');
   const [preflightResult, setPreflightResult] = useState<CredentialPreflightResult | null>(null);
   const [showMappingDialog, setShowMappingDialog] = useState(false);
   const [selectedIssue, setSelectedIssue] = useState<CredentialIssue | null>(null);
@@ -178,7 +182,7 @@ export function PromotionPage() {
       if (!selectedPipelineId || !sourceEnvId || !targetEnvId) {
         throw new Error('Missing required parameters');
       }
-      return apiClient.initiatePromotion({
+      return apiClient.initiateDeployment({
         pipelineId: selectedPipelineId,
         sourceEnvironmentId: sourceEnvId,
         targetEnvironmentId: targetEnvId,
@@ -186,19 +190,37 @@ export function PromotionPage() {
       });
     },
     onSuccess: (data) => {
-      const promotionId = data.data.promotion_id;
-
-      if (data.data.requires_approval) {
-        toast.info('Deployment started - requires approval');
-      } else {
-        toast.success('Deployment started successfully');
-        // Auto-execute in background if no approval needed
-        executeMutation.mutate(promotionId);
+      const deploymentId = data.data.deployment_id || data.data.promotion_id;
+      setDeploymentId(deploymentId);
+      setInitiateResponse(data.data);
+      
+      // Store dependency warnings from the response
+      if (data.data.dependency_warnings) {
+        setDependencyWarnings(data.data.dependency_warnings);
       }
-
-      // Redirect to deployments page immediately so user can monitor progress
-      queryClient.invalidateQueries({ queryKey: ['deployments'] });
-      navigate('/deployments');
+      
+      // Check for critical errors that should block execution
+      const hasErrors = data.data.gate_results?.errors?.length > 0;
+      const requiresApproval = data.data.requires_approval;
+      
+      // If there are blocking errors, show review dialog
+      if (hasErrors) {
+        setShowReviewDialog(true);
+        return;
+      }
+      
+      // If approval required, show review dialog
+      if (requiresApproval) {
+        setShowReviewDialog(true);
+        return;
+      }
+      
+      // Otherwise, execute immediately with the scheduling choice from the main page
+      const scheduledAt = executionMode === 'schedule' && scheduledDateTime
+        ? new Date(scheduledDateTime).toISOString()
+        : undefined;
+      
+      executeMutation.mutate({ id: deploymentId, scheduledAt });
     },
     onError: (error: any) => {
       const detail = error.response?.data?.detail;
@@ -211,18 +233,33 @@ export function PromotionPage() {
   });
 
   const executeMutation = useMutation({
-    mutationFn: (id: string) => apiClient.executePromotion(id),
+    mutationFn: ({ id, scheduledAt }: { id: string; scheduledAt?: string }) => 
+      apiClient.executeDeployment(id, scheduledAt),
     onSuccess: (data) => {
       const jobId = data.data.job_id;
-      const promotionId = data.data.promotion_id;
+      const deploymentId = data.data.deployment_id || data.data.promotion_id;
+      const scheduledAt = data.data.scheduled_at;
       
-      if (jobId) {
+      // Reset review dialog state
+      setShowReviewDialog(false);
+      setExecutionMode('now');
+      setScheduledDateTime('');
+      setInitiateResponse(null);
+      
+      if (scheduledAt) {
+        const scheduledDate = new Date(scheduledAt);
+        toast.success(`Deployment scheduled for ${scheduledDate.toLocaleString()}`);
+        queryClient.invalidateQueries({ queryKey: ['promotions'] });
+        queryClient.invalidateQueries({ queryKey: ['deployments'] });
+        navigate('/deployments');
+      } else if (jobId) {
         toast.success('Deployment started successfully. Monitoring progress...');
         // Start polling for job status
-        startJobPolling(promotionId);
+        startJobPolling(deploymentId);
       } else {
         toast.success('Deployment executed successfully');
         queryClient.invalidateQueries({ queryKey: ['promotions'] });
+        queryClient.invalidateQueries({ queryKey: ['deployments'] });
         navigate('/deployments');
       }
     },
@@ -232,24 +269,26 @@ export function PromotionPage() {
         ? detail.map((e: any) => e.msg || e.message).join(', ')
         : (typeof detail === 'string' ? detail : 'Failed to execute deployment');
       toast.error(message);
+      // Re-open review dialog on error so user can try again
+      setShowReviewDialog(true);
     },
   });
 
   // Job polling state
-  const [pollingPromotionId, setPollingPromotionId] = useState<string | null>(null);
+  const [pollingDeploymentId, setPollingDeploymentId] = useState<string | null>(null);
   const [jobStatus, setJobStatus] = useState<any>(null);
 
   // Poll for job status
-  const startJobPolling = (promotionId: string) => {
-    setPollingPromotionId(promotionId);
+  const startJobPolling = (deploymentId: string) => {
+    setPollingDeploymentId(deploymentId);
     setJobStatus({ status: 'running', progress: { current: 0, total: 0, percentage: 0 } });
   };
 
   // Poll job status
   useQuery({
-    queryKey: ['promotion-job', pollingPromotionId],
-    queryFn: () => apiClient.getPromotionJob(pollingPromotionId!),
-    enabled: !!pollingPromotionId,
+    queryKey: ['deployment-job', pollingDeploymentId],
+    queryFn: () => apiClient.getDeploymentJob(pollingDeploymentId!),
+    enabled: !!pollingDeploymentId,
     refetchInterval: (query) => {
       const data = query.state.data?.data;
       if (data?.status === 'completed' || data?.status === 'failed' || data?.status === 'cancelled') {
@@ -331,8 +370,13 @@ export function PromotionPage() {
       return;
     }
 
-    // Run credential preflight check before proceeding
-    preflightMutation.mutate();
+    // Only run credential preflight check if the gate is enabled in stage settings
+    if (activeStage?.gates?.credentialsExistInTarget) {
+      preflightMutation.mutate();
+    } else {
+      // Skip preflight and go directly to initiation
+      initiateMutation.mutate();
+    }
   };
 
   const handleMapCredential = (issue: CredentialIssue) => {
@@ -345,8 +389,8 @@ export function PromotionPage() {
     preflightMutation.mutate();
   };
 
-  const handleExecute = (promotionId: string) => {
-    executeMutation.mutate(promotionId);
+  const handleExecute = (deploymentId: string) => {
+    executeMutation.mutate({ id: deploymentId });
   };
 
   const handlePreflightProceed = () => {
@@ -420,7 +464,7 @@ export function PromotionPage() {
 
             {selectedPipeline && selectedPipeline.stages.length > 0 && (
               <div className="space-y-2">
-                <Label htmlFor="stage">Promotion Stage</Label>
+                <Label htmlFor="stage">Stage</Label>
                 <Select
                   value={selectedStageIndex >= 0 ? String(selectedStageIndex) : ''}
                   onValueChange={(val) => setSelectedStageIndex(parseInt(val, 10))}
@@ -610,7 +654,7 @@ export function PromotionPage() {
       )}
 
       {/* Job Status Display */}
-      {pollingPromotionId && jobStatus && (
+      {pollingDeploymentId && jobStatus && (
         <Card>
           <CardHeader>
             <CardTitle>Deployment Progress</CardTitle>
@@ -651,32 +695,109 @@ export function PromotionPage() {
 
       {/* Actions */}
       {selectedPipelineId && activeStage && (
-        <div className="flex justify-end gap-2">
-          <Button variant="outline" onClick={() => navigate('/deployments')}>
-            Cancel
-          </Button>
-          <Button
-            onClick={handleInitiate}
-            disabled={preflightMutation.isPending || initiateMutation.isPending || executeMutation.isPending || workflowSelections.filter(ws => ws.selected).length === 0}
-          >
-            {preflightMutation.isPending ? (
-              <>
-                <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                Checking Credentials...
-              </>
-            ) : initiateMutation.isPending ? (
-              <>
-                <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                Initiating...
-              </>
-            ) : (
-              <>
-                <Play className="h-4 w-4 mr-2" />
-                Create Deployment
-              </>
-            )}
-          </Button>
-        </div>
+        <Card>
+          <CardHeader>
+            <CardTitle>Deployment Options</CardTitle>
+            <CardDescription>
+              Choose when to execute this deployment
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            {/* Execution Mode Selection */}
+            <div className="space-y-3">
+              <div className="flex items-center space-x-2">
+                <input
+                  type="radio"
+                  id="run-now-main"
+                  name="execution-mode-main"
+                  value="now"
+                  checked={executionMode === 'now'}
+                  onChange={() => {
+                    setExecutionMode('now');
+                    setScheduledDateTime('');
+                  }}
+                  className="h-4 w-4"
+                />
+                <Label htmlFor="run-now-main" className="cursor-pointer font-medium">
+                  Run Now
+                </Label>
+              </div>
+              <div className="flex items-center space-x-2">
+                <input
+                  type="radio"
+                  id="schedule-main"
+                  name="execution-mode-main"
+                  value="schedule"
+                  checked={executionMode === 'schedule'}
+                  onChange={() => setExecutionMode('schedule')}
+                  className="h-4 w-4"
+                />
+                <Label htmlFor="schedule-main" className="cursor-pointer font-medium">
+                  Schedule for Later
+                </Label>
+              </div>
+              {executionMode === 'schedule' && (
+                <div className="ml-6 space-y-2">
+                  <Label htmlFor="scheduled-datetime-main">Scheduled Date & Time</Label>
+                  <Input
+                    type="datetime-local"
+                    id="scheduled-datetime-main"
+                    value={scheduledDateTime}
+                    onChange={(e) => setScheduledDateTime(e.target.value)}
+                    min={new Date().toISOString().slice(0, 16)}
+                  />
+                  <p className="text-xs text-muted-foreground">
+                    Deployment will start at the specified time
+                  </p>
+                </div>
+              )}
+            </div>
+
+            {/* Summary */}
+            <div className="pt-2 border-t">
+              <div className="flex items-center justify-between text-sm">
+                <span className="text-muted-foreground">Selected Workflows:</span>
+                <span className="font-medium">
+                  {workflowSelections.filter(ws => ws.selected).length} of {workflowSelections.length}
+                </span>
+              </div>
+            </div>
+
+            {/* Action Buttons */}
+            <div className="flex justify-end gap-2 pt-2">
+              <Button variant="outline" onClick={() => navigate('/deployments')}>
+                Cancel
+              </Button>
+              <Button
+                onClick={() => {
+                  if (executionMode === 'schedule' && !scheduledDateTime) {
+                    toast.error('Please select a date and time for scheduling');
+                    return;
+                  }
+                  handleInitiate();
+                }}
+                disabled={preflightMutation.isPending || initiateMutation.isPending || executeMutation.isPending || workflowSelections.filter(ws => ws.selected).length === 0}
+              >
+                {preflightMutation.isPending ? (
+                  <>
+                    <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                    Checking Credentials...
+                  </>
+                ) : initiateMutation.isPending ? (
+                  <>
+                    <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                    {executionMode === 'schedule' ? 'Scheduling...' : 'Creating...'}
+                  </>
+                ) : (
+                  <>
+                    <Play className="h-4 w-4 mr-2" />
+                    {executionMode === 'schedule' ? 'Schedule Deployment' : 'Create Deployment'}
+                  </>
+                )}
+              </Button>
+            </div>
+          </CardContent>
+        </Card>
       )}
 
       {/* Review/Approval Dialog */}
@@ -689,80 +810,107 @@ export function PromotionPage() {
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-4">
+            {/* Summary */}
             <div>
-              <h4 className="font-semibold mb-2">Selected Workflows</h4>
-              <ul className="list-disc list-inside space-y-1">
-                {workflowSelections.filter(ws => ws.selected).map(ws => (
-                  <li key={ws.workflowId}>
-                    {ws.workflowName} ({getChangeTypeBadge(ws.changeType).props.children})
-                  </li>
-                ))}
-              </ul>
+              <p className="text-sm text-muted-foreground mb-3">
+                {workflowSelections.filter(ws => ws.selected).length} workflow(s) selected for deployment
+              </p>
             </div>
+
+            {/* Gate Results - Only show if there are errors or warnings */}
+            {initiateResponse?.gate_results && (
+              (initiateResponse.gate_results.errors?.length > 0 || 
+               initiateResponse.gate_results.warnings?.length > 0) && (
+                <div>
+                  <h4 className="font-semibold mb-2">Pre-flight Validation</h4>
+                  <div className="space-y-2">
+                    {initiateResponse.gate_results.warnings?.map((warning: string, i: number) => (
+                      <Alert key={i}>
+                        <AlertTriangle className="h-4 w-4" />
+                        <AlertDescription>{warning}</AlertDescription>
+                      </Alert>
+                    ))}
+                    {initiateResponse.gate_results.errors?.map((error: string, i: number) => (
+                      <Alert key={i} variant="destructive">
+                        <XCircle className="h-4 w-4" />
+                        <AlertDescription>{error}</AlertDescription>
+                      </Alert>
+                    ))}
+                  </div>
+                </div>
+              )
+            )}
+            
+            {/* Approval Notice */}
+            {initiateResponse?.requires_approval && (
+              <Alert>
+                <AlertTriangle className="h-4 w-4" />
+                <AlertDescription>
+                  This deployment requires approval before it can be executed.
+                </AlertDescription>
+              </Alert>
+            )}
 
             {/* Dependency Warnings */}
             {Object.keys(dependencyWarnings).length > 0 && (
-              <div>
-                <h4 className="font-semibold mb-2">Dependency Warnings</h4>
-                <Alert>
-                  <AlertTriangle className="h-4 w-4" />
-                  <AlertDescription>
-                    {Object.values(dependencyWarnings).flat().length} dependency warning(s) found.
-                    Review the workflow selection to ensure all dependencies are included.
-                  </AlertDescription>
-                </Alert>
-              </div>
-            )}
-
-            {/* Gate Results */}
-            {initiateMutation.data?.data?.gate_results && (
-              <div>
-                <h4 className="font-semibold mb-2">Pre-flight Validation</h4>
-                <div className="space-y-2">
-                  {initiateMutation.data.data.gate_results.warnings?.map((warning: string, i: number) => (
-                    <Alert key={i}>
-                      <AlertTriangle className="h-4 w-4" />
-                      <AlertDescription>{warning}</AlertDescription>
-                    </Alert>
-                  ))}
-                  {initiateMutation.data.data.gate_results.errors?.map((error: string, i: number) => (
-                    <Alert key={i} variant="destructive">
-                      <XCircle className="h-4 w-4" />
-                      <AlertDescription>{error}</AlertDescription>
-                    </Alert>
-                  ))}
-                  {initiateMutation.data.data.gate_results.errors?.length === 0 && 
-                   initiateMutation.data.data.gate_results.warnings?.length === 0 && (
-                    <Alert>
-                      <CheckCircle className="h-4 w-4" />
-                      <AlertDescription>All gates passed. Ready to deploy.</AlertDescription>
-                    </Alert>
-                  )}
-                </div>
-              </div>
+              <Alert>
+                <AlertTriangle className="h-4 w-4" />
+                <AlertDescription>
+                  {Object.values(dependencyWarnings).flat().length} dependency warning(s) found.
+                  Review the workflow selection to ensure all dependencies are included.
+                </AlertDescription>
+              </Alert>
             )}
 
             {/* Schedule Check */}
             {activeStage?.schedule?.restrictPromotionTimes && (
-              <div>
-                <h4 className="font-semibold mb-2">Schedule</h4>
-                <Alert>
-                  <AlertTriangle className="h-4 w-4" />
-                  <AlertDescription>
-                    Promotions are restricted to: {activeStage.schedule.allowedDays?.join(', ')} 
-                    between {activeStage.schedule.startTime} and {activeStage.schedule.endTime}
-                  </AlertDescription>
-                </Alert>
-              </div>
+              <Alert>
+                <AlertTriangle className="h-4 w-4" />
+                <AlertDescription>
+                  Promotions are restricted to: {activeStage.schedule.allowedDays?.join(', ')} 
+                  between {activeStage.schedule.startTime} and {activeStage.schedule.endTime}
+                </AlertDescription>
+              </Alert>
             )}
           </div>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setShowReviewDialog(false)}>
-              Cancel
+            <Button variant="outline" onClick={() => {
+              setShowReviewDialog(false);
+              setInitiateResponse(null);
+              setDeploymentId(null);
+            }}>
+              {initiateResponse?.gate_results?.errors?.length > 0 ? 'Close' : 'Cancel'}
             </Button>
-            {promotionId && (
-              <Button onClick={() => executeMutation.mutate(promotionId)}>
-                Execute Deployment
+            {deploymentId && initiateResponse?.gate_results?.errors?.length === 0 && (
+              <Button 
+                onClick={() => {
+                  const scheduledAt = executionMode === 'schedule' && scheduledDateTime
+                    ? new Date(scheduledDateTime).toISOString()
+                    : undefined;
+                  
+                  if (executionMode === 'schedule' && !scheduledDateTime) {
+                    toast.error('Please select a date and time for scheduling');
+                    return;
+                  }
+                  
+                  // Close dialog first
+                  setShowReviewDialog(false);
+                  
+                  // Execute or schedule the deployment
+                  executeMutation.mutate({ id: deploymentId, scheduledAt });
+                }}
+                disabled={executeMutation.isPending || (initiateResponse?.requires_approval && executionMode === 'now')}
+              >
+                {executeMutation.isPending ? (
+                  <>
+                    <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                    {executionMode === 'schedule' ? 'Scheduling...' : 'Starting...'}
+                  </>
+                ) : initiateResponse?.requires_approval && executionMode === 'now' ? (
+                  'Requires Approval'
+                ) : (
+                  executionMode === 'schedule' ? 'Schedule Deployment' : 'Execute Deployment'
+                )}
               </Button>
             )}
           </DialogFooter>

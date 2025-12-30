@@ -45,6 +45,20 @@ class Subscription:
             return self.scope.split(":", 1)[1]
         return None
 
+    @property
+    def environment_id(self) -> Optional[str]:
+        """Extract environment_id from scope if this is an environment subscription."""
+        if self.scope.startswith("background_jobs_env:"):
+            return self.scope.split(":", 1)[1]
+        return None
+
+    @property
+    def job_id(self) -> Optional[str]:
+        """Extract job_id from scope if this is a job subscription."""
+        if self.scope.startswith("background_jobs_job:"):
+            return self.scope.split(":", 1)[1]
+        return None
+
 
 class SSEPubSubService:
     """
@@ -110,8 +124,8 @@ class SSEPubSubService:
 
             # Scope-based filtering
             if sub.scope == "deployments_list":
-                # List scope receives all events
-                should_send = True
+                # List scope receives all deployment events
+                should_send = event.type.startswith("deployment.") or event.type == "counts.update"
             elif sub.scope.startswith("deployment_detail:"):
                 # Detail scope only receives events for that specific deployment
                 sub_deployment_id = sub.deployment_id
@@ -120,7 +134,26 @@ class SSEPubSubService:
                 else:
                     # If event doesn't have deployment_id, send to all detail scopes
                     # (for counts.update events, etc.)
-                    should_send = True
+                    should_send = event.type.startswith("deployment.") or event.type == "counts.update"
+            elif sub.scope == "background_jobs_list":
+                # List scope receives all background job events
+                should_send = event.type in ["sync.progress", "backup.progress", "restore.progress"]
+            elif sub.scope.startswith("background_jobs_env:"):
+                # Environment scope receives events for that specific environment
+                sub_env_id = sub.environment_id
+                if event.env_id and sub_env_id:
+                    should_send = (event.env_id == sub_env_id) and event.type in ["sync.progress", "backup.progress", "restore.progress"]
+                else:
+                    should_send = False
+            elif sub.scope.startswith("background_jobs_job:"):
+                # Job scope receives events for that specific job
+                sub_job_id = sub.job_id
+                # Extract job_id from payload if available
+                event_job_id = event.payload.get("job_id") if isinstance(event.payload, dict) else None
+                if event_job_id and sub_job_id:
+                    should_send = (event_job_id == sub_job_id) and event.type in ["sync.progress", "backup.progress", "restore.progress"]
+                else:
+                    should_send = False
             else:
                 should_send = False
 

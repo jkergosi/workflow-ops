@@ -1,4 +1,4 @@
-from fastapi import APIRouter, HTTPException, status, UploadFile, File, Body, Depends
+from fastapi import APIRouter, HTTPException, status, UploadFile, File, Body, Depends, BackgroundTasks
 from fastapi.responses import StreamingResponse
 from typing import List, Dict, Any, Optional
 import json
@@ -6,6 +6,7 @@ import zipfile
 import io
 import re
 from datetime import datetime
+import logging
 
 from app.schemas.workflow import WorkflowResponse, WorkflowUpload, WorkflowTagsUpdate
 from app.services.provider_registry import ProviderRegistry
@@ -14,7 +15,15 @@ from app.services.github_service import GitHubService
 from app.services.diff_service import compare_workflows
 from app.services.sync_status_service import compute_sync_status
 from app.core.entitlements_gate import require_workflow_limit, require_entitlement
-from app.api.endpoints.admin_audit import create_audit_log
+from app.api.endpoints.admin_audit import create_audit_log, AuditActionType
+from app.services.background_job_service import (
+    background_job_service,
+    BackgroundJobStatus,
+    BackgroundJobType
+)
+from app.api.endpoints.sse import emit_backup_progress
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -467,15 +476,268 @@ async def sync_workflows_from_github(
         )
 
 
+async def _backup_workflows_to_github_background(
+    job_id: str,
+    environment_id: str,
+    env_config: dict,
+    force: bool,
+    tenant_id: str
+):
+    """Background task for backing up workflows to GitHub."""
+    try:
+        # Update job status to running
+        await background_job_service.update_job_status(
+            job_id=job_id,
+            status=BackgroundJobStatus.RUNNING,
+            progress={
+                "current": 0,
+                "total": 1,
+                "percentage": 0,
+                "message": "Initializing backup..."
+            }
+        )
+
+        # Create GitHub service
+        repo_url = env_config.get("git_repo_url", "").rstrip('/').replace('.git', '')
+        repo_parts = repo_url.split("/")
+        github_service = GitHubService(
+            token=env_config.get("git_pat"),
+            repo_owner=repo_parts[-2] if len(repo_parts) >= 2 else "",
+            repo_name=repo_parts[-1] if len(repo_parts) >= 1 else "",
+            branch=env_config.get("git_branch", "main")
+        )
+
+        if not github_service.is_configured():
+            raise Exception("GitHub is not properly configured")
+
+        # Create provider adapter
+        adapter = ProviderRegistry.get_adapter_for_environment(env_config)
+
+        # Get all workflows
+        workflows = await adapter.get_workflows()
+        if not workflows:
+            raise Exception("No workflows found in this environment")
+
+        # Filter workflows to sync
+        last_backup = env_config.get("last_backup")
+        workflows_to_sync = []
+        
+        if force:
+            workflows_to_sync = workflows
+        elif last_backup:
+            last_backup_dt = datetime.fromisoformat(last_backup.replace('Z', '+00:00')) if isinstance(last_backup, str) else last_backup
+            for workflow in workflows:
+                updated_at_str = workflow.get("updatedAt")
+                if updated_at_str:
+                    updated_at = datetime.fromisoformat(updated_at_str.replace('Z', '+00:00'))
+                    if updated_at > last_backup_dt:
+                        workflows_to_sync.append(workflow)
+                else:
+                    workflows_to_sync.append(workflow)
+        else:
+            workflows_to_sync = workflows
+
+        env_type = env_config.get("n8n_type")
+        if not env_type:
+            raise Exception("Environment type is required for GitHub workflow operations")
+
+        # Get GitHub workflows for comparison
+        github_workflow_map = await github_service.get_all_workflows_from_github(environment_type=env_type)
+
+        # Sync workflows
+        synced_workflows = []
+        errors = []
+        total = len(workflows_to_sync)
+
+        for idx, workflow in enumerate(workflows_to_sync):
+            try:
+                workflow_id = workflow.get("id")
+                full_workflow = await adapter.get_workflow(workflow_id)
+
+                await emit_backup_progress(
+                    job_id=job_id,
+                    environment_id=environment_id,
+                    status="running",
+                    current=idx + 1,
+                    total=total,
+                    current_workflow_name=full_workflow.get("name"),
+                    message=f"Backing up workflow {idx + 1} of {total}"
+                )
+
+                await github_service.sync_workflow_to_github(
+                    workflow_id=workflow_id,
+                    workflow_name=full_workflow.get("name"),
+                    workflow_data=full_workflow,
+                    environment_type=env_type
+                )
+
+                synced_workflows.append({
+                    "id": workflow_id,
+                    "name": full_workflow.get("name")
+                })
+
+                await background_job_service.update_progress(
+                    job_id=job_id,
+                    current=idx + 1,
+                    total=total,
+                    message=f"Backed up {full_workflow.get('name')}"
+                )
+
+            except Exception as sync_error:
+                error_msg = f"Failed to sync workflow {workflow.get('id')}: {str(sync_error)}"
+                errors.append(error_msg)
+                logger.error(error_msg)
+                continue
+
+        # Compute sync status for all workflows
+        for workflow in workflows:
+            workflow_id = workflow.get("id")
+            try:
+                full_workflow = await adapter.get_workflow(workflow_id)
+                github_workflow = github_workflow_map.get(workflow_id)
+                cached_workflow = await db_service.get_workflow(MOCK_TENANT_ID, env_config.get("id"), workflow_id)
+                last_synced_at = cached_workflow.get("last_synced_at") if cached_workflow else None
+                
+                sync_status = compute_sync_status(
+                    n8n_workflow=full_workflow,
+                    github_workflow=github_workflow,
+                    last_synced_at=last_synced_at,
+                    n8n_updated_at=full_workflow.get("updatedAt"),
+                    github_updated_at=github_workflow.get("updatedAt") if github_workflow else None
+                )
+                
+                await db_service.update_workflow_sync_status(
+                    tenant_id=MOCK_TENANT_ID,
+                    environment_id=env_config.get("id"),
+                    n8n_workflow_id=workflow_id,
+                    sync_status=sync_status
+                )
+            except Exception as status_error:
+                logger.warning(f"Failed to compute sync status for workflow {workflow_id}: {str(status_error)}")
+                continue
+
+        # Update last_backup timestamp
+        if synced_workflows:
+            await db_service.update_environment(
+                env_config.get("id"),
+                MOCK_TENANT_ID,
+                {"last_backup": datetime.utcnow().isoformat()}
+            )
+
+        skipped_count = len(workflows) - len(workflows_to_sync)
+        has_errors = len(errors) > 0
+        final_status = BackgroundJobStatus.COMPLETED if not has_errors else BackgroundJobStatus.FAILED
+
+        await background_job_service.update_job_status(
+            job_id=job_id,
+            status=final_status,
+            progress={
+                "current": total,
+                "total": total,
+                "percentage": 100,
+                "message": f"Backup completed: {len(synced_workflows)} synced, {skipped_count} skipped"
+            },
+            result={
+                "synced": len(synced_workflows),
+                "skipped": skipped_count,
+                "failed": len(errors),
+                "workflows": synced_workflows
+            },
+            error_message=f"Backup completed with {len(errors)} errors" if has_errors else None,
+            error_details={"errors": errors} if has_errors else None
+        )
+
+        await emit_backup_progress(
+            job_id=job_id,
+            environment_id=environment_id,
+            status="completed" if not has_errors else "failed",
+            current=total,
+            total=total,
+            message=f"Backup completed: {len(synced_workflows)} synced" if not has_errors else f"Backup completed with {len(errors)} errors",
+            errors=errors if has_errors else None
+        )
+
+        # Create audit log
+        try:
+            provider = env_config.get("provider", "n8n") or "n8n"
+            action_type = AuditActionType.GITHUB_BACKUP_COMPLETED if not has_errors else AuditActionType.GITHUB_BACKUP_FAILED
+            await create_audit_log(
+                action_type=action_type,
+                action=f"GitHub backup {'completed' if not has_errors else 'failed'}",
+                tenant_id=tenant_id,
+                resource_type="environment",
+                resource_id=environment_id,
+                resource_name=env_config.get("n8n_name", environment_id),
+                provider=provider,
+                new_value={
+                    "job_id": job_id,
+                    "synced": len(synced_workflows),
+                    "skipped": skipped_count,
+                    "failed": len(errors),
+                    "errors": errors if has_errors else None
+                }
+            )
+        except Exception as audit_error:
+            logger.warning(f"Failed to create audit log: {str(audit_error)}")
+
+    except Exception as e:
+        logger.error(f"Background backup failed for environment {environment_id}: {str(e)}")
+        await background_job_service.update_job_status(
+            job_id=job_id,
+            status=BackgroundJobStatus.FAILED,
+            error_message=str(e),
+            error_details={"error_type": type(e).__name__}
+        )
+        await emit_backup_progress(
+            job_id=job_id,
+            environment_id=environment_id,
+            status="failed",
+            current=0,
+            total=1,
+            message=f"Backup failed: {str(e)}",
+            errors=[str(e)]
+        )
+        # Create audit log for failure
+        try:
+            provider = env_config.get("provider", "n8n") or "n8n"
+            await create_audit_log(
+                action_type=AuditActionType.GITHUB_BACKUP_FAILED,
+                action=f"GitHub backup failed: {str(e)}",
+                tenant_id=tenant_id,
+                resource_type="environment",
+                resource_id=environment_id,
+                resource_name=env_config.get("n8n_name", environment_id),
+                provider=provider,
+                new_value={
+                    "job_id": job_id,
+                    "error": str(e)
+                }
+            )
+        except Exception as audit_error:
+            logger.warning(f"Failed to create audit log: {str(audit_error)}")
+
+
 @router.post("/sync-to-github")
 async def sync_workflows_to_github(
+    background_tasks: BackgroundTasks,
     environment_id: Optional[str] = None,
     environment: Optional[str] = None,  # Deprecated: use environment_id instead
     force: bool = False,  # Force full sync, bypassing incremental check
-    _: dict = Depends(require_entitlement("workflow_push"))
+    user_info: dict = Depends(require_entitlement("workflow_push"))
 ):
-    """Backup/sync all workflows from N8N to GitHub"""
+    """Backup/sync all workflows from N8N to GitHub. Returns immediately with job_id. Backup runs in background."""
     try:
+        # Get tenant_id from authenticated user
+        tenant = user_info.get("tenant")
+        if not tenant:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Authentication required"
+            )
+        tenant_id = tenant["id"]
+        user = user_info.get("user", {})
+        user_id = user.get("id", "00000000-0000-0000-0000-000000000000")
+        
         env_config = await resolve_environment_config(environment_id, environment)
 
         if not env_config:
@@ -484,14 +746,14 @@ async def sync_workflows_to_github(
                 detail=f"Environment '{environment}' not configured"
             )
 
-        # Check if GitHub is configured for this environment
+        # Check if GitHub is configured
         if not env_config.get("git_repo_url"):
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="GitHub configuration not found for this environment"
             )
 
-        # Create GitHub service from environment configuration
+        # Create GitHub service for validation
         repo_url = env_config.get("git_repo_url", "").rstrip('/').replace('.git', '')
         repo_parts = repo_url.split("/")
         github_service = GitHubService(
@@ -507,145 +769,55 @@ async def sync_workflows_to_github(
                 detail="GitHub is not properly configured"
             )
 
-        # Create provider adapter
-        adapter = ProviderRegistry.get_adapter_for_environment(env_config)
+        # Create background job
+        job = await background_job_service.create_job(
+            tenant_id=tenant_id,
+            job_type=BackgroundJobType.GITHUB_SYNC_TO,
+            resource_id=env_config.get("id"),
+            resource_type="environment",
+            created_by=user_id,
+            initial_progress={
+                "current": 0,
+                "total": 1,
+                "percentage": 0,
+                "message": "Initializing backup..."
+            }
+        )
+        job_id = job["id"]
 
-        # Get all workflows from provider
-        workflows = await adapter.get_workflows()
-
-        if not workflows:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="No workflows found in this environment"
+        # Create audit log for backup start
+        try:
+            provider = env_config.get("provider", "n8n") or "n8n"
+            await create_audit_log(
+                action_type=AuditActionType.GITHUB_BACKUP_STARTED,
+                action=f"Started GitHub backup",
+                tenant_id=tenant_id,
+                resource_type="environment",
+                resource_id=env_config.get("id"),
+                resource_name=env_config.get("n8n_name", env_config.get("id")),
+                provider=provider,
+                new_value={
+                    "job_id": job_id,
+                    "force": force
+                }
             )
+        except Exception as audit_error:
+            logger.warning(f"Failed to create audit log: {str(audit_error)}")
 
-        # Get last backup timestamp for incremental backup
-        last_backup = env_config.get("last_backup")
-
-        # Filter workflows that have been updated since last backup (unless force=True)
-        workflows_to_sync = []
-        print(f"DEBUG: force={force}, last_backup={last_backup}, total workflows={len(workflows)}")
-        print(f"DEBUG: force type={type(force)}, force value repr={repr(force)}")
-        if force:
-            # Force full sync - include all workflows
-            workflows_to_sync = workflows
-            print(f"DEBUG: force=True, workflows_to_sync count={len(workflows_to_sync)}")
-        elif last_backup:
-            from datetime import datetime
-            last_backup_dt = datetime.fromisoformat(last_backup.replace('Z', '+00:00')) if isinstance(last_backup, str) else last_backup
-
-            for workflow in workflows:
-                updated_at_str = workflow.get("updatedAt")
-                if updated_at_str:
-                    updated_at = datetime.fromisoformat(updated_at_str.replace('Z', '+00:00'))
-                    if updated_at > last_backup_dt:
-                        workflows_to_sync.append(workflow)
-                else:
-                    # If no updatedAt, include it to be safe
-                    workflows_to_sync.append(workflow)
-        else:
-            # No last backup, sync all workflows
-            workflows_to_sync = workflows
-
-        # Get environment type key for GitHub folder path (required)
-        env_type = env_config.get("n8n_type")
-        if not env_type:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Environment type is required for GitHub workflow operations. Set the environment type and try again.",
-            )
-
-        # Get all workflows from GitHub for comparison
-        # get_all_workflows_from_github returns Dict[workflow_id, workflow_data]
-        github_workflow_map = await github_service.get_all_workflows_from_github(environment_type=env_type)
-
-        # Sync each workflow to GitHub
-        synced_workflows = []
-        skipped_workflows = []
-        errors = []
-        sync_status_updates = {}  # Track sync status for all workflows
-
-        print(f"DEBUG: Starting sync loop with {len(workflows_to_sync)} workflows to sync")
-        for workflow in workflows_to_sync:
-            try:
-                # Get full workflow details
-                workflow_id = workflow.get("id")
-                print(f"DEBUG: Syncing workflow {workflow_id}...")
-                full_workflow = await adapter.get_workflow(workflow_id)
-
-                # Sync to GitHub with environment-specific folder
-                await github_service.sync_workflow_to_github(
-                    workflow_id=workflow_id,
-                    workflow_name=full_workflow.get("name"),
-                    workflow_data=full_workflow,
-                    environment_type=env_type
-                )
-
-                synced_workflows.append({
-                    "id": workflow_id,
-                    "name": full_workflow.get("name")
-                })
-
-            except Exception as sync_error:
-                errors.append(f"Failed to sync workflow {workflow.get('id')}: {str(sync_error)}")
-                continue
-
-        # Compute sync status for ALL workflows (not just those being synced)
-        # This ensures we have accurate status for all workflows after sync
-        for workflow in workflows:
-            workflow_id = workflow.get("id")
-            try:
-                # Get full workflow from provider
-                full_workflow = await adapter.get_workflow(workflow_id)
-                
-                # Get GitHub version
-                github_workflow = github_workflow_map.get(workflow_id)
-                
-                # Get cached workflow to get last_synced_at
-                cached_workflow = await db_service.get_workflow(MOCK_TENANT_ID, env_config.get("id"), workflow_id)
-                last_synced_at = cached_workflow.get("last_synced_at") if cached_workflow else None
-                
-                # Compute sync status
-                sync_status = compute_sync_status(
-                    n8n_workflow=full_workflow,
-                    github_workflow=github_workflow,
-                    last_synced_at=last_synced_at,
-                    n8n_updated_at=full_workflow.get("updatedAt"),
-                    github_updated_at=github_workflow.get("updatedAt") if github_workflow else None
-                )
-                
-                sync_status_updates[workflow_id] = sync_status
-                
-                # Update workflow in database with sync status
-                await db_service.update_workflow_sync_status(
-                    tenant_id=MOCK_TENANT_ID,
-                    environment_id=env_config.get("id"),
-                    n8n_workflow_id=workflow_id,
-                    sync_status=sync_status
-                )
-            except Exception as status_error:
-                # Log but don't fail the sync
-                print(f"Failed to compute sync status for workflow {workflow_id}: {str(status_error)}")
-                continue
-
-        # Update last_backup timestamp after successful sync
-        if synced_workflows:
-            from datetime import datetime
-            await db_service.update_environment(
-                env_config.get("id"),
-                MOCK_TENANT_ID,
-                {"last_backup": datetime.utcnow().isoformat()}
-            )
-
-        skipped_count = len(workflows) - len(workflows_to_sync)
+        # Start background task
+        background_tasks.add_task(
+            _backup_workflows_to_github_background,
+            job_id=job_id,
+            environment_id=env_config.get("id"),
+            env_config=env_config,
+            force=force,
+            tenant_id=tenant_id
+        )
 
         return {
-            "success": len(synced_workflows) > 0 or skipped_count > 0,
-            "synced": len(synced_workflows),
-            "skipped": skipped_count,
-            "failed": len(errors),
-            "workflows": synced_workflows,
-            "errors": errors
+            "job_id": job_id,
+            "status": "running",
+            "message": "Backup started in background"
         }
 
     except HTTPException:
@@ -653,7 +825,7 @@ async def sync_workflows_to_github(
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to sync workflows to GitHub: {str(e)}"
+            detail=f"Failed to start backup: {str(e)}"
         )
 
 

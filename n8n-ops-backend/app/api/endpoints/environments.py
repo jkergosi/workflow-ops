@@ -16,12 +16,13 @@ from app.services.n8n_client import N8NClient  # Keep for direct connection test
 from app.services.github_service import GitHubService
 from app.services.entitlements_service import entitlements_service
 from app.core.entitlements_gate import require_entitlement, require_environment_limit
-from app.api.endpoints.admin_audit import create_audit_log
+from app.api.endpoints.admin_audit import create_audit_log, AuditActionType
 from app.services.background_job_service import (
     background_job_service,
     BackgroundJobStatus,
     BackgroundJobType
 )
+from app.api.endpoints.sse import emit_sync_progress
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -380,38 +381,42 @@ async def update_connection_status(environment_id: str):
         )
 
 
-@router.post("/{environment_id}/sync")
-async def sync_environment(
+async def _sync_environment_background(
+    job_id: str,
     environment_id: str,
-    _: dict = Depends(require_entitlement("environment_basic"))
+    environment: dict,
+    tenant_id: str
 ):
-    """
-    Sync workflows, executions, credentials, tags, and users from N8N to database.
-    This will:
-    - Query N8N API for workflows, executions, credentials, tags, and users
-    - Delete rows that don't exist in N8N
-    - Add rows that exist in N8N but not in database
-    - Update rows that exist in both
-    """
+    """Background task for syncing environment from N8N."""
     try:
-        # Get environment details
-        environment = await db_service.get_environment(environment_id, MOCK_TENANT_ID)
-        if not environment:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Environment not found"
-            )
+        # Update job status to running
+        await background_job_service.update_job_status(
+            job_id=job_id,
+            status=BackgroundJobStatus.RUNNING,
+            progress={
+                "current": 0,
+                "total": 5,  # workflows, executions, credentials, users, tags
+                "percentage": 0,
+                "message": "Starting sync..."
+            }
+        )
+        await emit_sync_progress(
+            job_id=job_id,
+            environment_id=environment_id,
+            status="running",
+            current_step="initializing",
+            current=0,
+            total=5,
+            message="Starting sync..."
+        )
 
-        # Create provider adapter for this environment
+        # Create provider adapter
         adapter = ProviderRegistry.get_adapter_for_environment(environment)
 
-        # Test connection first
+        # Test connection
         is_connected = await adapter.test_connection()
         if not is_connected:
-            raise HTTPException(
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail="Cannot connect to provider instance. Please check environment configuration."
-            )
+            raise Exception("Cannot connect to provider instance")
 
         sync_results = {
             "workflows": {"synced": 0, "errors": []},
@@ -421,11 +426,19 @@ async def sync_environment(
             "tags": {"synced": 0, "errors": []}
         }
 
-        # Sync workflows
+        # Sync workflows (step 1/5)
         try:
+            await emit_sync_progress(
+                job_id=job_id,
+                environment_id=environment_id,
+                status="running",
+                current_step="workflows",
+                current=1,
+                total=5,
+                message="Syncing workflows..."
+            )
             workflows = await adapter.get_workflows()
             
-            # Compute analysis for each workflow
             from app.services.workflow_analysis_service import analyze_workflow
             workflows_with_analysis = {}
             for workflow in workflows:
@@ -433,47 +446,61 @@ async def sync_environment(
                     analysis = analyze_workflow(workflow)
                     workflows_with_analysis[workflow.get("id")] = analysis
                 except Exception as e:
-                    # Log error but continue sync - analysis is optional
-                    import logging
-                    logging.warning(f"Failed to analyze workflow {workflow.get('id', 'unknown')}: {str(e)}")
-                    # Continue without analysis for this workflow
+                    logger.warning(f"Failed to analyze workflow {workflow.get('id', 'unknown')}: {str(e)}")
             
             synced_workflows = await db_service.sync_workflows_from_n8n(
-                MOCK_TENANT_ID,
+                tenant_id,
                 environment_id,
                 workflows,
                 workflows_with_analysis=workflows_with_analysis if workflows_with_analysis else None
             )
             sync_results["workflows"]["synced"] = len(synced_workflows)
 
-            # Update workflow count on environment
             await db_service.update_environment_workflow_count(
                 environment_id,
-                MOCK_TENANT_ID,
+                tenant_id,
                 len(synced_workflows)
             )
         except Exception as e:
+            logger.error(f"Failed to sync workflows: {str(e)}")
             sync_results["workflows"]["errors"].append(str(e))
 
-        # Sync executions
+        # Sync executions (step 2/5)
         try:
-            # Fetch more executions (increase limit to 1000 to get more recent executions)
-            executions = await adapter.get_executions(limit=1000)
+            await emit_sync_progress(
+                job_id=job_id,
+                environment_id=environment_id,
+                status="running",
+                current_step="executions",
+                current=2,
+                total=5,
+                message="Syncing executions..."
+            )
+            executions = await adapter.get_executions(limit=250)
             synced_executions = await db_service.sync_executions_from_n8n(
-                MOCK_TENANT_ID,
+                tenant_id,
                 environment_id,
                 executions
             )
             sync_results["executions"]["synced"] = len(synced_executions)
         except Exception as e:
-            logger.error(f"Failed to sync executions for environment {environment_id}: {str(e)}")
+            logger.error(f"Failed to sync executions: {str(e)}")
             sync_results["executions"]["errors"].append(str(e))
 
-        # Sync credentials
+        # Sync credentials (step 3/5)
         try:
+            await emit_sync_progress(
+                job_id=job_id,
+                environment_id=environment_id,
+                status="running",
+                current_step="credentials",
+                current=3,
+                total=5,
+                message="Syncing credentials..."
+            )
             credentials = await adapter.get_credentials()
             synced_credentials = await db_service.sync_credentials_from_n8n(
-                MOCK_TENANT_ID,
+                tenant_id,
                 environment_id,
                 credentials
             )
@@ -481,12 +508,20 @@ async def sync_environment(
         except Exception as e:
             sync_results["credentials"]["errors"].append(str(e))
 
-        # Sync users
+        # Sync users (step 4/5)
         try:
+            await emit_sync_progress(
+                job_id=job_id,
+                environment_id=environment_id,
+                status="running",
+                current_step="users",
+                current=4,
+                total=5,
+                message="Syncing users..."
+            )
             users = await adapter.get_users()
             if not users:
                 logger.warning(f"No users returned from N8N for environment {environment_id}")
-            logger.info(f"Fetched {len(users) if users else 0} users from N8N for environment {environment_id}")
             synced_users = await db_service.sync_n8n_users_from_n8n(
                 MOCK_TENANT_ID,
                 environment_id,
@@ -494,11 +529,20 @@ async def sync_environment(
             )
             sync_results["users"]["synced"] = len(synced_users)
         except Exception as e:
-            logger.error(f"Failed to sync users for environment {environment_id}: {str(e)}")
+            logger.error(f"Failed to sync users: {str(e)}")
             sync_results["users"]["errors"].append(str(e))
 
-        # Sync tags
+        # Sync tags (step 5/5)
         try:
+            await emit_sync_progress(
+                job_id=job_id,
+                environment_id=environment_id,
+                status="running",
+                current_step="tags",
+                current=5,
+                total=5,
+                message="Syncing tags..."
+            )
             tags = await adapter.get_tags()
             synced_tags = await db_service.sync_tags_from_n8n(
                 MOCK_TENANT_ID,
@@ -512,7 +556,7 @@ async def sync_environment(
         # Update last_connected timestamp
         await db_service.update_environment(
             environment_id,
-            MOCK_TENANT_ID,
+            tenant_id,
             {"last_connected": datetime.utcnow().isoformat()}
         )
 
@@ -522,58 +566,210 @@ async def sync_environment(
             for key in ["workflows", "executions", "credentials", "users", "tags"]
         )
 
-        # Emit sync.failure event if there are errors
-        if has_errors:
-            try:
-                from app.services.notification_service import notification_service
-                await notification_service.emit_event(
-                    tenant_id=MOCK_TENANT_ID,
-                    event_type="sync.failure",
-                    environment_id=environment_id,
-                    metadata={
-                        "environment_id": environment_id,
-                        "sync_type": "full_sync",
-                        "errors": {
-                            key: sync_results[key]["errors"]
-                            for key in ["workflows", "executions", "credentials", "users", "tags"]
-                            if sync_results[key]["errors"]
-                        }
-                    }
-                )
-            except Exception as e:
-                import logging
-                logging.error(f"Failed to emit sync.failure event: {str(e)}")
+        # Update job status
+        final_status = BackgroundJobStatus.COMPLETED if not has_errors else BackgroundJobStatus.FAILED
+        await background_job_service.update_job_status(
+            job_id=job_id,
+            status=final_status,
+            progress={
+                "current": 5,
+                "total": 5,
+                "percentage": 100,
+                "message": "Sync completed successfully" if not has_errors else "Sync completed with errors"
+            },
+            result=sync_results,
+            error_message="Sync completed with errors" if has_errors else None,
+            error_details={"errors": sync_results} if has_errors else None
+        )
+
+        await emit_sync_progress(
+            job_id=job_id,
+            environment_id=environment_id,
+            status="completed" if not has_errors else "failed",
+            current_step="completed",
+            current=5,
+            total=5,
+            message="Sync completed successfully" if not has_errors else "Sync completed with errors",
+            errors=sync_results if has_errors else None
+        )
+
+        # Create audit log
+        try:
+            provider = environment.get("provider", "n8n") or "n8n"
+            action_type = AuditActionType.ENVIRONMENT_SYNC_COMPLETED if not has_errors else AuditActionType.ENVIRONMENT_SYNC_FAILED
+            await create_audit_log(
+                action_type=action_type,
+                action=f"Environment sync {'completed' if not has_errors else 'failed'}",
+                tenant_id=tenant_id,
+                resource_type="environment",
+                resource_id=environment_id,
+                resource_name=environment.get("n8n_name", environment_id),
+                provider=provider,
+                new_value={
+                    "job_id": job_id,
+                    "results": sync_results,
+                    "has_errors": has_errors
+                }
+            )
+        except Exception as audit_error:
+            logger.warning(f"Failed to create audit log: {str(audit_error)}")
+
+    except Exception as e:
+        logger.error(f"Background sync failed for environment {environment_id}: {str(e)}")
+        await background_job_service.update_job_status(
+            job_id=job_id,
+            status=BackgroundJobStatus.FAILED,
+            error_message=str(e),
+            error_details={"error_type": type(e).__name__}
+        )
+        await emit_sync_progress(
+            job_id=job_id,
+            environment_id=environment_id,
+            status="failed",
+            current_step="error",
+            current=0,
+            total=5,
+            message=f"Sync failed: {str(e)}",
+            errors={"error": str(e)}
+        )
+        # Create audit log for failure
+        try:
+            provider = environment.get("provider", "n8n") or "n8n"
+            await create_audit_log(
+                action_type=AuditActionType.ENVIRONMENT_SYNC_FAILED,
+                action=f"Environment sync failed: {str(e)}",
+                tenant_id=tenant_id,
+                resource_type="environment",
+                resource_id=environment_id,
+                resource_name=environment.get("n8n_name", environment_id),
+                provider=provider,
+                new_value={
+                    "job_id": job_id,
+                    "error": str(e)
+                }
+            )
+        except Exception as audit_error:
+            logger.warning(f"Failed to create audit log: {str(audit_error)}")
+
+
+@router.post("/{environment_id}/sync")
+async def sync_environment(
+    environment_id: str,
+    background_tasks: BackgroundTasks,
+    user_info: dict = Depends(require_entitlement("environment_basic"))
+):
+    """
+    Sync workflows, executions, credentials, tags, and users from N8N to database.
+    Returns immediately with job_id. Sync runs in background.
+    """
+    try:
+        # Get tenant_id from authenticated user
+        tenant = user_info.get("tenant")
+        if not tenant:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Authentication required"
+            )
+        tenant_id = tenant["id"]
+        user = user_info.get("user", {})
+        user_id = user.get("id", "00000000-0000-0000-0000-000000000000")
+        
+        # Get environment details
+        environment = await db_service.get_environment(environment_id, tenant_id)
+        if not environment:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Environment not found"
+            )
+
+        # Create provider adapter for connection test
+        adapter = ProviderRegistry.get_adapter_for_environment(environment)
+
+        # Test connection first (fail fast if not connected)
+        is_connected = await adapter.test_connection()
+        if not is_connected:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Cannot connect to provider instance. Please check environment configuration."
+            )
+
+        # Create background job
+        job = await background_job_service.create_job(
+            tenant_id=tenant_id,
+            job_type=BackgroundJobType.ENVIRONMENT_SYNC,
+            resource_id=environment_id,
+            resource_type="environment",
+            created_by=user_id,
+            initial_progress={
+                "current": 0,
+                "total": 5,
+                "percentage": 0,
+                "message": "Initializing sync..."
+            }
+        )
+        job_id = job["id"]
+
+        # Create audit log for sync start
+        try:
+            provider = environment.get("provider", "n8n") or "n8n"
+            await create_audit_log(
+                action_type=AuditActionType.ENVIRONMENT_SYNC_STARTED,
+                action=f"Started environment sync",
+                tenant_id=tenant_id,
+                resource_type="environment",
+                resource_id=environment_id,
+                resource_name=environment.get("n8n_name", environment_id),
+                provider=provider,
+                new_value={
+                    "job_id": job_id
+                }
+            )
+        except Exception as audit_error:
+            logger.warning(f"Failed to create audit log: {str(audit_error)}")
+
+        # Start background task
+        background_tasks.add_task(
+            _sync_environment_background,
+            job_id=job_id,
+            environment_id=environment_id,
+            environment=environment,
+            tenant_id=tenant_id
+        )
 
         return {
-            "success": not has_errors,
-            "message": "Sync completed successfully" if not has_errors else "Sync completed with errors",
-            "results": sync_results
+            "job_id": job_id,
+            "status": "running",
+            "message": "Sync started in background"
         }
 
     except HTTPException:
         raise
     except Exception as e:
-        # Emit sync.failure event on exception
-        try:
-            from app.services.notification_service import notification_service
-            await notification_service.emit_event(
-                tenant_id=MOCK_TENANT_ID,
-                event_type="sync.failure",
-                environment_id=environment_id,
-                metadata={
-                    "environment_id": environment_id,
-                    "sync_type": "full_sync",
-                    "error_message": str(e),
-                    "error_type": type(e).__name__
-                }
-            )
-        except Exception as event_error:
-            import logging
-            logging.error(f"Failed to emit sync.failure event: {str(event_error)}")
-        
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to sync environment: {str(e)}"
+            detail=f"Failed to start sync: {str(e)}"
+        )
+
+
+@router.get("/{environment_id}/jobs")
+async def get_environment_jobs(
+    environment_id: str,
+    limit: int = 10,
+    _: dict = Depends(require_entitlement("environment_basic"))
+):
+    """Get recent background jobs for an environment"""
+    try:
+        jobs = await background_job_service.get_jobs_by_resource(
+            resource_type="environment",
+            resource_id=environment_id,
+            tenant_id=MOCK_TENANT_ID,
+            limit=limit
+        )
+        return jobs
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to get jobs: {str(e)}"
         )
 
 
@@ -665,9 +861,8 @@ async def sync_executions_only(environment_id: str):
 
         # Sync executions only
         try:
-            # Fetch more executions (increase limit to 1000 to get more recent executions)
-            # N8N API supports pagination, but for sync we'll fetch a larger batch
-            executions = await adapter.get_executions(limit=1000)
+            # N8N enforces a max limit (commonly 250). Use a safe upper bound.
+            executions = await adapter.get_executions(limit=250)
             
             if not executions:
                 logger.warning(f"No executions returned from N8N for environment {environment_id}")

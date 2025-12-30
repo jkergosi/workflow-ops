@@ -1,7 +1,7 @@
 // @ts-nocheck
 // TODO: Fix TypeScript errors in this file
 import { useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, Link } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -26,13 +26,15 @@ import {
   TableRow,
 } from '@/components/ui/table';
 import { api } from '@/lib/api';
+import { apiClient } from '@/lib/api-client';
 import { useAppStore } from '@/store/use-app-store';
 import { useAuth } from '@/lib/auth';
-import { Plus, Server, RefreshCw, Edit, Database, Download, Trash2, RefreshCcw, RotateCcw, CheckCircle2, AlertCircle } from 'lucide-react';
+import { Plus, Server, RefreshCw, Edit, Database, Download, Trash2, RefreshCcw, RotateCcw, CheckCircle2, AlertCircle, Loader2, XCircle } from 'lucide-react';
 import { toast } from 'sonner';
 import type { Environment, EnvironmentType } from '@/types';
 import { useFeatures } from '@/lib/features';
 import { useEffect } from 'react';
+import { useBackgroundJobsSSE } from '@/lib/use-background-jobs-sse';
 
 export function EnvironmentsPage() {
   const navigate = useNavigate();
@@ -55,6 +57,7 @@ export function EnvironmentsPage() {
   }, []);
   const [testingInDialog, setTestingInDialog] = useState(false);
   const [backupDialogOpen, setBackupDialogOpen] = useState(false);
+  const [forceBackup, setForceBackup] = useState(false);
   const [downloadDialogOpen, setDownloadDialogOpen] = useState(false);
 
   const { data: environmentTypesData } = useQuery({
@@ -66,6 +69,17 @@ export function EnvironmentsPage() {
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const [selectedEnvForAction, setSelectedEnvForAction] = useState<Environment | null>(null);
   const [syncingEnvId, setSyncingEnvId] = useState<string | null>(null);
+  const [activeJobs, setActiveJobs] = useState<Record<string, {
+    jobId: string;
+    jobType: 'sync' | 'backup' | 'restore';
+    status: 'running' | 'completed' | 'failed';
+    currentStep?: string;
+    current: number;
+    total: number;
+    message?: string;
+    currentWorkflowName?: string;
+    errors?: any;
+  }>>({});
   const [formData, setFormData] = useState<{
     name: string;
     type?: string;
@@ -92,6 +106,133 @@ export function EnvironmentsPage() {
     queryFn: () => api.getEnvironments(),
   });
 
+  // Subscribe to background job updates for all environments
+  useBackgroundJobsSSE({
+    enabled: !isLoading && !!environments?.data?.length,
+  });
+
+  // Fetch active jobs for each environment
+  const environmentIds = environments?.data?.map((e: Environment) => e.id) || [];
+  const jobsQueries = useQuery({
+    queryKey: ['environment-jobs', environmentIds],
+    queryFn: async () => {
+      const jobsMap: Record<string, any> = {};
+      for (const envId of environmentIds) {
+        try {
+          const jobs = await apiClient.getEnvironmentJobs(envId);
+          const runningJob = jobs.data?.find((j: any) => 
+            j.status === 'running' || j.status === 'pending'
+          );
+          if (runningJob) {
+            jobsMap[envId] = {
+              jobId: runningJob.id,
+              jobType: runningJob.job_type === 'environment_sync' ? 'sync' : 
+                       runningJob.job_type === 'github_sync_to' ? 'backup' : 'restore',
+              status: runningJob.status === 'pending' ? 'running' : runningJob.status,
+              current: runningJob.progress?.current || 0,
+              total: runningJob.progress?.total || 1,
+              message: runningJob.progress?.message,
+              currentStep: runningJob.progress?.currentStep,
+            };
+          }
+        } catch (error) {
+          // Ignore errors for individual environment job fetches
+        }
+      }
+      return jobsMap;
+    },
+    enabled: environmentIds.length > 0,
+    refetchInterval: 10000, // Poll every 10 seconds as fallback
+  });
+
+  // Update active jobs when queries update
+  useEffect(() => {
+    if (jobsQueries.data) {
+      setActiveJobs((prev) => {
+        // Merge with existing to preserve SSE updates
+        return { ...prev, ...jobsQueries.data };
+      });
+    }
+  }, [jobsQueries.data]);
+
+  // Listen to SSE events and update active jobs
+  useEffect(() => {
+    const handleSSEEvent = (eventType: string) => (event: MessageEvent) => {
+      try {
+        const payload = JSON.parse(event.data);
+        const envId = payload.environmentId || payload.environment_id;
+        
+        if (envId) {
+          console.log('[SSE] Received event:', eventType, payload);
+          setActiveJobs((prev) => ({
+            ...prev,
+            [envId]: {
+              jobId: payload.jobId || payload.job_id,
+              jobType: eventType === 'sync.progress' ? 'sync' : 
+                       eventType === 'backup.progress' ? 'backup' : 'restore',
+              status: payload.status || 'running',
+              currentStep: payload.currentStep || payload.current_step,
+              current: payload.current || 0,
+              total: payload.total || 1,
+              message: payload.message,
+              currentWorkflowName: payload.currentWorkflowName || payload.current_workflow_name,
+              errors: payload.errors,
+            },
+          }));
+
+          // Remove from active jobs if completed or failed (after a delay)
+          if (payload.status === 'completed' || payload.status === 'failed') {
+            setTimeout(() => {
+              setActiveJobs((prev) => {
+                const next = { ...prev };
+                delete next[envId];
+                return next;
+              });
+            }, 10000); // Keep for 10 seconds to show completion message
+          }
+        }
+      } catch (error) {
+        console.error('[SSE] Failed to parse event:', error, event.data);
+      }
+    };
+
+    // Create EventSource connection for background jobs
+    // EventSource can't send custom headers, so we pass token as query parameter
+    // VITE_API_BASE_URL already includes /api/v1, so we just add /sse/stream
+    const baseUrl = import.meta.env.VITE_API_BASE_URL || 'http://localhost:4000/api/v1';
+    const token = localStorage.getItem('auth_token');
+    const url = token 
+      ? `${baseUrl}/sse/stream?token=${encodeURIComponent(token)}`
+      : `${baseUrl}/sse/stream`;
+    console.log('[SSE] Connecting to background jobs stream:', url.replace(token || '', '***'));
+    
+    const eventSource = new EventSource(url, { withCredentials: true });
+
+    eventSource.onopen = () => {
+      console.log('[SSE] Connected to background jobs stream');
+    };
+
+    eventSource.onerror = (error) => {
+      console.error('[SSE] Connection error:', error);
+      console.error('[SSE] EventSource readyState:', eventSource.readyState);
+      // readyState: 0 = CONNECTING, 1 = OPEN, 2 = CLOSED
+    };
+
+    eventSource.addEventListener('sync.progress', handleSSEEvent('sync.progress'));
+    eventSource.addEventListener('backup.progress', handleSSEEvent('backup.progress'));
+    eventSource.addEventListener('restore.progress', handleSSEEvent('restore.progress'));
+
+    // Also listen for generic 'message' events as fallback
+    eventSource.onmessage = (event) => {
+      console.log('[SSE] Received message event:', event);
+    };
+
+    return () => {
+      console.log('[SSE] Closing background jobs stream');
+      eventSource.close();
+    };
+  }, []);
+
   const testMutation = useMutation({
     mutationFn: ({ baseUrl, apiKey }: { baseUrl: string; apiKey: string }) =>
       api.testEnvironmentConnection(baseUrl, apiKey),
@@ -117,14 +258,36 @@ export function EnvironmentsPage() {
   });
 
   const backupMutation = useMutation({
-    mutationFn: (environment: string) => api.syncWorkflowsFromGithub(environment as any),
-    onSuccess: () => {
-      toast.success('All workflows backed up to GitHub successfully');
+    mutationFn: ({ environment, force }: { environment: string; force: boolean }) =>
+      api.syncWorkflowsToGithub(environment as any, force),
+    onSuccess: (result) => {
+      const { job_id, status, message } = result.data;
+      if (job_id && status === 'running') {
+        toast.success('Backup started in background');
+        // Job progress will be updated via SSE
+        if (selectedEnvForAction) {
+          setActiveJobs((prev) => ({
+            ...prev,
+            [selectedEnvForAction.id]: {
+              jobId: job_id,
+              jobType: 'backup',
+              status: 'running',
+              current: 0,
+              total: 1,
+              message: 'Initializing backup...',
+            },
+          }));
+        }
+      } else {
+        toast.error(message || 'Failed to start backup');
+      }
       setBackupDialogOpen(false);
+      setForceBackup(false);
     },
-    onError: () => {
-      toast.error('Failed to backup workflows');
+    onError: (error: any) => {
+      toast.error(error.response?.data?.detail || 'Failed to start backup');
       setBackupDialogOpen(false);
+      setForceBackup(false);
     },
   });
 
@@ -205,23 +368,26 @@ export function EnvironmentsPage() {
 
   const syncMutation = useMutation({
     mutationFn: (environmentId: string) => api.syncEnvironment(environmentId),
-    onSuccess: (result) => {
+    onSuccess: (result, environmentId) => {
       setSyncingEnvId(null);
-      const data = result.data;
-
-      if (data.success) {
-        toast.success(
-          `Sync completed! Workflows: ${data.results.workflows.synced}, Executions: ${data.results.executions.synced}, Credentials: ${data.results.credentials.synced}, Users: ${data.results.users.synced}, Tags: ${data.results.tags.synced}`
-        );
+      const { job_id, status, message } = result.data;
+      
+      if (job_id && status === 'running') {
+        toast.success('Sync started in background');
+        // Job progress will be updated via SSE
+        setActiveJobs((prev) => ({
+          ...prev,
+          [environmentId]: {
+            jobId: job_id,
+            jobType: 'sync',
+            status: 'running',
+            current: 0,
+            total: 5, // workflows, executions, credentials, users, tags
+            message: 'Starting sync...',
+          },
+        }));
       } else {
-        const errors = [
-          ...data.results.workflows.errors,
-          ...data.results.executions.errors,
-          ...data.results.credentials.errors,
-          ...data.results.users.errors,
-          ...data.results.tags.errors,
-        ];
-        toast.error(`Sync completed with errors: ${errors.join(', ')}`);
+        toast.error(message || 'Failed to start sync');
       }
 
       queryClient.invalidateQueries({ queryKey: ['environments'] });
@@ -313,12 +479,13 @@ export function EnvironmentsPage() {
 
   const handleBackupClick = (env: Environment) => {
     setSelectedEnvForAction(env);
+    setForceBackup(false);
     setBackupDialogOpen(true);
   };
 
   const handleBackupConfirm = () => {
     if (selectedEnvForAction) {
-      backupMutation.mutate(selectedEnvForAction.type);
+      backupMutation.mutate({ environment: selectedEnvForAction.id, force: forceBackup });
     }
   };
 
@@ -345,7 +512,11 @@ export function EnvironmentsPage() {
   };
 
   const handleSyncClick = (env: Environment) => {
-    toast.info('N8N Sync in progress...');
+    // Check if there's already an active job
+    if (activeJobs[env.id]?.status === 'running') {
+      toast.info('Sync already in progress for this environment');
+      return;
+    }
     setSyncingEnvId(env.id);
     syncMutation.mutate(env.id);
   };
@@ -457,90 +628,122 @@ export function EnvironmentsPage() {
               </TableHeader>
               <TableBody>
                 {environments?.data?.map((env) => (
-                  <TableRow key={env.id}>
-                    <TableCell className="font-medium">
-                      <div className="flex items-center gap-2">
-                        <Server className="h-4 w-4" />
-                        {env.name}
-                      </div>
-                    </TableCell>
-                    <TableCell>
-                      <Badge variant="outline">{env.type}</Badge>
-                    </TableCell>
-                    <TableCell>
-                      <button
-                        onClick={() => handleWorkflowClick(env)}
-                        className="text-primary hover:underline font-medium"
-                      >
-                        {env.workflowCount || 0}
-                      </button>
-                    </TableCell>
-                    <TableCell className="text-sm text-muted-foreground">
-                      {env.lastConnected
-                        ? new Date(env.lastConnected).toLocaleDateString()
-                        : 'Never'}
-                    </TableCell>
-                    <TableCell>
-                      <div className="flex gap-2">
-                        <Button
-                          size="sm"
-                          variant="outline"
-                          onClick={() => handleSyncClick(env)}
-                          disabled={syncingEnvId === env.id}
-                          title="Sync workflows, executions, and credentials from N8N"
+                  <>
+                    <TableRow key={env.id}>
+                      <TableCell className="font-medium">
+                        <div className="flex items-center gap-2">
+                          <Server className="h-4 w-4" />
+                          {env.name}
+                        </div>
+                      </TableCell>
+                      <TableCell>
+                        <Badge variant="outline">{env.type}</Badge>
+                      </TableCell>
+                      <TableCell>
+                        <button
+                          onClick={() => handleWorkflowClick(env)}
+                          className="text-primary hover:underline font-medium"
                         >
-                          <RefreshCcw
-                            className={`h-3 w-3 mr-1 ${syncingEnvId === env.id ? 'animate-spin' : ''}`}
-                          />
-                          Sync
-                        </Button>
-                        <Button
-                          size="sm"
-                          variant="outline"
-                          onClick={() => handleBackupClick(env)}
-                          title="Backup workflows to GitHub"
-                        >
-                          <Database className="h-3 w-3 mr-1" />
-                          Backup
-                        </Button>
-                        <Button
-                          size="sm"
-                          variant="outline"
-                          onClick={() => navigate(`/environments/${env.id}/restore`)}
-                          title="Restore workflows from GitHub"
-                        >
-                          <RotateCcw className="h-3 w-3 mr-1" />
-                          Restore
-                        </Button>
-                        <Button
-                          size="sm"
-                          variant="outline"
-                          onClick={() => handleDownloadClick(env)}
-                          title="Download all workflows as ZIP"
-                        >
-                          <Download className="h-3 w-3 mr-1" />
-                          Download
-                        </Button>
-                        <Button
-                          size="sm"
-                          variant="outline"
-                          onClick={() => handleEdit(env)}
-                        >
-                          <Edit className="h-3 w-3 mr-1" />
-                          Edit
-                        </Button>
-                        <Button
-                          size="sm"
-                          variant="outline"
-                          onClick={() => handleDeleteClick(env)}
-                          title="Delete environment"
-                        >
-                          <Trash2 className="h-3 w-3 mr-1" />
-                          Delete
-                        </Button>
-                      </div>
-                    </TableCell>
-                  </TableRow>
+                          {env.workflowCount || 0}
+                        </button>
+                      </TableCell>
+                      <TableCell className="text-sm text-muted-foreground">
+                        {env.lastConnected
+                          ? new Date(env.lastConnected).toLocaleDateString()
+                          : 'Never'}
+                      </TableCell>
+                      <TableCell>
+                        <div className="flex gap-2 items-center">
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            onClick={() => handleSyncClick(env)}
+                            disabled={syncingEnvId === env.id || activeJobs[env.id]?.status === 'running'}
+                            title="Sync workflows, executions, and credentials from N8N"
+                          >
+                            <RefreshCcw
+                              className={`h-3 w-3 mr-1 ${syncingEnvId === env.id || activeJobs[env.id]?.status === 'running' ? 'animate-spin' : ''}`}
+                            />
+                            Sync
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            onClick={() => handleBackupClick(env)}
+                            disabled={activeJobs[env.id]?.jobType === 'backup' && activeJobs[env.id]?.status === 'running'}
+                            title="Backup workflows to GitHub"
+                          >
+                            <Database className={`h-3 w-3 mr-1 ${activeJobs[env.id]?.jobType === 'backup' && activeJobs[env.id]?.status === 'running' ? 'animate-spin' : ''}`} />
+                            Backup
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            onClick={() => navigate(`/environments/${env.id}/restore`)}
+                            title="Restore workflows from GitHub"
+                          >
+                            <RotateCcw className="h-3 w-3 mr-1" />
+                            Restore
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            onClick={() => handleDownloadClick(env)}
+                            title="Download all workflows as ZIP"
+                          >
+                            <Download className="h-3 w-3 mr-1" />
+                            Download
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            onClick={() => handleEdit(env)}
+                          >
+                            <Edit className="h-3 w-3 mr-1" />
+                            Edit
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            onClick={() => handleDeleteClick(env)}
+                            title="Delete environment"
+                          >
+                            <Trash2 className="h-3 w-3 mr-1" />
+                            Delete
+                          </Button>
+                          {activeJobs[env.id] && (
+                            <Link
+                              to={`/activity/${activeJobs[env.id].jobId}`}
+                              className="ml-2"
+                            >
+                              <Badge
+                                variant={activeJobs[env.id].status === 'running' ? 'secondary' : activeJobs[env.id].status === 'completed' ? 'default' : 'destructive'}
+                                className="flex items-center gap-1 cursor-pointer hover:opacity-80"
+                              >
+                                {activeJobs[env.id].status === 'running' && (
+                                  <Loader2 className="h-3 w-3 animate-spin" />
+                                )}
+                                {activeJobs[env.id].status === 'completed' && (
+                                  <CheckCircle2 className="h-3 w-3" />
+                                )}
+                                {activeJobs[env.id].status === 'failed' && (
+                                  <XCircle className="h-3 w-3" />
+                                )}
+                                {activeJobs[env.id].jobType === 'sync' ? 'Syncing' : 
+                                 activeJobs[env.id].jobType === 'backup' ? 'Backing up' : 
+                                 activeJobs[env.id].jobType === 'restore' ? 'Restoring' : 'Running'}
+                                {activeJobs[env.id].current > 0 && activeJobs[env.id].total > 0 && (
+                                  <span className="text-xs">
+                                    ({activeJobs[env.id].current}/{activeJobs[env.id].total})
+                                  </span>
+                                )}
+                              </Badge>
+                            </Link>
+                          )}
+                        </div>
+                      </TableCell>
+                    </TableRow>
+                  </>
                 ))}
               </TableBody>
             </Table>
@@ -744,13 +947,25 @@ export function EnvironmentsPage() {
           <DialogHeader>
             <DialogTitle>Backup Workflows to GitHub</DialogTitle>
             <DialogDescription>
-              This will push all workflows from {selectedEnvForAction?.name} environment to your configured GitHub repository.
+              This will push workflows from {selectedEnvForAction?.name} environment to your configured GitHub repository.
             </DialogDescription>
           </DialogHeader>
-          <div className="py-4">
+          <div className="py-4 space-y-4">
             <p className="text-sm text-muted-foreground">
-              Are you sure you want to backup all environment workflows to GitHub?
+              By default, only workflows changed since the last backup will be pushed.
             </p>
+            <div className="flex items-center space-x-2">
+              <input
+                type="checkbox"
+                id="forceBackup"
+                checked={forceBackup}
+                onChange={(e) => setForceBackup(e.target.checked)}
+                className="h-4 w-4 rounded border-gray-300"
+              />
+              <Label htmlFor="forceBackup" className="cursor-pointer text-sm">
+                Force full backup (re-upload all workflows)
+              </Label>
+            </div>
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setBackupDialogOpen(false)}>
@@ -760,7 +975,7 @@ export function EnvironmentsPage() {
               onClick={handleBackupConfirm}
               disabled={backupMutation.isPending}
             >
-              {backupMutation.isPending ? 'Backing up...' : 'Yes, Backup'}
+              {backupMutation.isPending ? 'Backing up...' : 'Backup'}
             </Button>
           </DialogFooter>
         </DialogContent>

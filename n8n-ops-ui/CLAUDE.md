@@ -35,6 +35,7 @@ Check port in `../.env.local` (default: 3000 for main worktree).
 | `PipelineEditorPage` | `/pipelines/:id` | Edit pipeline stages, gates, approvals |
 | `PromotionPage` | `/promote` | Execute workflow promotions |
 | `DeploymentsPage` | `/deployments` | Deployment history, status |
+| `DeploymentDetailPage` | `/deployments/:id` | Individual deployment details |
 | `SnapshotsPage` | `/snapshots` | Environment snapshot history |
 
 ### Team & Admin
@@ -46,17 +47,28 @@ Check port in `../.env.local` (default: 3000 for main worktree).
 | `ProfilePage` | `/profile` | User profile |
 | `N8NUsersPage` | `/n8n-users` | N8N instance users |
 | `ObservabilityPage` | `/observability` | Execution analytics |
+| `AlertsPage` | `/alerts` | Alert configuration |
+| `LoginPage` | `/login` | User authentication |
+| `OnboardingPage` | `/onboarding` | New user setup |
 
 ### Admin Pages (`/admin/*`)
 | Page | Route | Description |
 |------|-------|-------------|
 | `TenantsPage` | `/admin/tenants` | Multi-tenant admin |
+| `TenantDetailPage` | `/admin/tenants/:id` | Individual tenant management |
 | `SystemBillingPage` | `/admin/billing` | System billing |
+| `PlansPage` | `/admin/plans` | Subscription plans |
+| `UsagePage` | `/admin/usage` | Usage statistics |
 | `PerformancePage` | `/admin/performance` | Performance metrics |
 | `AuditLogsPage` | `/admin/audit-logs` | User action logs |
 | `NotificationsPage` | `/admin/notifications` | System notifications |
 | `SecurityPage` | `/admin/security` | Security settings |
 | `SettingsPage` | `/admin/settings` | System settings |
+| `FeatureMatrixPage` | `/admin/feature-matrix` | Plan feature comparison |
+| `TenantOverridesPage` | `/admin/tenant-overrides` | Per-tenant feature overrides |
+| `EntitlementsAuditPage` | `/admin/entitlements-audit` | Entitlement change history |
+| `SupportConfigPage` | `/admin/support-config` | Support system settings |
+| `CredentialHealthPage` | `/admin/credential-health` | Credential monitoring |
 
 ## State Management
 

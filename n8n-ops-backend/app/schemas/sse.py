@@ -137,3 +137,41 @@ def build_progress_payload(
         progress_total=progress_total,
         current_workflow_name=current_workflow_name
     )
+
+
+# === Background Job Progress Payloads ===
+
+class SyncProgressPayload(BaseModel):
+    """Payload for environment sync progress updates."""
+    job_id: str
+    environment_id: str
+    status: str  # running, completed, failed
+    current_step: str  # workflows, executions, credentials, users, tags, github_backup
+    current: int
+    total: int
+    message: Optional[str] = None
+    errors: Optional[Dict[str, Any]] = None
+
+
+class BackupProgressPayload(BaseModel):
+    """Payload for GitHub backup progress updates."""
+    job_id: str
+    environment_id: str
+    status: str  # running, completed, failed
+    current: int
+    total: int
+    current_workflow_name: Optional[str] = None
+    message: Optional[str] = None
+    errors: Optional[List[str]] = None
+
+
+class RestoreProgressPayload(BaseModel):
+    """Payload for GitHub restore progress updates."""
+    job_id: str
+    environment_id: str
+    status: str  # running, completed, failed
+    current: int
+    total: int
+    current_workflow_name: Optional[str] = None
+    message: Optional[str] = None
+    errors: Optional[List[str]] = None

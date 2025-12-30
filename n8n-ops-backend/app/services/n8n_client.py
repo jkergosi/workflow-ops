@@ -309,38 +309,58 @@ class N8NClient:
 
     async def get_executions(self, limit: int = 100) -> List[Dict[str, Any]]:
         """Fetch executions from N8N"""
+        async def _parse_executions(payload: Any) -> List[Dict[str, Any]]:
+            if isinstance(payload, dict):
+                return payload.get("data", []) or []
+            if isinstance(payload, list):
+                return payload
+            return []
+
+        import logging
+        logger = logging.getLogger(__name__)
+
         async with httpx.AsyncClient() as client:
-            # N8N API supports filtering by status and workflowId, but for sync we want all recent executions
-            # The API returns executions sorted by most recent first
+            # N8N API returns executions sorted by most recent first.
             params = {"limit": limit}
-            response = await client.get(
-                f"{self.base_url}/api/v1/executions",
-                headers=self.headers,
-                params=params,
-                timeout=30.0
-            )
-            response.raise_for_status()
-            data = response.json()
-            
-            # Handle different response formats
-            if isinstance(data, dict):
-                # N8N v1 API returns {"data": [...]}
-                executions = data.get("data", [])
-            elif isinstance(data, list):
-                # Some versions might return array directly
-                executions = data
-            else:
-                executions = []
-            
-            # Log if we got executions to help debug
-            import logging
-            logger = logging.getLogger(__name__)
-            if executions:
-                logger.info(f"Fetched {len(executions)} executions from N8N (limit={limit})")
-            else:
-                logger.warning(f"No executions returned from N8N API (limit={limit}, status={response.status_code})")
-            
-            return executions
+            try:
+                response = await client.get(
+                    f"{self.base_url}/api/v1/executions",
+                    headers=self.headers,
+                    params=params,
+                    timeout=30.0
+                )
+                response.raise_for_status()
+                executions = await _parse_executions(response.json())
+                if executions:
+                    logger.info(f"Fetched {len(executions)} executions from N8N (limit={limit})")
+                else:
+                    logger.warning(f"No executions returned from N8N API (limit={limit}, status={response.status_code})")
+                return executions
+            except httpx.HTTPStatusError as e:
+                # Some n8n instances reject high limits (e.g., 1000) with 400.
+                # Fall back to a safer limit so sync can proceed.
+                status_code = getattr(e.response, "status_code", None)
+                if status_code == 400 and limit > 250:
+                    # Some n8n instances enforce limit <= 250 (and return a helpful message).
+                    safe_limit = 250
+                    try:
+                        safe_resp = await client.get(
+                            f"{self.base_url}/api/v1/executions",
+                            headers=self.headers,
+                            params={"limit": safe_limit},
+                            timeout=30.0
+                        )
+                        safe_resp.raise_for_status()
+                        executions = await _parse_executions(safe_resp.json())
+                        logger.warning(
+                            f"N8N executions endpoint rejected limit={limit} with 400; "
+                            f"retried with limit={safe_limit} and got {len(executions)} executions"
+                        )
+                        return executions
+                    except Exception:
+                        # Re-raise original error if fallback also fails
+                        raise e
+                raise
 
     async def get_credentials(self) -> List[Dict[str, Any]]:
         """Fetch all credentials from N8N via the credentials API.

@@ -214,9 +214,9 @@ export interface WorkflowDiffResult {
 }
 
 // Deployment types (Promotion records)
-export type DeploymentStatus = 'pending' | 'running' | 'success' | 'failed' | 'canceled';
+export type DeploymentStatus = 'pending' | 'scheduled' | 'running' | 'success' | 'failed' | 'canceled';
 export type WorkflowChangeType = 'created' | 'updated' | 'deleted' | 'skipped' | 'unchanged';
-export type WorkflowStatus = 'success' | 'failed' | 'skipped';
+export type WorkflowStatus = 'pending' | 'success' | 'failed' | 'skipped' | 'unchanged';
 
 export interface DeploymentWorkflow {
   id: string;
@@ -239,6 +239,7 @@ export interface Deployment {
   status: DeploymentStatus;
   triggeredByUserId: string;
   approvedByUserId?: string;
+  scheduledAt?: string;
   startedAt: string;
   finishedAt?: string;
   preSnapshotId?: string;
@@ -250,6 +251,7 @@ export interface Deployment {
     deleted: number;
     failed: number;
     skipped?: number;
+    unchanged?: number;
     processed?: number;
     current_workflow?: string;
   };

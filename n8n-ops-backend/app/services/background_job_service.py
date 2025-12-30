@@ -162,6 +162,81 @@ class BackgroundJobService:
             return None
 
     @staticmethod
+    async def get_jobs(
+        tenant_id: str,
+        resource_type: Optional[str] = None,
+        resource_id: Optional[str] = None,
+        job_type: Optional[str] = None,
+        status: Optional[str] = None,
+        limit: int = 50,
+        offset: int = 0
+    ) -> List[Dict[str, Any]]:
+        """
+        Get jobs for a tenant with optional filters.
+        
+        Args:
+            tenant_id: Tenant ID (required)
+            resource_type: Optional resource type filter
+            resource_id: Optional resource ID filter
+            job_type: Optional job type filter
+            status: Optional status filter
+            limit: Maximum number of jobs to return
+            offset: Offset for pagination
+            
+        Returns:
+            List of job records, ordered by created_at DESC
+        """
+        query = db_service.client.table("background_jobs").select("*").eq("tenant_id", tenant_id)
+        
+        if resource_type:
+            query = query.eq("resource_type", resource_type)
+        if resource_id:
+            query = query.eq("resource_id", resource_id)
+        if job_type:
+            query = query.eq("job_type", job_type)
+        if status:
+            query = query.eq("status", status)
+        
+        # Use range() for pagination (Supabase uses inclusive range)
+        response = query.order("created_at", desc=True).range(offset, offset + limit - 1).execute()
+        return response.data
+
+    @staticmethod
+    async def count_jobs(
+        tenant_id: str,
+        resource_type: Optional[str] = None,
+        resource_id: Optional[str] = None,
+        job_type: Optional[str] = None,
+        status: Optional[str] = None
+    ) -> int:
+        """
+        Count jobs for a tenant with optional filters.
+        
+        Args:
+            tenant_id: Tenant ID (required)
+            resource_type: Optional resource type filter
+            resource_id: Optional resource ID filter
+            job_type: Optional job type filter
+            status: Optional status filter
+            
+        Returns:
+            Total count of matching jobs
+        """
+        query = db_service.client.table("background_jobs").select("*", count="exact").eq("tenant_id", tenant_id)
+        
+        if resource_type:
+            query = query.eq("resource_type", resource_type)
+        if resource_id:
+            query = query.eq("resource_id", resource_id)
+        if job_type:
+            query = query.eq("job_type", job_type)
+        if status:
+            query = query.eq("status", status)
+        
+        response = query.execute()
+        return response.count or 0
+
+    @staticmethod
     async def get_jobs_by_resource(
         resource_type: str,
         resource_id: str,

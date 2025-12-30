@@ -26,6 +26,7 @@ from app.schemas.promotion import (
     PromotionInitiateRequest,
     PromotionInitiateResponse,
     PromotionApprovalRequest,
+    PromotionExecuteRequest,
     PromotionDetail,
     PromotionListResponse,
     PromotionSnapshotRequest,
@@ -47,7 +48,7 @@ MOCK_TENANT_ID = "00000000-0000-0000-0000-000000000000"
 
 
 @router.post("/initiate", response_model=PromotionInitiateResponse)
-async def initiate_promotion(
+async def initiate_deployment(
     request: PromotionInitiateRequest,
     _: None = Depends(require_entitlement("workflow_ci_cd"))
 ):
@@ -199,11 +200,16 @@ async def _execute_promotion_background(
             raise ValueError(f"Failed to connect to target environment at {target_base_url}")
         logger.info(f"[Job {job_id}] Target environment connection successful")
 
+        # NOTE: deployment_workflows records are pre-created in execute_promotion() before this task starts
+        # This ensures workflow records exist even if this background job fails early
+        logger.info(f"[Job {job_id}] Starting transfer of {total_workflows} workflows (records already created)")
+
         # Transfer each workflow
         created_count = 0
         updated_count = 0
         failed_count = 0
         skipped_count = 0
+        unchanged_count = 0
         workflow_results = []
 
         for idx, ws in enumerate(selected_workflows, 1):
@@ -283,26 +289,28 @@ async def _execute_promotion_background(
                 status_result = WorkflowStatus.FAILED
                 failed_count += 1
 
-            # Record workflow result
-            change_type_map = {
+            # Update workflow record (already pre-created with PENDING status)
+            wf_change_type_map = {
                 "new": WorkflowChangeType.CREATED,
                 "changed": WorkflowChangeType.UPDATED,
                 "staging_hotfix": WorkflowChangeType.UPDATED,
                 "conflict": WorkflowChangeType.SKIPPED,
                 "unchanged": WorkflowChangeType.UNCHANGED,
             }
-            wf_change_type = change_type_map.get(change_type, WorkflowChangeType.UPDATED)
+            wf_change_type = wf_change_type_map.get(change_type, WorkflowChangeType.UPDATED)
 
-            workflow_record = {
-                "deployment_id": deployment_id,
-                "workflow_id": workflow_id,
-                "workflow_name_at_time": workflow_name,
+            workflow_update = {
                 "change_type": wf_change_type.value,
                 "status": status_result.value,
                 "error_message": error_message,
             }
-            await db_service.create_deployment_workflow(workflow_record)
-            workflow_results.append(workflow_record)
+            await db_service.update_deployment_workflow(deployment_id, workflow_id, workflow_update)
+            workflow_results.append({
+                "deployment_id": deployment_id,
+                "workflow_id": workflow_id,
+                "workflow_name_at_time": workflow_name,
+                **workflow_update
+            })
 
             # Update deployment's updated_at timestamp and running summary so UI can see progress
             await db_service.update_deployment(deployment_id, {
@@ -313,6 +321,7 @@ async def _execute_promotion_background(
                     "deleted": 0,
                     "failed": failed_count,
                     "skipped": skipped_count,
+                    "unchanged": unchanged_count,
                     "processed": idx,
                     "current_workflow": workflow_name
                 }
@@ -338,6 +347,7 @@ async def _execute_promotion_background(
             "deleted": 0,
             "failed": failed_count,
             "skipped": skipped_count,
+            "unchanged": unchanged_count,
             "processed": total_workflows,
         }
 
@@ -426,21 +436,35 @@ async def _execute_promotion_background(
             logger.error(f"Failed to update promotion/deployment status: {str(update_error)}")
 
 
-@router.post("/execute/{promotion_id}")
-async def execute_promotion(
-    promotion_id: str,
-    background_tasks: BackgroundTasks,
+@router.post("/execute/{deployment_id}")
+async def execute_deployment(
+    deployment_id: str,
+    request: Optional[PromotionExecuteRequest] = None,
+    background_tasks: BackgroundTasks = None,
     _: None = Depends(require_entitlement("workflow_ci_cd"))
 ):
     """
-    Execute a promotion - creates deployment and starts background execution.
+    Execute a deployment - creates deployment and starts background execution.
+    If scheduled_at is provided, deployment will be scheduled for that time.
+    Otherwise, executes immediately.
     Returns immediately with job_id for tracking progress.
     """
     from app.schemas.deployment import DeploymentStatus
+    
+    # Handle optional request body
+    scheduled_at = None
+    if request and request.scheduled_at:
+        scheduled_at = request.scheduled_at
+        # Validate scheduled_at is in the future
+        if scheduled_at <= datetime.utcnow():
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="scheduled_at must be in the future"
+            )
 
     try:
-        # Get promotion record
-        promotion = await db_service.get_promotion(promotion_id, MOCK_TENANT_ID)
+        # Get promotion record (still uses promotion_id in DB)
+        promotion = await db_service.get_promotion(deployment_id, MOCK_TENANT_ID)
         if not promotion:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
@@ -490,8 +514,19 @@ async def execute_promotion(
         )
         job_id = job["id"]
 
-        # Update promotion status to running
-        await db_service.update_promotion(promotion_id, MOCK_TENANT_ID, {"status": "running"})
+        # Determine deployment status and timing
+        is_scheduled = scheduled_at is not None
+        deployment_status = DeploymentStatus.SCHEDULED.value if is_scheduled else DeploymentStatus.RUNNING.value
+        
+        # Update promotion status
+        if is_scheduled:
+            # Keep promotion as pending until scheduled execution
+            await db_service.update_promotion(promotion_id, MOCK_TENANT_ID, {
+                "status": PromotionStatus.PENDING.value,
+                "scheduled_at": scheduled_at.isoformat() if scheduled_at else None
+            })
+        else:
+            await db_service.update_promotion(promotion_id, MOCK_TENANT_ID, {"status": "running"})
 
         # Create deployment record
         deployment_id = str(uuid4())
@@ -501,16 +536,44 @@ async def execute_promotion(
             "pipeline_id": promotion.get("pipeline_id"),
             "source_environment_id": promotion.get("source_environment_id"),
             "target_environment_id": promotion.get("target_environment_id"),
-            "status": DeploymentStatus.RUNNING.value,
+            "status": deployment_status,
             "triggered_by_user_id": promotion.get("created_by") or "00000000-0000-0000-0000-000000000000",
             "approved_by_user_id": None,
-            "started_at": datetime.utcnow().isoformat(),
+            "scheduled_at": scheduled_at.isoformat() if scheduled_at else None,
+            "started_at": datetime.utcnow().isoformat() if not is_scheduled else None,
             "finished_at": None,
             "pre_snapshot_id": None,
             "post_snapshot_id": None,
             "summary_json": {"total": len(selected_workflows), "created": 0, "updated": 0, "deleted": 0, "failed": 0, "skipped": 0},
         }
         await db_service.create_deployment(deployment_data)
+
+        # Pre-create all deployment_workflows records BEFORE background task
+        # This ensures workflow records exist even if background job fails early (e.g., connection failure)
+        # Without this, failed deployments have no workflows and cannot be rerun
+        # NOTE: Don't set status here - database default will be used
+        from app.schemas.deployment import WorkflowChangeType
+        change_type_map = {
+            "new": WorkflowChangeType.CREATED,
+            "changed": WorkflowChangeType.UPDATED,
+            "staging_hotfix": WorkflowChangeType.UPDATED,
+            "conflict": WorkflowChangeType.SKIPPED,
+            "unchanged": WorkflowChangeType.UNCHANGED,
+        }
+        pending_workflows = []
+        for ws in selected_workflows:
+            wf_change_type = change_type_map.get(ws.get("change_type", "new"), WorkflowChangeType.CREATED)
+            pending_workflows.append({
+                "deployment_id": deployment_id,
+                "workflow_id": ws.get("workflow_id"),
+                "workflow_name_at_time": ws.get("workflow_name"),
+                "change_type": wf_change_type.value,
+                # status will use database default, updated to success/failed during processing
+            })
+
+        if pending_workflows:
+            await db_service.create_deployment_workflows_batch(pending_workflows)
+            logger.info(f"Created {len(pending_workflows)} deployment_workflow records for deployment {deployment_id}")
 
         # Emit SSE events for new deployment
         try:
@@ -551,33 +614,58 @@ async def execute_promotion(
         # Update job with deployment_id in result for tracking
         await background_job_service.update_job_status(
             job_id=job_id,
-            status=BackgroundJobStatus.PENDING,
-            result={"deployment_id": deployment_id}
+            status=BackgroundJobStatus.PENDING if is_scheduled else BackgroundJobStatus.PENDING,
+            result={"deployment_id": deployment_id, "scheduled_at": scheduled_at.isoformat() if scheduled_at else None}
         )
 
-        # Start background execution task
-        # FastAPI BackgroundTasks.add_task() supports async functions directly
-        # Pass the async function directly - FastAPI will handle it
-        background_tasks.add_task(
-            _execute_promotion_background,
-            job_id=job_id,
-            promotion_id=promotion_id,
-            deployment_id=deployment_id,
-            promotion=promotion,
-            source_env=source_env,
-            target_env=target_env,
-            selected_workflows=selected_workflows
-        )
-        
-        logger.info(f"[Job {job_id}] Background task added for promotion {promotion_id}, deployment {deployment_id}")
+        # Start background execution task only if not scheduled
+        if not is_scheduled:
+            if background_tasks is None:
+                # If BackgroundTasks not injected, create task directly
+                import asyncio
+                asyncio.create_task(
+                    _execute_promotion_background(
+                        job_id=job_id,
+                        promotion_id=promotion_id,
+                        deployment_id=deployment_id,
+                        promotion=promotion,
+                        source_env=source_env,
+                        target_env=target_env,
+                        selected_workflows=selected_workflows
+                    )
+                )
+            else:
+                # FastAPI BackgroundTasks.add_task() supports async functions directly
+                background_tasks.add_task(
+                    _execute_promotion_background,
+                    job_id=job_id,
+                    promotion_id=promotion_id,
+                    deployment_id=deployment_id,
+                    promotion=promotion,
+                    source_env=source_env,
+                    target_env=target_env,
+                    selected_workflows=selected_workflows
+                )
+            logger.info(f"[Job {job_id}] Background task added for promotion {promotion_id}, deployment {deployment_id}")
+        else:
+            logger.info(f"[Job {job_id}] Deployment {deployment_id} scheduled for {scheduled_at}")
 
         # Return immediately with job info
+        status_msg = "scheduled" if is_scheduled else "running"
+        message = (
+            f"Deployment scheduled for {scheduled_at.strftime('%Y-%m-%d %H:%M:%S UTC')}. "
+            f"Processing {len(selected_workflows)} workflow(s) will begin at that time."
+            if is_scheduled
+            else f"Promotion execution started. Processing {len(selected_workflows)} workflow(s) in the background."
+        )
+        
         return {
             "job_id": job_id,
             "promotion_id": promotion_id,
             "deployment_id": deployment_id,
-            "status": "running",
-            "message": f"Promotion execution started. Processing {len(selected_workflows)} workflow(s) in the background."
+            "status": status_msg,
+            "scheduled_at": scheduled_at.isoformat() if scheduled_at else None,
+            "message": message
         }
 
     except HTTPException:
@@ -598,7 +686,7 @@ async def execute_promotion(
         )
 
 
-@router.get("/{promotion_id}/job")
+@router.get("/{deployment_id}/job")
 async def get_promotion_job(
     promotion_id: str,
     _: None = Depends(require_entitlement("workflow_ci_cd"))
@@ -643,9 +731,9 @@ async def get_promotion_job(
         )
 
 
-@router.post("/approvals/{promotion_id}/approve")
-async def approve_promotion(
-    promotion_id: str,
+@router.post("/approvals/{deployment_id}/approve")
+async def approve_deployment(
+    deployment_id: str,
     request: PromotionApprovalRequest,
     _: None = Depends(require_entitlement("workflow_ci_cd"))
 ):
@@ -654,8 +742,8 @@ async def approve_promotion(
     Supports multi-approver workflows (1 of N / All).
     """
     try:
-        # Get promotion
-        promotion = await db_service.get_promotion(promotion_id, MOCK_TENANT_ID)
+        # Get promotion (still uses promotion_id in DB)
+        promotion = await db_service.get_promotion(deployment_id, MOCK_TENANT_ID)
         if not promotion:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
@@ -974,7 +1062,7 @@ async def get_workflow_diff(
         )
 
 
-@router.get("/{promotion_id}", response_model=PromotionDetail)
+@router.get("/initiate/{deployment_id}", response_model=PromotionDetail)
 async def get_promotion(
     promotion_id: str,
     _: None = Depends(require_entitlement("workflow_ci_cd"))
@@ -982,16 +1070,16 @@ async def get_promotion(
     """
     Get details of a specific promotion.
     """
-    logger.info(f"[GET_PROMOTION] Route hit with promotion_id={promotion_id}")
+    logger.info(f"[GET_DEPLOYMENT_INITIATION] Route hit with deployment_id={deployment_id}")
     # Prevent this route from matching /workflows/... paths
-    if promotion_id == "workflows":
-        logger.warning(f"[GET_PROMOTION] Blocked attempt to access workflows path as promotion_id")
+    if deployment_id == "workflows":
+        logger.warning(f"[GET_DEPLOYMENT_INITIATION] Blocked attempt to access workflows path as deployment_id")
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Promotion {promotion_id} not found"
+            detail=f"Deployment {deployment_id} not found"
         )
     try:
-        promo = await db_service.get_promotion(promotion_id, MOCK_TENANT_ID)
+        promo = await db_service.get_promotion(deployment_id, MOCK_TENANT_ID)
         if not promo:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,

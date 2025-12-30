@@ -558,6 +558,126 @@ async def delete_deployment(
         )
 
 
+@router.post("/{deployment_id}/cancel")
+async def cancel_scheduled_deployment(
+    deployment_id: str,
+    user_info: dict = Depends(get_current_user),
+    _: dict = Depends(require_entitlement("workflow_ci_cd"))
+):
+    """
+    Cancel a scheduled deployment.
+    Only allowed for deployments with status 'scheduled'.
+    """
+    try:
+        # Get deployment
+        deployment_result = (
+            db_service.client.table("deployments")
+            .select("*")
+            .eq("id", deployment_id)
+            .eq("tenant_id", MOCK_TENANT_ID)
+            .single()
+            .execute()
+        )
+
+        if not deployment_result.data:
+            raise HTTPException(
+                status_code=http_status.HTTP_404_NOT_FOUND,
+                detail=f"Deployment {deployment_id} not found",
+            )
+
+        deployment = deployment_result.data
+        
+        # Check if already deleted
+        if deployment.get("deleted_at"):
+            raise HTTPException(
+                status_code=http_status.HTTP_400_BAD_REQUEST,
+                detail="Cannot cancel a deleted deployment"
+            )
+
+        # Only allow cancel for scheduled deployments
+        if deployment.get("status") != DeploymentStatus.SCHEDULED.value:
+            raise HTTPException(
+                status_code=http_status.HTTP_400_BAD_REQUEST,
+                detail=f"Cannot cancel deployment with status: {deployment.get('status')}. Only scheduled deployments can be cancelled."
+            )
+
+        # Update deployment status to canceled
+        await db_service.update_deployment(deployment_id, {
+            "status": DeploymentStatus.CANCELED.value,
+            "finished_at": datetime.utcnow().isoformat()
+        })
+
+        # Update associated promotion if exists
+        try:
+            # Find promotion by matching environments and pipeline
+            promotions_response = (
+                db_service.client.table("promotions")
+                .select("*")
+                .eq("tenant_id", MOCK_TENANT_ID)
+                .eq("source_environment_id", deployment.get("source_environment_id"))
+                .eq("target_environment_id", deployment.get("target_environment_id"))
+                .eq("pipeline_id", deployment.get("pipeline_id"))
+                .in_("status", ["pending", "approved"])
+                .order("created_at", desc=True)
+                .limit(1)
+                .execute()
+            )
+            
+            if promotions_response.data:
+                promotion = promotions_response.data[0]
+                await db_service.update_promotion(promotion.get("id"), MOCK_TENANT_ID, {
+                    "status": "cancelled",
+                    "completed_at": datetime.utcnow().isoformat()
+                })
+        except Exception as promo_error:
+            logger.warning(f"Failed to update promotion for cancelled deployment: {str(promo_error)}")
+
+        # Emit SSE event
+        try:
+            updated_deployment = await db_service.get_deployment(deployment_id, MOCK_TENANT_ID)
+            if updated_deployment:
+                from app.api.endpoints.sse import emit_deployment_upsert, emit_counts_update
+                await emit_deployment_upsert(updated_deployment, MOCK_TENANT_ID)
+                await emit_counts_update(MOCK_TENANT_ID)
+        except Exception as sse_error:
+            logger.warning(f"Failed to emit SSE event for cancelled deployment: {str(sse_error)}")
+
+        # Create audit log
+        try:
+            from app.api.endpoints.admin_audit import create_audit_log
+            actor_id = user_info.get("user", {}).get("id") or "00000000-0000-0000-0000-000000000000"
+            await create_audit_log(
+                action_type="DEPLOYMENT_CANCELED",
+                action=f"Cancelled scheduled deployment",
+                actor_id=actor_id,
+                tenant_id=MOCK_TENANT_ID,
+                resource_type="deployment",
+                resource_id=deployment_id,
+                resource_name=f"Deployment {deployment_id[:8]}",
+                provider="n8n",
+                metadata={
+                    "scheduled_at": deployment.get("scheduled_at"),
+                    "original_status": "scheduled"
+                }
+            )
+        except Exception as audit_error:
+            logger.warning(f"Failed to create audit log for cancelled deployment: {str(audit_error)}")
+
+        return {
+            "message": "Scheduled deployment cancelled successfully",
+            "deployment_id": deployment_id
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to cancel scheduled deployment {deployment_id}: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=http_status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to cancel scheduled deployment: {str(e)}"
+        )
+
+
 @router.post("/{deployment_id}/rerun")
 async def rerun_deployment(
     deployment_id: str,

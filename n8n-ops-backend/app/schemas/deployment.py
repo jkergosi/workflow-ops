@@ -6,6 +6,7 @@ from enum import Enum
 
 class DeploymentStatus(str, Enum):
     PENDING = "pending"
+    SCHEDULED = "scheduled"
     RUNNING = "running"
     SUCCESS = "success"
     FAILED = "failed"
@@ -28,9 +29,11 @@ class WorkflowChangeType(str, Enum):
 
 
 class WorkflowStatus(str, Enum):
+    PENDING = "pending"
     SUCCESS = "success"
     FAILED = "failed"
     SKIPPED = "skipped"
+    UNCHANGED = "unchanged"
 
 
 # Snapshot schemas
@@ -64,6 +67,7 @@ class DeploymentBase(BaseModel):
     status: DeploymentStatus = DeploymentStatus.PENDING
     triggered_by_user_id: str
     approved_by_user_id: Optional[str] = None
+    scheduled_at: Optional[datetime] = None
     started_at: Optional[datetime] = None
     finished_at: Optional[datetime] = None
     pre_snapshot_id: Optional[str] = None
@@ -104,7 +108,7 @@ class DeploymentWorkflowBase(BaseModel):
     workflow_id: str
     workflow_name_at_time: str
     change_type: WorkflowChangeType
-    status: WorkflowStatus = WorkflowStatus.SUCCESS
+    status: WorkflowStatus = WorkflowStatus.PENDING
     error_message: Optional[str] = None
 
 

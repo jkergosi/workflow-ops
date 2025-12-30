@@ -78,6 +78,10 @@ class PromotionApprovalRequest(BaseModel):
     comment: Optional[str] = None
 
 
+class PromotionExecuteRequest(BaseModel):
+    scheduled_at: Optional[datetime] = None  # If provided, schedule deployment for this time. If None, execute immediately.
+
+
 class PromotionExecutionResult(BaseModel):
     promotion_id: str
     status: PromotionStatus

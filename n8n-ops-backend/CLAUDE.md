@@ -116,6 +116,23 @@ All endpoints prefixed with `/api/v1`.
 | `tenants` | `/tenants` | Tenant admin |
 | `restore` | `/restore` | Restore operations |
 | `dev` | `/dev` | Dev mode helpers |
+| `observability` | `/observability` | Health metrics, analytics |
+| `notifications` | `/notifications` | User notifications |
+| `support` | `/support` | Support tickets |
+| `sse` | `/sse` | Server-sent events |
+| `providers` | `/providers` | Workflow automation providers |
+
+### Admin Endpoints
+| Router | Prefix | Description |
+|--------|--------|-------------|
+| `admin_billing` | `/admin/billing` | System billing management |
+| `admin_audit` | `/admin/audit` | Audit log queries |
+| `admin_usage` | `/admin/usage` | Usage statistics |
+| `admin_providers` | `/admin/providers` | Provider management |
+| `admin_support` | `/admin/support` | Support ticket admin |
+| `admin_entitlements` | `/admin/entitlements` | Feature entitlements |
+| `admin_environment_types` | `/admin/environment-types` | Environment type config |
+| `admin_credentials` | `/admin/credentials` | Credential health monitoring |
 
 ## Services
 
@@ -131,6 +148,16 @@ All endpoints prefixed with `/api/v1`.
 | `diff_service.py` | JSON diff for drift detection |
 | `sync_status_service.py` | Workflow sync status |
 | `workflow_analysis_service.py` | Workflow complexity analysis |
+| `observability_service.py` | Execution analytics, health metrics |
+| `notification_service.py` | User notification management |
+| `audit_service.py` | Audit logging |
+| `email_service.py` | Email notifications |
+| `support_service.py` | Support ticket handling |
+| `entitlements_service.py` | Feature entitlement logic |
+| `background_job_service.py` | Async background tasks |
+| `sse_pubsub_service.py` | Real-time event publishing |
+| `provider_adapter.py` | Multi-provider workflow abstraction |
+| `provider_registry.py` | Provider registration system |
 
 ## Schemas (Pydantic Models)
 
@@ -146,6 +173,14 @@ All endpoints prefixed with `/api/v1`.
 | `tenant.py` | `TenantResponse`, `SubscriptionPlan` |
 | `execution.py` | `ExecutionResponse` |
 | `tag.py` | `TagResponse` |
+| `credential.py` | `CredentialResponse`, `CredentialHealth` |
+| `notification.py` | `NotificationResponse`, `NotificationCreate` |
+| `support.py` | `SupportTicketCreate`, `SupportTicketResponse` |
+| `entitlements.py` | `EntitlementOverride`, `FeatureMatrix` |
+| `observability.py` | `HealthMetrics`, `ExecutionAnalytics` |
+| `sse.py` | `SSEEvent`, `SSEMessage` |
+| `environment_type.py` | `EnvironmentTypeResponse` |
+| `provider.py` | `ProviderConfig`, `ProviderResponse` |
 
 ## Database Tables
 

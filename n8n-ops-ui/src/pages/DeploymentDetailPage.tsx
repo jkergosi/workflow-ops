@@ -376,10 +376,10 @@ export function DeploymentDetailPage() {
             <CardTitle className="text-lg">Deployment Summary</CardTitle>
           </CardHeader>
           <CardContent>
-            <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
+            <div className="grid grid-cols-2 md:grid-cols-6 gap-3">
               <div className="flex flex-col items-center justify-center p-5 border rounded-md bg-background hover:bg-muted/50 transition-colors">
                 <p className="text-3xl font-bold mb-2 text-foreground">{deployment.summaryJson.total}</p>
-                <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Total Workflows</p>
+                <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Total</p>
               </div>
               <div className="flex flex-col items-center justify-center p-5 border rounded-md bg-background border-green-500/30 dark:border-green-500/20 hover:bg-green-500/5 dark:hover:bg-green-500/10 transition-colors">
                 <p className="text-3xl font-bold mb-2 text-green-700 dark:text-green-400">{deployment.summaryJson.created}</p>
@@ -388,6 +388,10 @@ export function DeploymentDetailPage() {
               <div className="flex flex-col items-center justify-center p-5 border rounded-md bg-background border-blue-500/30 dark:border-blue-500/20 hover:bg-blue-500/5 dark:hover:bg-blue-500/10 transition-colors">
                 <p className="text-3xl font-bold mb-2 text-blue-700 dark:text-blue-400">{deployment.summaryJson.updated}</p>
                 <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Updated</p>
+              </div>
+              <div className="flex flex-col items-center justify-center p-5 border rounded-md bg-background border-gray-400/30 dark:border-gray-500/20 hover:bg-gray-500/5 dark:hover:bg-gray-500/10 transition-colors">
+                <p className="text-3xl font-bold mb-2 text-gray-600 dark:text-gray-400">{deployment.summaryJson.unchanged || 0}</p>
+                <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Unchanged</p>
               </div>
               <div className="flex flex-col items-center justify-center p-5 border rounded-md bg-background border-amber-500/30 dark:border-amber-500/20 hover:bg-amber-500/5 dark:hover:bg-amber-500/10 transition-colors">
                 <p className="text-3xl font-bold mb-2 text-amber-700 dark:text-amber-400">{deployment.summaryJson.skipped || 0}</p>
@@ -468,14 +472,16 @@ export function DeploymentDetailPage() {
               <TableBody>
                 {deployment.workflows.map((workflow, index) => {
                   // Determine visual status based on deployment progress
-                  const isCurrentlyProcessing = 
-                    deployment.status === 'running' && 
+                  // Treat null/undefined status as pending (database default)
+                  const effectiveStatus = workflow.status || 'pending';
+                  const isCurrentlyProcessing =
+                    deployment.status === 'running' &&
                     deployment.currentWorkflowName === workflow.workflowNameAtTime;
-                  const isPending = 
-                    deployment.status === 'running' && 
-                    workflow.status === 'pending';
-                  const isCompleted = 
-                    workflow.status === 'success' || workflow.status === 'failed';
+                  const isPending =
+                    deployment.status === 'running' &&
+                    effectiveStatus === 'pending';
+                  const isCompleted =
+                    effectiveStatus === 'success' || effectiveStatus === 'failed';
                   
                   return (
                     <TableRow 
@@ -485,11 +491,15 @@ export function DeploymentDetailPage() {
                       <TableCell className="w-8">
                         {isCurrentlyProcessing ? (
                           <Loader2 className="h-4 w-4 animate-spin text-blue-500" />
-                        ) : workflow.status === 'success' ? (
+                        ) : effectiveStatus === 'success' ? (
                           <CheckCircle className="h-4 w-4 text-green-500" />
-                        ) : workflow.status === 'failed' ? (
+                        ) : effectiveStatus === 'failed' ? (
                           <XCircle className="h-4 w-4 text-red-500" />
-                        ) : isPending ? (
+                        ) : effectiveStatus === 'skipped' ? (
+                          <AlertCircle className="h-4 w-4 text-amber-500" />
+                        ) : effectiveStatus === 'unchanged' ? (
+                          <CheckCircle className="h-4 w-4 text-gray-400" />
+                        ) : effectiveStatus === 'pending' || isPending ? (
                           <Clock className="h-4 w-4 text-muted-foreground" />
                         ) : null}
                       </TableCell>
@@ -511,16 +521,20 @@ export function DeploymentDetailPage() {
                       <TableCell>
                         <Badge
                           variant={
-                            workflow.status === 'success'
+                            effectiveStatus === 'success'
                               ? 'success'
-                              : workflow.status === 'failed'
+                              : effectiveStatus === 'failed'
                               ? 'destructive'
+                              : effectiveStatus === 'skipped'
+                              ? 'warning'
+                              : effectiveStatus === 'unchanged'
+                              ? 'outline'
                               : isCurrentlyProcessing
                               ? 'secondary'
                               : 'outline'
                           }
                         >
-                          {isCurrentlyProcessing ? 'processing' : workflow.status}
+                          {isCurrentlyProcessing ? 'processing' : effectiveStatus}
                         </Badge>
                       </TableCell>
                       <TableCell className="text-sm text-muted-foreground max-w-xs">
