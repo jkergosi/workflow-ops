@@ -132,8 +132,8 @@ All endpoints prefixed with `/api/v1`.
 | GET | `/drift-approvals` | List pending approvals |
 | POST | `/drift-approvals/{id}/approve` | Approve drift change |
 | POST | `/drift-approvals/{id}/reject` | Reject drift change |
-| GET | `/drift-reports` | List drift check history |
-| GET | `/drift-reports/{id}` | Get drift report details |
+| GET | `/reports` | List drift check history |
+| GET | `/reports/{id}` | Get drift report details |
 
 ### Environment Capabilities (`/environments/{id}/capabilities`)
 | Method | Endpoint | Description |

@@ -6,6 +6,7 @@ import type {
   Environment,
   EnvironmentType,
   EnvironmentTypeConfig,
+  Provider,
   Workflow,
   Execution,
   Snapshot,
@@ -2037,8 +2038,10 @@ class ApiClient {
   }
 
   // Tenant Usage
-  async getTenantUsage(tenantId: string): Promise<{ data: TenantUsage }> {
-    const response = await this.client.get(`/tenants/${tenantId}/usage`);
+  async getTenantUsage(tenantId: string, provider?: Provider | "all"): Promise<{ data: TenantUsage }> {
+    const params: any = {};
+    if (provider) params.provider = provider;
+    const response = await this.client.get(`/admin/tenants/${tenantId}/usage`, { params });
     return { data: response.data };
   }
 
@@ -2050,6 +2053,7 @@ class ApiClient {
     action_type?: string;
     tenant_id?: string;
     resource_type?: string;
+    provider?: Provider | "all" | "platform";
     search?: string;
     page?: number;
     page_size?: number;
@@ -2070,6 +2074,7 @@ class ApiClient {
 
   async exportAuditLogs(params?: {
     action_type?: string;
+    provider?: Provider | "all" | "platform";
     format?: 'csv' | 'json';
   }): Promise<{ data: string }> {
     const response = await this.client.get('/admin/audit-logs/export', {
@@ -2881,10 +2886,11 @@ class ApiClient {
     return { data: response.data };
   }
 
-  async getTenantsAtLimit(threshold?: number): Promise<{ data: any }> {
-    const response = await this.client.get('/admin/usage/tenants-at-limit', {
-      params: threshold ? { threshold } : {},
-    });
+  async getTenantsAtLimit(threshold?: number, provider?: Provider | "all"): Promise<{ data: any }> {
+    const params: any = {};
+    if (threshold) params.threshold = threshold;
+    if (provider) params.provider = provider;
+    const response = await this.client.get('/admin/usage/tenants-at-limit', { params });
     return { data: response.data };
   }
 

@@ -4,13 +4,13 @@ Admin Usage Endpoints
 Provides global usage overview, top tenants by metric, and tenants at/near limits.
 Supports provider filtering for provider-scoped metrics (workflows, executions, environments).
 """
-
 from fastapi import APIRouter, Query, Depends, HTTPException, status
-from typing import Optional, List
+from typing import Optional, List, Dict, Any
 from pydantic import BaseModel
 from datetime import datetime, timedelta
 from app.services.database import db_service
 from app.services.auth_service import get_current_user
+from app.services.entitlements_service import entitlements_service
 
 router = APIRouter()
 
@@ -65,6 +65,7 @@ class TopTenant(BaseModel):
     tenant_id: str
     tenant_name: str
     plan: str
+    provider: Optional[str] = None  # Present when querying "all" providers
     value: int
     limit: Optional[int]
     percentage: Optional[float]
@@ -199,84 +200,102 @@ async def get_global_usage(
         users_result = await db_service.client.table("users").select("id, tenant_id").execute()
         users = users_result.data or []
 
-        # Get execution counts (today and month) (provider-scoped)
-        today = datetime.utcnow().date()
-        month_start = today.replace(day=1)
+        # Get execution counts (provider-scoped)
+        today_start = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
+        month_start = datetime.utcnow().replace(day=1, hour=0, minute=0, second=0, microsecond=0)
 
-        executions_query = db_service.client.table("executions").select("id, tenant_id, started_at")
-        executions_query = apply_provider_filter(executions_query, provider)
-        executions_result = await executions_query.execute()
-        executions = executions_result.data or []
+        execs_today_query = db_service.client.table("executions").select("id")
+        execs_today_query = execs_today_query.gte("started_at", today_start.isoformat())
+        execs_today_query = apply_provider_filter(execs_today_query, provider)
+        execs_today_result = await execs_today_query.execute()
+        executions_today = len(execs_today_result.data or [])
 
-        executions_today = sum(1 for e in executions if e.get("started_at", "")[:10] == str(today))
-        executions_month = sum(1 for e in executions if e.get("started_at", "")[:10] >= str(month_start))
+        execs_month_query = db_service.client.table("executions").select("id")
+        execs_month_query = execs_month_query.gte("started_at", month_start.isoformat())
+        execs_month_query = apply_provider_filter(execs_month_query, provider)
+        execs_month_result = await execs_month_query.execute()
+        executions_month = len(execs_month_result.data or [])
 
-        # Count by tenant
-        workflow_counts = {}
-        env_counts = {}
-        user_counts = {}
+        # Aggregate by tenant and plan
+        tenant_workflows = {}
+        tenant_envs = {}
+        tenant_users = {}
 
         for w in workflows:
             tid = w.get("tenant_id")
-            workflow_counts[tid] = workflow_counts.get(tid, 0) + 1
+            tenant_workflows[tid] = tenant_workflows.get(tid, 0) + 1
 
         for e in environments:
             tid = e.get("tenant_id")
-            env_counts[tid] = env_counts.get(tid, 0) + 1
+            tenant_envs[tid] = tenant_envs.get(tid, 0) + 1
 
         for u in users:
             tid = u.get("tenant_id")
-            user_counts[tid] = user_counts.get(tid, 0) + 1
+            tenant_users[tid] = tenant_users.get(tid, 0) + 1
 
         # Calculate tenants at/near/over limits
         tenants_at_limit = 0
         tenants_over_limit = 0
         tenants_near_limit = 0
 
-        usage_by_plan = {"free": 0, "pro": 0, "agency": 0, "enterprise": 0}
-
         for t in tenants:
             tid = t.get("id")
             plan = t.get("subscription_tier", "free") or "free"
-            usage_by_plan[plan] = usage_by_plan.get(plan, 0) + 1
+            if plan == "enterprise":
+                continue  # Skip unlimited plans
 
-            # Check workflow limits
-            wf_count = workflow_counts.get(tid, 0)
+            wf_count = tenant_workflows.get(tid, 0)
+            env_count = tenant_envs.get(tid, 0)
+            user_count = tenant_users.get(tid, 0)
+
             wf_limit = get_limit(plan, "max_workflows")
+            env_limit = get_limit(plan, "max_environments")
+            user_limit = get_limit(plan, "max_users")
 
-            if wf_limit > 0:
-                wf_pct = (wf_count / wf_limit) * 100
-                if wf_pct >= 100:
-                    tenants_over_limit += 1
-                elif wf_pct >= 95:
-                    tenants_at_limit += 1
-                elif wf_pct >= 75:
-                    tenants_near_limit += 1
+            wf_pct = calculate_usage_percentage(wf_count, wf_limit)
+            env_pct = calculate_usage_percentage(env_count, env_limit)
+            user_pct = calculate_usage_percentage(user_count, user_limit)
 
-        stats = GlobalUsageStats(
-            total_tenants=len(tenants),
-            total_workflows=len(workflows),
-            total_environments=len(environments),
-            total_users=len(users),
-            total_executions_today=executions_today,
-            total_executions_month=executions_month,
-            tenants_at_limit=tenants_at_limit,
-            tenants_over_limit=tenants_over_limit,
-            tenants_near_limit=tenants_near_limit,
-        )
+            max_pct = max(wf_pct, env_pct, user_pct)
 
-        # Calculate growth (mock for now - would need historical data)
+            if max_pct >= 100:
+                tenants_over_limit += 1
+            elif max_pct >= 90:
+                tenants_at_limit += 1
+            elif max_pct >= 75:
+                tenants_near_limit += 1
+
+        # Usage by plan
+        usage_by_plan = {}
+        for t in tenants:
+            plan = t.get("subscription_tier", "free") or "free"
+            if plan not in usage_by_plan:
+                usage_by_plan[plan] = {"tenants": 0, "workflows": 0, "environments": 0, "users": 0}
+            usage_by_plan[plan]["tenants"] += 1
+            tid = t.get("id")
+            usage_by_plan[plan]["workflows"] += tenant_workflows.get(tid, 0)
+            usage_by_plan[plan]["environments"] += tenant_envs.get(tid, 0)
+            usage_by_plan[plan]["users"] += tenant_users.get(tid, 0)
+
+        # Recent growth (simplified - would need historical data for real trends)
         recent_growth = {
-            "tenants_7d": 5,
-            "tenants_30d": 12,
-            "workflows_7d": 25,
-            "workflows_30d": 78,
-            "executions_7d": 1500,
-            "executions_30d": 8500,
+            "tenants_7d": 0,
+            "workflows_7d": 0,
+            "environments_7d": 0,
         }
 
         return GlobalUsageResponse(
-            stats=stats,
+            stats=GlobalUsageStats(
+                total_tenants=len(tenants),
+                total_workflows=len(workflows),
+                total_environments=len(environments),
+                total_users=len(users),
+                total_executions_today=executions_today,
+                total_executions_month=executions_month,
+                tenants_at_limit=tenants_at_limit,
+                tenants_over_limit=tenants_over_limit,
+                tenants_near_limit=tenants_near_limit,
+            ),
             usage_by_plan=usage_by_plan,
             recent_growth=recent_growth,
         )
@@ -311,26 +330,55 @@ async def get_top_tenants(
 
         if metric == "workflows":
             # Workflows are provider-scoped
-            query = db_service.client.table("workflows").select("tenant_id")
-            query = apply_provider_filter(query, provider)
-            result = await query.execute()
-            counts = {}
-            for item in (result.data or []):
-                tid = item.get("tenant_id")
-                counts[tid] = counts.get(tid, 0) + 1
+            if provider == "all":
+                # When querying all providers, group by provider
+                query = db_service.client.table("workflows").select("tenant_id, provider")
+                result = await query.execute()
+                counts_by_provider = {}
+                for item in (result.data or []):
+                    tid = item.get("tenant_id")
+                    prov = item.get("provider", "n8n")
+                    if tid not in counts_by_provider:
+                        counts_by_provider[tid] = {}
+                    counts_by_provider[tid][prov] = counts_by_provider[tid].get(prov, 0) + 1
+                
+                # Aggregate counts and include provider breakdown
+                for tid, prov_counts in counts_by_provider.items():
+                    if tid in tenants:
+                        t = tenants[tid]
+                        plan = t.get("subscription_tier", "free") or "free"
+                        limit_val = get_limit(plan, "max_workflows")
+                        # For "all" providers, create separate entries per provider
+                        for prov, count in prov_counts.items():
+                            tenant_values.append({
+                                "tenant_id": tid,
+                                "tenant_name": t.get("name", "Unknown"),
+                                "plan": plan,
+                                "provider": prov,
+                                "value": count,
+                                "limit": limit_val if limit_val > 0 else None,
+                            })
+            else:
+                query = db_service.client.table("workflows").select("tenant_id")
+                query = apply_provider_filter(query, provider)
+                result = await query.execute()
+                counts = {}
+                for item in (result.data or []):
+                    tid = item.get("tenant_id")
+                    counts[tid] = counts.get(tid, 0) + 1
 
-            for tid, count in counts.items():
-                if tid in tenants:
-                    t = tenants[tid]
-                    plan = t.get("subscription_tier", "free") or "free"
-                    limit_val = get_limit(plan, "max_workflows")
-                    tenant_values.append({
-                        "tenant_id": tid,
-                        "tenant_name": t.get("name", "Unknown"),
-                        "plan": plan,
-                        "value": count,
-                        "limit": limit_val if limit_val > 0 else None,
-                    })
+                for tid, count in counts.items():
+                    if tid in tenants:
+                        t = tenants[tid]
+                        plan = t.get("subscription_tier", "free") or "free"
+                        limit_val = get_limit(plan, "max_workflows")
+                        tenant_values.append({
+                            "tenant_id": tid,
+                            "tenant_name": t.get("name", "Unknown"),
+                            "plan": plan,
+                            "value": count,
+                            "limit": limit_val if limit_val > 0 else None,
+                        })
 
         elif metric == "users":
             result = await db_service.client.table("users").select("tenant_id").execute()
@@ -354,26 +402,55 @@ async def get_top_tenants(
 
         elif metric == "environments":
             # Environments are provider-scoped
-            query = db_service.client.table("environments").select("tenant_id")
-            query = apply_provider_filter(query, provider)
-            result = await query.execute()
-            counts = {}
-            for item in (result.data or []):
-                tid = item.get("tenant_id")
-                counts[tid] = counts.get(tid, 0) + 1
+            if provider == "all":
+                # When querying all providers, group by provider
+                query = db_service.client.table("environments").select("tenant_id, provider")
+                result = await query.execute()
+                counts_by_provider = {}
+                for item in (result.data or []):
+                    tid = item.get("tenant_id")
+                    prov = item.get("provider", "n8n")
+                    if tid not in counts_by_provider:
+                        counts_by_provider[tid] = {}
+                    counts_by_provider[tid][prov] = counts_by_provider[tid].get(prov, 0) + 1
+                
+                # Aggregate counts and include provider breakdown
+                for tid, prov_counts in counts_by_provider.items():
+                    if tid in tenants:
+                        t = tenants[tid]
+                        plan = t.get("subscription_tier", "free") or "free"
+                        limit_val = get_limit(plan, "max_environments")
+                        # For "all" providers, create separate entries per provider
+                        for prov, count in prov_counts.items():
+                            tenant_values.append({
+                                "tenant_id": tid,
+                                "tenant_name": t.get("name", "Unknown"),
+                                "plan": plan,
+                                "provider": prov,
+                                "value": count,
+                                "limit": limit_val if limit_val > 0 else None,
+                            })
+            else:
+                query = db_service.client.table("environments").select("tenant_id")
+                query = apply_provider_filter(query, provider)
+                result = await query.execute()
+                counts = {}
+                for item in (result.data or []):
+                    tid = item.get("tenant_id")
+                    counts[tid] = counts.get(tid, 0) + 1
 
-            for tid, count in counts.items():
-                if tid in tenants:
-                    t = tenants[tid]
-                    plan = t.get("subscription_tier", "free") or "free"
-                    limit_val = get_limit(plan, "max_environments")
-                    tenant_values.append({
-                        "tenant_id": tid,
-                        "tenant_name": t.get("name", "Unknown"),
-                        "plan": plan,
-                        "value": count,
-                        "limit": limit_val if limit_val > 0 else None,
-                    })
+                for tid, count in counts.items():
+                    if tid in tenants:
+                        t = tenants[tid]
+                        plan = t.get("subscription_tier", "free") or "free"
+                        limit_val = get_limit(plan, "max_environments")
+                        tenant_values.append({
+                            "tenant_id": tid,
+                            "tenant_name": t.get("name", "Unknown"),
+                            "plan": plan,
+                            "value": count,
+                            "limit": limit_val if limit_val > 0 else None,
+                        })
 
         elif metric == "executions":
             # Filter by period
@@ -386,27 +463,57 @@ async def get_top_tenants(
                 date_filter = str((datetime.utcnow() - timedelta(days=30)).date())
 
             # Executions are provider-scoped
-            query = db_service.client.table("executions").select("tenant_id, started_at")
-            query = apply_provider_filter(query, provider)
-            result = await query.execute()
-            counts = {}
-            for item in (result.data or []):
-                if date_filter and item.get("started_at", "")[:10] < date_filter:
-                    continue
-                tid = item.get("tenant_id")
-                counts[tid] = counts.get(tid, 0) + 1
+            if provider == "all":
+                # When querying all providers, group by provider
+                query = db_service.client.table("executions").select("tenant_id, provider, started_at")
+                result = await query.execute()
+                counts_by_provider = {}
+                for item in (result.data or []):
+                    if date_filter and item.get("started_at", "")[:10] < date_filter:
+                        continue
+                    tid = item.get("tenant_id")
+                    prov = item.get("provider", "n8n")
+                    if tid not in counts_by_provider:
+                        counts_by_provider[tid] = {}
+                    counts_by_provider[tid][prov] = counts_by_provider[tid].get(prov, 0) + 1
+                
+                # Aggregate counts and include provider breakdown
+                for tid, prov_counts in counts_by_provider.items():
+                    if tid in tenants:
+                        t = tenants[tid]
+                        plan = t.get("subscription_tier", "free") or "free"
+                        # For "all" providers, create separate entries per provider
+                        for prov, count in prov_counts.items():
+                            tenant_values.append({
+                                "tenant_id": tid,
+                                "tenant_name": t.get("name", "Unknown"),
+                                "plan": plan,
+                                "provider": prov,
+                                "value": count,
+                                "limit": None,
+                            })
+            else:
+                query = db_service.client.table("executions").select("tenant_id, started_at")
+                query = apply_provider_filter(query, provider)
+                result = await query.execute()
+                counts = {}
+                for item in (result.data or []):
+                    if date_filter and item.get("started_at", "")[:10] < date_filter:
+                        continue
+                    tid = item.get("tenant_id")
+                    counts[tid] = counts.get(tid, 0) + 1
 
-            for tid, count in counts.items():
-                if tid in tenants:
-                    t = tenants[tid]
-                    plan = t.get("subscription_tier", "free") or "free"
-                    tenant_values.append({
-                        "tenant_id": tid,
-                        "tenant_name": t.get("name", "Unknown"),
-                        "plan": plan,
-                        "value": count,
-                        "limit": None,
-                    })
+                for tid, count in counts.items():
+                    if tid in tenants:
+                        t = tenants[tid]
+                        plan = t.get("subscription_tier", "free") or "free"
+                        tenant_values.append({
+                            "tenant_id": tid,
+                            "tenant_name": t.get("name", "Unknown"),
+                            "plan": plan,
+                            "value": count,
+                            "limit": None,
+                        })
 
         # Sort by value descending
         tenant_values.sort(key=lambda x: x["value"], reverse=True)
@@ -423,6 +530,7 @@ async def get_top_tenants(
                 tenant_id=tv["tenant_id"],
                 tenant_name=tv["tenant_name"],
                 plan=tv["plan"],
+                provider=tv.get("provider"),  # Include provider when querying "all"
                 value=tv["value"],
                 limit=tv["limit"],
                 percentage=pct,
@@ -545,18 +653,17 @@ async def get_tenants_at_limit(
                 status=user_status,
             ))
 
-            # Add to list if any metric is at/near/over threshold
+            # Only include if at/near/over limit
             if max_pct >= threshold:
                 at_limit_tenants.append(TenantUsageSummary(
                     tenant_id=tid,
                     tenant_name=t.get("name", "Unknown"),
                     plan=plan,
-                    status=t.get("status", "active") or "active",
+                    status=t.get("status", "active"),
                     metrics=metrics,
                     total_usage_percentage=max_pct,
                 ))
 
-        # Sort by highest usage percentage
         at_limit_tenants.sort(key=lambda x: x.total_usage_percentage, reverse=True)
 
         return TenantsAtLimitResponse(
@@ -568,4 +675,174 @@ async def get_tenants_at_limit(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to get tenants at limit: {str(e)}"
+        )
+
+
+@router.get("/tenants/{tenant_id}/usage")
+async def get_tenant_usage(
+    tenant_id: str,
+    provider: Optional[str] = Query(None, description="Filter by provider: n8n, make, or all"),
+    user_info: dict = Depends(get_current_user)
+):
+    """Get usage metrics for a tenant (admin only)"""
+    try:
+        # Verify tenant exists
+        tenant_response = db_service.client.table("tenants").select(
+            "id, name, subscription_tier"
+        ).eq("id", tenant_id).single().execute()
+
+        if not tenant_response.data:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Tenant not found")
+
+        tenant = tenant_response.data
+        plan = tenant.get("subscription_tier", "free")
+        provider_filter = provider or "all"  # Default to "all" for aggregate
+
+        # Get plan limits from entitlements
+        try:
+            limits = await entitlements_service.get_tenant_entitlements(tenant_id)
+            features = limits.get("features", {})
+        except Exception:
+            features = {}
+
+        # Define default limits by plan
+        default_limits = {
+            "free": {"workflows": 10, "environments": 1, "users": 3, "executions": 1000},
+            "pro": {"workflows": 200, "environments": 3, "users": 25, "executions": 50000},
+            "agency": {"workflows": 500, "environments": -1, "users": 100, "executions": 200000},
+            "enterprise": {"workflows": -1, "environments": -1, "users": -1, "executions": -1},
+        }
+
+        plan_limits = default_limits.get(plan, default_limits["free"])
+
+        def calculate_percentage(current, limit):
+            if limit == -1:
+                return 0  # Unlimited
+            if limit == 0:
+                return 100 if current > 0 else 0
+            return min(round((current / limit) * 100, 1), 100)
+
+        # Helper to apply provider filter
+        def apply_provider_filter_local(query, table_has_provider: bool = True):
+            if not table_has_provider or not provider_filter or provider_filter == "all":
+                return query
+            return query.eq("provider", provider_filter)
+
+        # Get counts with provider filtering
+        workflow_query = db_service.client.table("workflows").select("id, provider", count="exact")
+        workflow_query = workflow_query.eq("tenant_id", tenant_id).eq("is_deleted", False)
+        workflow_query = apply_provider_filter_local(workflow_query)
+        workflow_response = await workflow_query.execute()
+        workflow_count = workflow_response.count or 0
+
+        env_query = db_service.client.table("environments").select("id, provider", count="exact")
+        env_query = env_query.eq("tenant_id", tenant_id)
+        env_query = apply_provider_filter_local(env_query)
+        env_response = await env_query.execute()
+        environment_count = env_response.count or 0
+
+        # Users are platform-scoped (no provider filter)
+        user_response = db_service.client.table("users").select(
+            "id", count="exact"
+        ).eq("tenant_id", tenant_id).execute()
+        user_count = user_response.count or 0
+
+        # Get execution count for current month
+        first_of_month = datetime.utcnow().replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+        exec_query = db_service.client.table("executions").select("id, provider", count="exact")
+        exec_query = exec_query.eq("tenant_id", tenant_id).gte("started_at", first_of_month.isoformat())
+        exec_query = apply_provider_filter_local(exec_query)
+        exec_response = await exec_query.execute()
+        execution_count = exec_response.count or 0
+
+        # Build response
+        response = {
+            "tenant_id": tenant_id,
+            "plan": plan,
+            "provider": provider_filter,
+            "metrics": {
+                "workflows": {
+                    "current": workflow_count,
+                    "limit": plan_limits.get("workflows", -1),
+                    "percentage": calculate_percentage(workflow_count, plan_limits.get("workflows", -1)),
+                },
+                "environments": {
+                    "current": environment_count,
+                    "limit": plan_limits.get("environments", -1),
+                    "percentage": calculate_percentage(environment_count, plan_limits.get("environments", -1)),
+                },
+                "users": {
+                    "current": user_count,
+                    "limit": plan_limits.get("users", -1),
+                    "percentage": calculate_percentage(user_count, plan_limits.get("users", -1)),
+                },
+                "executions": {
+                    "current": execution_count,
+                    "limit": plan_limits.get("executions", -1),
+                    "percentage": calculate_percentage(execution_count, plan_limits.get("executions", -1)),
+                    "period": "current_month",
+                },
+            },
+        }
+
+        # If provider="all", include breakdown by provider
+        if provider_filter == "all":
+            # Get provider breakdown for workflows
+            workflow_by_provider = {}
+            workflow_data = workflow_response.data or []
+            for wf in workflow_data:
+                prov = wf.get("provider", "n8n")
+                workflow_by_provider[prov] = workflow_by_provider.get(prov, 0) + 1
+
+            # Get provider breakdown for environments
+            env_by_provider = {}
+            env_data = env_response.data or []
+            for env in env_data:
+                prov = env.get("provider", "n8n")
+                env_by_provider[prov] = env_by_provider.get(prov, 0) + 1
+
+            # Get provider breakdown for executions
+            exec_by_provider = {}
+            exec_data = exec_response.data or []
+            for exec_item in exec_data:
+                prov = exec_item.get("provider", "n8n")
+                exec_by_provider[prov] = exec_by_provider.get(prov, 0) + 1
+
+            # Build byProvider breakdown
+            by_provider = {}
+            all_providers = set(list(workflow_by_provider.keys()) + list(env_by_provider.keys()) + list(exec_by_provider.keys()))
+            for prov in all_providers:
+                by_provider[prov] = {
+                    "workflows": {
+                        "current": workflow_by_provider.get(prov, 0),
+                        "limit": plan_limits.get("workflows", -1),
+                        "percentage": calculate_percentage(workflow_by_provider.get(prov, 0), plan_limits.get("workflows", -1)),
+                    },
+                    "environments": {
+                        "current": env_by_provider.get(prov, 0),
+                        "limit": plan_limits.get("environments", -1),
+                        "percentage": calculate_percentage(env_by_provider.get(prov, 0), plan_limits.get("environments", -1)),
+                    },
+                    "users": {
+                        "current": user_count,  # Users are platform-scoped, same for all providers
+                        "limit": plan_limits.get("users", -1),
+                        "percentage": calculate_percentage(user_count, plan_limits.get("users", -1)),
+                    },
+                    "executions": {
+                        "current": exec_by_provider.get(prov, 0),
+                        "limit": plan_limits.get("executions", -1),
+                        "percentage": calculate_percentage(exec_by_provider.get(prov, 0), plan_limits.get("executions", -1)),
+                        "period": "current_month",
+                    },
+                }
+            response["byProvider"] = by_provider
+
+        return response
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to fetch tenant usage: {str(e)}"
         )

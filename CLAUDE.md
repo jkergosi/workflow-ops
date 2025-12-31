@@ -106,7 +106,7 @@ n8n-ops/
 ├── n8n-ops-ui/                  # React frontend
 │   ├── CLAUDE.md                # Frontend-specific docs
 │   └── src/
-│       ├── pages/               # 32 pages + 16 admin pages
+│       ├── pages/               # 29 pages + 4 support + 16 admin pages
 │       ├── components/          # UI, workflow, pipeline components
 │       ├── hooks/               # Custom React hooks
 │       ├── lib/                 # API client, auth, features

@@ -2,13 +2,40 @@
 // TODO: Fix TypeScript errors in this file
 import { useQuery } from '@tanstack/react-query';
 import { useEffect } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { apiClient } from '@/lib/api-client';
 import { useAuth } from '@/lib/auth';
+import { useFeatures } from '@/lib/features';
 import { Activity, Workflow, Server, Plus, Rocket } from 'lucide-react';
+
+/**
+ * Get plan-based default landing page.
+ * Based on reqs/lifecycle.md Phase 5:
+ * - Free: Environments / Workflows
+ * - Pro: Snapshots
+ * - Agency: Pipelines (Deployments)
+ * - Enterprise: Drift Dashboard
+ */
+function getDefaultLandingPage(planName: string | null): string {
+  if (!planName) return '/environments';
+  
+  const planLower = planName.toLowerCase();
+  switch (planLower) {
+    case 'free':
+      return '/environments'; // Environments / Workflows
+    case 'pro':
+      return '/snapshots'; // Snapshots
+    case 'agency':
+      return '/deployments?tab=pipelines'; // Pipelines (Deployments)
+    case 'enterprise':
+      return '/drift-dashboard'; // Drift Dashboard
+    default:
+      return '/environments';
+  }
+}
 
 export function DashboardPage() {
   useEffect(() => {
@@ -18,6 +45,16 @@ export function DashboardPage() {
     };
   }, []);
   const { user, hasEnvironment } = useAuth();
+  const { planName } = useFeatures();
+  const navigate = useNavigate();
+
+  // Redirect to plan-based default landing page
+  useEffect(() => {
+    const defaultPage = getDefaultLandingPage(planName);
+    if (defaultPage !== '/') {
+      navigate(defaultPage, { replace: true });
+    }
+  }, [planName, navigate]);
 
   const { data: environments, isLoading: loadingEnvs } = useQuery({
     queryKey: ['environments'],

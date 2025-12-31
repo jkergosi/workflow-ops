@@ -42,7 +42,7 @@ import { apiClient } from '@/lib/api-client';
 import { Link } from 'react-router-dom';
 import { exportToCSV } from '@/lib/export-utils';
 import { toast } from 'sonner';
-import type { GlobalUsageStats, TopTenant, TenantAtLimit, GlobalUsageMetric } from '@/types';
+import type { GlobalUsageStats, TopTenant, TenantAtLimit, GlobalUsageMetric, Provider } from '@/types';
 
 // Simple bar chart component for usage history
 function UsageHistoryChart({ data, label }: { data: number[]; label: string }) {
@@ -78,23 +78,24 @@ export function UsagePage() {
   }, []);
   const [topMetric, setTopMetric] = useState('workflows');
   const [topPeriod, setTopPeriod] = useState('all');
+  const [providerFilter, setProviderFilter] = useState<Provider | 'all'>('all');
 
   // Fetch global usage stats
   const { data: usageData, isLoading: usageLoading, refetch: refetchUsage } = useQuery({
-    queryKey: ['global-usage'],
+    queryKey: ['global-usage', providerFilter],
     queryFn: () => apiClient.getGlobalUsage(),
   });
 
   // Fetch top tenants
   const { data: topTenantsData, isLoading: topLoading } = useQuery({
-    queryKey: ['top-tenants', topMetric, topPeriod],
-    queryFn: () => apiClient.getTopTenants({ metric: topMetric, period: topPeriod, limit: 10 }),
+    queryKey: ['top-tenants', topMetric, topPeriod, providerFilter],
+    queryFn: () => apiClient.getTopTenants({ metric: topMetric, period: topPeriod, limit: 10, provider: providerFilter }),
   });
 
   // Fetch tenants at limit
   const { data: atLimitData, isLoading: atLimitLoading } = useQuery({
-    queryKey: ['tenants-at-limit'],
-    queryFn: () => apiClient.getTenantsAtLimit(75),
+    queryKey: ['tenants-at-limit', providerFilter],
+    queryFn: () => apiClient.getTenantsAtLimit(75, providerFilter),
   });
 
   const stats: GlobalUsageStats = usageData?.data?.stats || {
@@ -139,6 +140,7 @@ export function UsagePage() {
       { key: 'tenant_id' as const, header: 'Tenant ID' },
       { key: 'tenant_name' as const, header: 'Tenant Name' },
       { key: 'plan' as const, header: 'Plan' },
+      ...(providerFilter === 'all' ? [{ key: 'provider' as const, header: 'Provider' }] : []),
       { key: 'value' as const, header: 'Value' },
       { key: 'limit' as const, header: 'Limit' },
       { key: 'percentage' as const, header: 'Usage %' },
@@ -454,13 +456,14 @@ export function UsagePage() {
                         <TableHead className="w-12">#</TableHead>
                         <TableHead>Tenant</TableHead>
                         <TableHead>Plan</TableHead>
+                        {providerFilter === 'all' && <TableHead>Provider</TableHead>}
                         <TableHead className="text-right">Value</TableHead>
                         <TableHead className="text-right">% Used</TableHead>
                       </TableRow>
                     </TableHeader>
                     <TableBody>
                       {topTenants.map((tenant) => (
-                        <TableRow key={tenant.tenant_id}>
+                        <TableRow key={`${tenant.tenant_id}-${tenant.provider || ''}`}>
                           <TableCell className="font-medium">{tenant.rank}</TableCell>
                           <TableCell>
                             <Link
@@ -476,6 +479,13 @@ export function UsagePage() {
                               {tenant.plan}
                             </Badge>
                           </TableCell>
+                          {providerFilter === 'all' && (
+                            <TableCell>
+                              <Badge variant="outline" className="capitalize">
+                                {tenant.provider || 'n8n'}
+                              </Badge>
+                            </TableCell>
+                          )}
                           <TableCell className="text-right font-medium">
                             {tenant.value.toLocaleString()}
                             {tenant.limit && (

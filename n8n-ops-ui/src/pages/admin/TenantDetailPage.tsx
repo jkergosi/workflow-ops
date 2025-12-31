@@ -65,7 +65,7 @@ import {
 } from 'lucide-react';
 import { apiClient } from '@/lib/api-client';
 import { toast } from 'sonner';
-import type { Tenant, TenantNote, TenantFeatureOverride } from '@/types';
+import type { Tenant, TenantNote, TenantFeatureOverride, Provider } from '@/types';
 
 const statusColors: Record<string, string> = {
   active: 'bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200',
@@ -98,6 +98,7 @@ export function TenantDetailPage() {
   const [suspendDialogOpen, setSuspendDialogOpen] = useState(false);
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const [noteContent, setNoteContent] = useState('');
+  const [providerFilter, setProviderFilter] = useState<Provider | 'all'>('all');
 
   const [editForm, setEditForm] = useState({
     name: '',
@@ -114,8 +115,8 @@ export function TenantDetailPage() {
 
   // Fetch tenant usage
   const { data: usageData } = useQuery({
-    queryKey: ['tenant-usage', tenantId],
-    queryFn: () => apiClient.getTenantUsage(tenantId!),
+    queryKey: ['tenant-usage', tenantId, providerFilter],
+    queryFn: () => apiClient.getTenantUsage(tenantId!, providerFilter),
     enabled: !!tenantId && activeTab === 'usage',
   });
 
@@ -580,33 +581,75 @@ export function TenantDetailPage() {
         <TabsContent value="usage">
           <Card>
             <CardHeader>
-              <CardTitle>Usage Metrics</CardTitle>
-              <CardDescription>Current usage vs plan limits</CardDescription>
+              <div className="flex items-center justify-between">
+                <div>
+                  <CardTitle>Usage Metrics</CardTitle>
+                  <CardDescription>Current usage vs plan limits</CardDescription>
+                </div>
+                <Select value={providerFilter} onValueChange={(value) => setProviderFilter(value as Provider | 'all')}>
+                  <SelectTrigger className="w-[140px]">
+                    <SelectValue placeholder="All Providers" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all">All Providers</SelectItem>
+                    <SelectItem value="n8n">n8n</SelectItem>
+                    <SelectItem value="make">Make</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
             </CardHeader>
             <CardContent>
               {usage ? (
-                <div className="grid gap-6 md:grid-cols-2">
-                  {Object.entries(usage.metrics).map(([key, metric]) => (
-                    <div key={key} className="space-y-2">
-                      <div className="flex justify-between">
-                        <Label className="capitalize">{key}</Label>
-                        <span className="text-sm text-muted-foreground">
-                          {metric.current} / {metric.limit === -1 ? 'Unlimited' : metric.limit}
-                        </span>
+                <>
+                  <div className="grid gap-6 md:grid-cols-2 mb-6">
+                    {Object.entries(usage.metrics).map(([key, metric]) => (
+                      <div key={key} className="space-y-2">
+                        <div className="flex justify-between">
+                          <Label className="capitalize">{key}</Label>
+                          <span className="text-sm text-muted-foreground">
+                            {metric.current} / {metric.limit === -1 ? 'Unlimited' : metric.limit}
+                          </span>
+                        </div>
+                        <Progress
+                          value={metric.limit === -1 ? 0 : metric.percentage}
+                          className={`h-2 ${getUsageColor(metric.percentage)}`}
+                        />
+                        {metric.percentage >= 90 && metric.limit !== -1 && (
+                          <p className="text-xs text-destructive flex items-center gap-1">
+                            <AlertTriangle className="h-3 w-3" />
+                            Near limit
+                          </p>
+                        )}
                       </div>
-                      <Progress
-                        value={metric.limit === -1 ? 0 : metric.percentage}
-                        className={`h-2 ${getUsageColor(metric.percentage)}`}
-                      />
-                      {metric.percentage >= 90 && metric.limit !== -1 && (
-                        <p className="text-xs text-destructive flex items-center gap-1">
-                          <AlertTriangle className="h-3 w-3" />
-                          Near limit
-                        </p>
-                      )}
+                    ))}
+                  </div>
+                  {providerFilter === 'all' && usage.byProvider && (
+                    <div className="mt-6 space-y-4">
+                      <h3 className="text-lg font-semibold">Breakdown by Provider</h3>
+                      {Object.entries(usage.byProvider).map(([provider, providerMetrics]) => (
+                        <div key={provider} className="border rounded-lg p-4 space-y-4">
+                          <h4 className="font-medium capitalize">{provider}</h4>
+                          <div className="grid gap-4 md:grid-cols-2">
+                            {Object.entries(providerMetrics).map(([key, metric]) => (
+                              <div key={key} className="space-y-2">
+                                <div className="flex justify-between">
+                                  <Label className="capitalize text-sm">{key}</Label>
+                                  <span className="text-xs text-muted-foreground">
+                                    {metric.current} / {metric.limit === -1 ? 'Unlimited' : metric.limit}
+                                  </span>
+                                </div>
+                                <Progress
+                                  value={metric.limit === -1 ? 0 : metric.percentage}
+                                  className={`h-2 ${getUsageColor(metric.percentage)}`}
+                                />
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      ))}
                     </div>
-                  ))}
-                </div>
+                  )}
+                </>
               ) : (
                 <div className="text-center py-8">
                   <RefreshCw className="h-8 w-8 animate-spin mx-auto text-muted-foreground" />

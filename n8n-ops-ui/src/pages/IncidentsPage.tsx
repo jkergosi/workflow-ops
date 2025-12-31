@@ -53,6 +53,7 @@ import { Textarea } from '@/components/ui/textarea';
 import { Label } from '@/components/ui/label';
 import { toast } from 'sonner';
 import type { DriftIncident, DriftIncidentStatus } from '@/types';
+import { SmartEmptyState } from '@/components/SmartEmptyState';
 
 const STATUS_CONFIG: Record<DriftIncidentStatus, {
   label: string;
@@ -92,7 +93,7 @@ export function IncidentsPage() {
   const hasDriftIncidents = canUseFeature('drift_incidents');
 
   // Fetch incidents
-  const { data: incidentsData, isLoading, refetch } = useQuery({
+  const { data: incidentsData, isLoading, error, refetch } = useQuery({
     queryKey: ['incidents', selectedEnvironment, statusFilter],
     queryFn: async () => {
       const response = await apiClient.getIncidents({
@@ -103,6 +104,12 @@ export function IncidentsPage() {
       return response.data;
     },
     enabled: hasDriftIncidents,
+    retry: (failureCount, error) => {
+      // Don't retry on 503 - service is down
+      if ((error as any)?.response?.status === 503) return false;
+      return failureCount < 2;
+    },
+    keepPreviousData: true, // Cached data fallback
   });
 
   // Fetch environments for lookup
@@ -261,6 +268,29 @@ export function IncidentsPage() {
             </Button>
           </CardContent>
         </Card>
+      </div>
+    );
+  }
+
+  // Handle service errors with SmartEmptyState
+  if (error && !isLoading && !incidentsData) {
+    return (
+      <div className="space-y-6">
+        <div className="flex items-center justify-between">
+          <div>
+            <h1 className="text-2xl font-bold flex items-center gap-2">
+              <AlertTriangle className="h-6 w-6" />
+              Drift Incidents
+            </h1>
+            <p className="text-muted-foreground">Manage and resolve drift incidents across environments</p>
+          </div>
+        </div>
+        <SmartEmptyState
+          title="Unable to load incidents"
+          error={error as Error}
+          isLoading={isLoading}
+          onRetry={refetch}
+        />
       </div>
     );
   }

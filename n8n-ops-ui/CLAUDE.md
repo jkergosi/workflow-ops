@@ -43,7 +43,7 @@ Check port in `../.env.local` (default: 3000 for main worktree).
 ### Drift & Incidents
 | Page | Route | Description |
 |------|-------|-------------|
-| `DriftDashboardPage` | `/drift` | Drift overview, history, and analytics |
+| `DriftDashboardPage` | `/drift-dashboard` | Drift overview, history, and analytics |
 | `IncidentsPage` | `/incidents` | List drift incidents, filter by status |
 | `IncidentDetailPage` | `/incidents/:id` | Incident details, acknowledge, resolve |
 
@@ -65,6 +65,14 @@ Check port in `../.env.local` (default: 3000 for main worktree).
 | `AlertsPage` | `/alerts` | Alert configuration |
 | `LoginPage` | `/login` | User authentication |
 | `OnboardingPage` | `/onboarding` | New user setup |
+
+### Support Pages
+| Page | Route | Description |
+|------|-------|-------------|
+| `SupportHomePage` | `/support` | Support hub with options |
+| `ReportBugPage` | `/support/bug/new` | Submit bug reports |
+| `RequestFeaturePage` | `/support/feature/new` | Request new features |
+| `GetHelpPage` | `/support/help/new` | Get help with issues |
 
 ### Admin Pages (`/admin/*`)
 | Page | Route | Description |

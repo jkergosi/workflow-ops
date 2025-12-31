@@ -621,12 +621,19 @@ export interface TenantUsageMetric {
 export interface TenantUsage {
   tenantId: string;
   plan: string;
+  provider?: Provider | "all"; // Provider filter used (or "all" for aggregate)
   metrics: {
     workflows: TenantUsageMetric;
     environments: TenantUsageMetric;
     users: TenantUsageMetric;
     executions: TenantUsageMetric;
   };
+  byProvider?: Record<Provider, {
+    workflows: TenantUsageMetric;
+    environments: TenantUsageMetric;
+    users: TenantUsageMetric;
+    executions: TenantUsageMetric;
+  }>; // Present when provider="all"
 }
 
 export interface AuditLog {
@@ -642,6 +649,7 @@ export interface AuditLog {
   resourceType?: string;
   resourceId?: string;
   resourceName?: string;
+  provider?: string | null; // Provider context for provider-scoped actions (null for platform-scoped)
   oldValue?: Record<string, any>;
   newValue?: Record<string, any>;
   reason?: string;
@@ -1374,6 +1382,7 @@ export interface TopTenant {
   tenant_id: string;
   tenant_name: string;
   plan: string;
+  provider?: Provider; // Present when querying "all" providers
   value: number;
   limit?: number;
   percentage?: number;

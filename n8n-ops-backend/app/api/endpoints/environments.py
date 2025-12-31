@@ -12,7 +12,6 @@ from app.schemas.environment import (
 )
 from app.services.database import db_service
 from app.services.provider_registry import ProviderRegistry
-from app.services.n8n_client import N8NClient  # Keep for direct connection testing
 from app.services.github_service import GitHubService
 from app.services.entitlements_service import entitlements_service
 from app.core.entitlements_gate import require_entitlement, require_environment_limit
@@ -81,21 +80,26 @@ async def test_environment_connection(
     connection: EnvironmentTestConnection,
     _: dict = Depends(require_entitlement("environment_basic"))
 ):
-    """Test connection to an N8N instance"""
+    """Test connection to a workflow provider instance (defaults to n8n)"""
     try:
-        # Create a temporary N8N client with the provided credentials
-        test_client = N8NClient(base_url=connection.n8n_base_url, api_key=connection.n8n_api_key)
-        is_connected = await test_client.test_connection()
+        # Use ProviderRegistry to get adapter (defaults to n8n for now)
+        # In the future, this could accept a provider parameter
+        config = {
+            "n8n_base_url": connection.n8n_base_url,
+            "n8n_api_key": connection.n8n_api_key
+        }
+        adapter = ProviderRegistry.get_adapter(provider="n8n", config=config)
+        is_connected = await adapter.test_connection()
 
         if is_connected:
             return {
                 "success": True,
-                "message": "Successfully connected to N8N instance"
+                "message": "Successfully connected to workflow provider instance"
             }
         else:
             return {
                 "success": False,
-                "message": "Failed to connect to N8N instance. Please check your URL and API key."
+                "message": "Failed to connect to workflow provider instance. Please check your URL and API key."
             }
     except Exception as e:
         return {

@@ -69,6 +69,8 @@ import {
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { isMenuItemVisible, mapBackendRoleToFrontendRole, type Role } from '@/lib/permissions';
+import { LifecycleStage, DriftMode, getDriftModeForPlan, canCreateDriftIncident } from '@/types/lifecycle';
+import { useHealthCheck } from '@/lib/use-health-check';
 
 interface NavItem {
   id: string;
@@ -78,6 +80,9 @@ interface NavItem {
   requiredPlan?: 'pro' | 'agency' | 'enterprise';
   feature?: keyof PlanFeatures | string;
   comingSoon?: boolean;
+  lifecycleStage?: LifecycleStage;
+  hideForPlans?: string[]; // Plans that should never see this item
+  requiresDriftMode?: DriftMode[]; // Drift modes that allow this item
 }
 
 interface NavSection {
@@ -98,16 +103,16 @@ const navigationSections: NavSection[] = [
   {
     title: 'Operations',
     items: [
-      { id: 'activity', name: 'Activity', href: '/activity', icon: History },
-      { id: 'deployments', name: 'Deployments', href: '/deployments', icon: Rocket, requiredPlan: 'pro', feature: 'workflow_ci_cd' },
-      { id: 'snapshots', name: 'Snapshots', href: '/snapshots', icon: Camera, feature: 'snapshots_enabled' },
+      { id: 'activity', name: 'Activity', href: '/activity', icon: History, lifecycleStage: LifecycleStage.OBSERVABILITY },
+      { id: 'deployments', name: 'Deployments', href: '/deployments', icon: Rocket, requiredPlan: 'pro', feature: 'workflow_ci_cd', lifecycleStage: LifecycleStage.DEPLOYMENT },
+      { id: 'snapshots', name: 'Snapshots', href: '/snapshots', icon: Camera, feature: 'snapshots_enabled', lifecycleStage: LifecycleStage.SNAPSHOT },
     ],
   },
   {
     title: 'Incidents',
     items: [
-      { id: 'incidents', name: 'Incidents', href: '/incidents', icon: AlertTriangle, requiredPlan: 'agency', feature: 'drift_incidents' },
-      { id: 'drift-dashboard', name: 'Drift Dashboard', href: '/drift-dashboard', icon: BarChart3, requiredPlan: 'agency', feature: 'drift_ttl_sla' },
+      { id: 'incidents', name: 'Incidents', href: '/incidents', icon: AlertTriangle, requiredPlan: 'agency', feature: 'drift_incidents', lifecycleStage: LifecycleStage.DRIFT, requiresDriftMode: [DriftMode.MANAGED, DriftMode.ENFORCED], hideForPlans: ['free'] },
+      { id: 'drift-dashboard', name: 'Drift Dashboard', href: '/drift-dashboard', icon: BarChart3, requiredPlan: 'agency', feature: 'drift_ttl_sla', lifecycleStage: LifecycleStage.DRIFT, hideForPlans: ['free', 'pro'] },
     ],
   },
   {
@@ -135,8 +140,8 @@ const navigationSections: NavSection[] = [
       { id: 'featureMatrix', name: 'Feature Matrix', href: '/admin/entitlements/matrix', icon: LayoutGrid, requiredPlan: 'enterprise' },
       { id: 'tenantOverrides', name: 'Tenant Overrides', href: '/admin/entitlements/overrides', icon: Shield, requiredPlan: 'enterprise' },
       { id: 'entitlementsAudit', name: 'Entitlements Audit', href: '/admin/entitlements/audit', icon: History, requiredPlan: 'enterprise' },
-      { id: 'auditLogs', name: 'Audit Logs', href: '/admin/audit-logs', icon: FileText, requiredPlan: 'pro', feature: 'audit_logs_enabled' },
-      { id: 'driftPolicies', name: 'Drift Policies', href: '/admin/drift-policies', icon: AlertTriangle, requiredPlan: 'enterprise', feature: 'drift_policies' },
+      { id: 'auditLogs', name: 'Audit Logs', href: '/admin/audit-logs', icon: FileText, requiredPlan: 'pro', feature: 'audit_logs_enabled', lifecycleStage: LifecycleStage.OBSERVABILITY },
+      { id: 'driftPolicies', name: 'Drift Policies', href: '/admin/drift-policies', icon: AlertTriangle, requiredPlan: 'enterprise', feature: 'drift_policies', lifecycleStage: LifecycleStage.DRIFT_HANDLING, hideForPlans: ['free', 'pro', 'agency'] },
       { id: 'security', name: 'Security', href: '/admin/security', icon: Shield, requiredPlan: 'enterprise', feature: 'sso_saml' },
       { id: 'systemSettings', name: 'System Settings', href: '/admin/settings', icon: Settings },
       { id: 'supportConfig', name: 'Support Config', href: '/admin/support-config', icon: HelpCircle },
@@ -168,11 +173,57 @@ export function AppLayout() {
     return mapBackendRoleToFrontendRole(user.role);
   }, [user?.role]);
 
+  // Health check for connection status indicator
+  const { status: healthStatus } = useHealthCheck();
+
   // Check if a nav item is accessible based on plan
   const isFeatureAvailable = useCallback((item: NavItem): boolean => {
     if (!item.feature) return true;
     return canUseFeature(item.feature);
   }, [canUseFeature]);
+
+  // Check if item should be hidden based on plan (terminology suppression)
+  const isItemHiddenForPlan = useCallback((item: NavItem): boolean => {
+    if (!item.hideForPlans || !planName) return false;
+    const planLower = planName.toLowerCase();
+    return item.hideForPlans.includes(planLower);
+  }, [planName]);
+
+  // Check if item requires specific drift mode
+  const isDriftModeAllowed = useCallback((item: NavItem): boolean => {
+    if (!item.requiresDriftMode || !planName) return true;
+    const driftMode = getDriftModeForPlan(planName);
+    return item.requiresDriftMode.includes(driftMode);
+  }, [planName]);
+
+  // Get display name with terminology suppression based on plan
+  const getDisplayName = useCallback((item: NavItem): string => {
+    if (!planName) return item.name;
+    const planLower = planName.toLowerCase();
+    
+    // Terminology suppression based on reqs/lifecycle.md Phase 6
+    // Pipeline: ❌ Free, ⚠️ Pro, ✅ Agency+
+    // Policy: ❌ Free, ❌ Pro, ✅ Agency+
+    // Incident: ❌ Free, ⚠️ Pro, ✅ Agency+
+    // SLA / TTL: ❌ Free, ❌ Pro, ✅ Agency+
+    
+    // Suppress "Policy" for free and pro
+    if ((planLower === 'free' || planLower === 'pro') && item.id === 'driftPolicies') {
+      return ''; // Hide completely
+    }
+    
+    // Suppress "Incident" for free (already hidden via hideForPlans, but ensure name doesn't leak)
+    if (planLower === 'free' && item.id === 'incidents') {
+      return ''; // Hide completely
+    }
+    
+    // Suppress "SLA/TTL" terminology in "Drift Dashboard" for free and pro
+    if ((planLower === 'free' || planLower === 'pro') && item.id === 'drift-dashboard') {
+      return ''; // Hide completely (already hidden via hideForPlans)
+    }
+    
+    return item.name;
+  }, [planName]);
 
   // Build search items from navigation
   const searchItems = React.useMemo(() => {
@@ -180,8 +231,14 @@ export function AppLayout() {
     const userRole = getUserRole();
     navigationSections.forEach((section) => {
       section.items.forEach((item) => {
-        if (isMenuItemVisible(item.id, userRole) && isFeatureAvailable(item)) {
-          items.push({ title: item.name, href: item.href, icon: item.icon });
+        if (isMenuItemVisible(item.id, userRole) && 
+            isFeatureAvailable(item) && 
+            !isItemHiddenForPlan(item) &&
+            isDriftModeAllowed(item)) {
+          const displayName = getDisplayName(item) || item.name;
+          if (displayName) { // Only add if display name is not suppressed
+            items.push({ title: displayName, href: item.href, icon: item.icon });
+          }
         }
       });
     });
@@ -250,7 +307,22 @@ export function AppLayout() {
 
           {/* Navigation */}
           <nav className="flex-1 px-2 py-4 overflow-y-auto custom-scrollbar">
-            {navigationSections.map((section, sectionIndex) => {
+            {navigationSections
+              .filter((section) => {
+                // Hide "Incidents" section for free users (terminology suppression)
+                if (section.title === 'Incidents' && planName?.toLowerCase() === 'free') {
+                  return false;
+                }
+                // Hide section if all items are hidden
+                const visibleItems = section.items.filter((item) => {
+                  if (!isMenuItemVisible(item.id, getUserRole())) return false;
+                  if (isItemHiddenForPlan(item)) return false;
+                  if (!isDriftModeAllowed(item)) return false;
+                  return true;
+                });
+                return visibleItems.length > 0;
+              })
+              .map((section, sectionIndex) => {
               const isExpanded = expandedSections[section.title] ?? true;
               return (
                 <div key={section.title} className={cn(sectionIndex > 0 && 'mt-6')}>
@@ -274,7 +346,15 @@ export function AppLayout() {
                   {isExpanded && (
                     <div className="space-y-0.5">
                       {section.items
-                        .filter((item) => isMenuItemVisible(item.id, getUserRole()))
+                        .filter((item) => {
+                          // Role-based visibility
+                          if (!isMenuItemVisible(item.id, getUserRole())) return false;
+                          // Plan-based hiding (terminology suppression)
+                          if (isItemHiddenForPlan(item)) return false;
+                          // Drift mode requirement
+                          if (!isDriftModeAllowed(item)) return false;
+                          return true;
+                        })
                         .map((item) => {
                           const Icon = item.icon;
                           const isActive = location.pathname === item.href;
@@ -294,7 +374,7 @@ export function AppLayout() {
                               title={!sidebarOpen ? item.name : undefined}
                             >
                               <Icon className={cn('h-4 w-4 flex-shrink-0', isActive && 'text-primary-foreground')} />
-                              {sidebarOpen && <span className="flex-1">{item.name}</span>}
+                              {sidebarOpen && <span className="flex-1">{getDisplayName(item) || item.name}</span>}
                               {sidebarOpen && !isAvailable && item.requiredPlan && (
                                 <span className="flex items-center">
                                   {item.requiredPlan === 'enterprise' ? (
@@ -382,6 +462,23 @@ export function AppLayout() {
                   </Select>
                 </div>
               )}
+
+              {/* Connection Status Indicator */}
+              <div className="flex items-center gap-2 mr-2">
+                <div
+                  className={cn(
+                    "h-2 w-2 rounded-full",
+                    healthStatus === 'healthy' && "bg-green-500",
+                    healthStatus === 'degraded' && "bg-yellow-500",
+                    healthStatus === 'unhealthy' && "bg-red-500"
+                  )}
+                  title={
+                    healthStatus === 'healthy' ? 'All systems operational' :
+                    healthStatus === 'degraded' ? 'Some services degraded' :
+                    'Service unavailable'
+                  }
+                />
+              </div>
 
               {/* Notifications */}
               <Button variant="ghost" size="icon" className="h-8 w-8 relative">

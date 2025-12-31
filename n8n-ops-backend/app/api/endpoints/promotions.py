@@ -381,7 +381,7 @@ async def _execute_promotion_background(
     Background task to execute promotion - transfers workflows from source to target.
     Updates job progress as it processes workflows.
     """
-    from app.services.n8n_client import N8NClient
+    from app.services.provider_registry import ProviderRegistry
     from app.schemas.deployment import DeploymentStatus, WorkflowChangeType, WorkflowStatus
 
     total_workflows = len(selected_workflows)
@@ -394,32 +394,26 @@ async def _execute_promotion_background(
             progress={"current": 0, "total": total_workflows, "percentage": 0, "message": "Starting promotion execution"}
         )
 
-        # Create n8n clients - use correct field names from environment
-        source_base_url = source_env.get("n8n_base_url") or source_env.get("base_url")
-        source_api_key = source_env.get("n8n_api_key") or source_env.get("api_key")
-        target_base_url = target_env.get("n8n_base_url") or target_env.get("base_url")
-        target_api_key = target_env.get("n8n_api_key") or target_env.get("api_key")
+        # Get provider from environments (default to n8n for backward compatibility)
+        source_provider = source_env.get("provider", "n8n") or "n8n"
+        target_provider = target_env.get("provider", "n8n") or "n8n"
         
-        if not source_base_url or not source_api_key:
-            raise ValueError(f"Source environment missing required fields: base_url={source_base_url}, api_key={'***' if source_api_key else None}")
-        if not target_base_url or not target_api_key:
-            raise ValueError(f"Target environment missing required fields: base_url={target_base_url}, api_key={'***' if target_api_key else None}")
-        
-        logger.info(f"[Job {job_id}] Creating N8N clients - Source: {source_base_url}, Target: {target_base_url}")
-        source_client = N8NClient(source_base_url, source_api_key)
-        target_client = N8NClient(target_base_url, target_api_key)
+        # Create provider adapters using ProviderRegistry
+        logger.info(f"[Job {job_id}] Creating provider adapters - Source: {source_provider}, Target: {target_provider}")
+        source_adapter = ProviderRegistry.get_adapter_for_environment(source_env)
+        target_adapter = ProviderRegistry.get_adapter_for_environment(target_env)
         
         # Test connections before proceeding
         logger.info(f"[Job {job_id}] Testing source environment connection...")
-        source_connected = await source_client.test_connection()
+        source_connected = await source_adapter.test_connection()
         if not source_connected:
-            raise ValueError(f"Failed to connect to source environment at {source_base_url}")
+            raise ValueError(f"Failed to connect to source environment")
         logger.info(f"[Job {job_id}] Source environment connection successful")
         
         logger.info(f"[Job {job_id}] Testing target environment connection...")
-        target_connected = await target_client.test_connection()
+        target_connected = await target_adapter.test_connection()
         if not target_connected:
-            raise ValueError(f"Failed to connect to target environment at {target_base_url}")
+            raise ValueError(f"Failed to connect to target environment")
         logger.info(f"[Job {job_id}] Target environment connection successful")
 
         # NOTE: deployment_workflows records are pre-created in execute_promotion() before this task starts
@@ -452,7 +446,7 @@ async def _execute_promotion_background(
 
                 # Fetch workflow from source
                 logger.info(f"[Job {job_id}] Fetching workflow {workflow_id} ({workflow_name}) from source environment {source_env.get('n8n_name', source_env.get('id'))}")
-                source_workflow = await source_client.get_workflow(workflow_id)
+                source_workflow = await source_adapter.get_workflow(workflow_id)
                 
                 if not source_workflow:
                     raise ValueError(f"Workflow {workflow_id} not found in source environment")
@@ -470,7 +464,7 @@ async def _execute_promotion_background(
 
                 # Try to find existing workflow in target by name
                 logger.info(f"[Job {job_id}] Checking for existing workflow '{workflow_name}' in target environment {target_env.get('n8n_name', target_env.get('id'))}")
-                target_workflows = await target_client.get_workflows()
+                target_workflows = await target_adapter.get_workflows()
                 logger.info(f"[Job {job_id}] Found {len(target_workflows)} existing workflows in target environment")
                 existing_workflow = next(
                     (w for w in target_workflows if w.get("name") == workflow_name),
@@ -480,14 +474,14 @@ async def _execute_promotion_background(
                 if existing_workflow:
                     # Update existing workflow
                     logger.info(f"[Job {job_id}] Updating existing workflow '{workflow_name}' (ID: {existing_workflow.get('id')}) in target")
-                    result = await target_client.update_workflow(existing_workflow.get("id"), workflow_data)
+                    result = await target_adapter.update_workflow(existing_workflow.get("id"), workflow_data)
                     logger.info(f"[Job {job_id}] Successfully updated workflow '{workflow_name}' in target environment")
                     updated_count += 1
                     change_type = "changed"
                 else:
                     # Create new workflow
                     logger.info(f"[Job {job_id}] Creating new workflow '{workflow_name}' in target environment")
-                    result = await target_client.create_workflow(workflow_data)
+                    result = await target_adapter.create_workflow(workflow_data)
                     logger.info(f"[Job {job_id}] Successfully created workflow '{workflow_name}' (ID: {result.get('id', 'unknown')}) in target environment")
                     created_count += 1
                     change_type = "new"

@@ -1027,7 +1027,10 @@ async def delete_tenant_note(tenant_id: str, note_id: str):
 # =============================================================================
 
 @router.get("/{tenant_id}/usage")
-async def get_tenant_usage(tenant_id: str):
+async def get_tenant_usage(
+    tenant_id: str,
+    provider: Optional[str] = Query(None, description="Filter by provider: n8n, make, or all")
+):
     """Get usage metrics for a tenant (admin only)"""
     try:
         # Verify tenant exists
@@ -1040,29 +1043,7 @@ async def get_tenant_usage(tenant_id: str):
 
         tenant = tenant_response.data
         plan = tenant.get("subscription_tier", "free")
-
-        # Get counts
-        workflow_response = db_service.client.table("workflows").select(
-            "id", count="exact"
-        ).eq("tenant_id", tenant_id).eq("is_deleted", False).execute()
-        workflow_count = workflow_response.count or 0
-
-        env_response = db_service.client.table("environments").select(
-            "id", count="exact"
-        ).eq("tenant_id", tenant_id).execute()
-        environment_count = env_response.count or 0
-
-        user_response = db_service.client.table("users").select(
-            "id", count="exact"
-        ).eq("tenant_id", tenant_id).execute()
-        user_count = user_response.count or 0
-
-        # Get execution count for current month
-        first_of_month = datetime.utcnow().replace(day=1, hour=0, minute=0, second=0, microsecond=0)
-        exec_response = db_service.client.table("executions").select(
-            "id", count="exact"
-        ).eq("tenant_id", tenant_id).gte("started_at", first_of_month.isoformat()).execute()
-        execution_count = exec_response.count or 0
+        provider_filter = provider or "all"  # Default to "all" for aggregate
 
         # Get plan limits from entitlements
         try:
@@ -1088,9 +1069,44 @@ async def get_tenant_usage(tenant_id: str):
                 return 100 if current > 0 else 0
             return min(round((current / limit) * 100, 1), 100)
 
-        return {
+        # Helper to apply provider filter
+        def apply_provider_filter_local(query, table_has_provider: bool = True):
+            if not table_has_provider or not provider_filter or provider_filter == "all":
+                return query
+            return query.eq("provider", provider_filter)
+
+        # Get counts with provider filtering
+        workflow_query = db_service.client.table("workflows").select("id, provider", count="exact")
+        workflow_query = workflow_query.eq("tenant_id", tenant_id).eq("is_deleted", False)
+        workflow_query = apply_provider_filter_local(workflow_query)
+        workflow_response = await workflow_query.execute()
+        workflow_count = workflow_response.count or 0
+
+        env_query = db_service.client.table("environments").select("id, provider", count="exact")
+        env_query = env_query.eq("tenant_id", tenant_id)
+        env_query = apply_provider_filter_local(env_query)
+        env_response = await env_query.execute()
+        environment_count = env_response.count or 0
+
+        # Users are platform-scoped (no provider filter)
+        user_response = db_service.client.table("users").select(
+            "id", count="exact"
+        ).eq("tenant_id", tenant_id).execute()
+        user_count = user_response.count or 0
+
+        # Get execution count for current month
+        first_of_month = datetime.utcnow().replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+        exec_query = db_service.client.table("executions").select("id, provider", count="exact")
+        exec_query = exec_query.eq("tenant_id", tenant_id).gte("started_at", first_of_month.isoformat())
+        exec_query = apply_provider_filter_local(exec_query)
+        exec_response = await exec_query.execute()
+        execution_count = exec_response.count or 0
+
+        # Build response
+        response = {
             "tenant_id": tenant_id,
             "plan": plan,
+            "provider": provider_filter,
             "metrics": {
                 "workflows": {
                     "current": workflow_count,
@@ -1115,6 +1131,60 @@ async def get_tenant_usage(tenant_id: str):
                 },
             },
         }
+
+        # If provider="all", include breakdown by provider
+        if provider_filter == "all":
+            # Get provider breakdown for workflows
+            workflow_by_provider = {}
+            workflow_data = workflow_response.data or []
+            for wf in workflow_data:
+                prov = wf.get("provider", "n8n")
+                workflow_by_provider[prov] = workflow_by_provider.get(prov, 0) + 1
+
+            # Get provider breakdown for environments
+            env_by_provider = {}
+            env_data = env_response.data or []
+            for env in env_data:
+                prov = env.get("provider", "n8n")
+                env_by_provider[prov] = env_by_provider.get(prov, 0) + 1
+
+            # Get provider breakdown for executions
+            exec_by_provider = {}
+            exec_data = exec_response.data or []
+            for exec_item in exec_data:
+                prov = exec_item.get("provider", "n8n")
+                exec_by_provider[prov] = exec_by_provider.get(prov, 0) + 1
+
+            # Build byProvider breakdown
+            by_provider = {}
+            all_providers = set(list(workflow_by_provider.keys()) + list(env_by_provider.keys()) + list(exec_by_provider.keys()))
+            for prov in all_providers:
+                by_provider[prov] = {
+                    "workflows": {
+                        "current": workflow_by_provider.get(prov, 0),
+                        "limit": plan_limits.get("workflows", -1),
+                        "percentage": calculate_percentage(workflow_by_provider.get(prov, 0), plan_limits.get("workflows", -1)),
+                    },
+                    "environments": {
+                        "current": env_by_provider.get(prov, 0),
+                        "limit": plan_limits.get("environments", -1),
+                        "percentage": calculate_percentage(env_by_provider.get(prov, 0), plan_limits.get("environments", -1)),
+                    },
+                    "users": {
+                        "current": user_count,  # Users are platform-scoped, same for all providers
+                        "limit": plan_limits.get("users", -1),
+                        "percentage": calculate_percentage(user_count, plan_limits.get("users", -1)),
+                    },
+                    "executions": {
+                        "current": exec_by_provider.get(prov, 0),
+                        "limit": plan_limits.get("executions", -1),
+                        "percentage": calculate_percentage(exec_by_provider.get(prov, 0), plan_limits.get("executions", -1)),
+                        "period": "current_month",
+                    },
+                }
+            response["byProvider"] = by_provider
+
+        return response
 
     except HTTPException:
         raise

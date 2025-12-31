@@ -77,6 +77,46 @@ async def create_incident(
             },
         )
 
+    # Check drift mode enforcement - incidents cannot be created in passive mode
+    from app.core.drift_mode import DriftMode, get_drift_mode_for_plan, can_create_drift_incident
+    from app.services.database import db_service
+    
+    # Get environment to check drift_handling_mode
+    environment = await db_service.get_environment(payload.environment_id, tenant_id)
+    if not environment:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Environment not found"
+        )
+    
+    # Get tenant plan from subscription
+    subscription = await feature_service.get_tenant_subscription(tenant_id)
+    plan_name = subscription.get("plan", {}).get("name", "free").lower() if subscription else "free"
+    
+    # Determine drift mode: use environment setting if set, otherwise plan default
+    env_drift_mode_str = environment.get("drift_handling_mode")
+    if env_drift_mode_str:
+        try:
+            drift_mode = DriftMode(env_drift_mode_str.lower())
+        except ValueError:
+            # Invalid drift mode, fall back to plan default
+            drift_mode = get_drift_mode_for_plan(plan_name)
+    else:
+        # No environment setting, use plan default
+        drift_mode = get_drift_mode_for_plan(plan_name)
+    
+    # Enforce: cannot create incidents in passive mode
+    if not can_create_drift_incident(drift_mode):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail={
+                "error": "drift_mode_restriction",
+                "message": f"Drift incidents cannot be created in {drift_mode.value} mode. Upgrade to Agency or Enterprise plan to enable drift incident management.",
+                "drift_mode": drift_mode.value,
+                "required_mode": "managed or enforced"
+            },
+        )
+
     incident = await drift_incident_service.create_incident(
         tenant_id=tenant_id,
         environment_id=payload.environment_id,

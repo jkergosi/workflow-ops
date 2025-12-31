@@ -34,11 +34,25 @@ export function useHealthCheck(
     healthService.getLastCheck()
   );
   const [isChecking, setIsChecking] = useState(false);
+  const [previousStatus, setPreviousStatus] = useState<ServiceStatus>('healthy');
 
   useEffect(() => {
     // Subscribe to health status changes
     const unsubscribe = healthService.subscribe((newStatus) => {
-      setStatus(newStatus.status);
+      const newStatusValue = newStatus.status;
+      
+      // Check for service recovery (unhealthy -> healthy/degraded)
+      if (previousStatus === 'unhealthy' && (newStatusValue === 'healthy' || newStatusValue === 'degraded')) {
+        // Trigger recovery notification
+        if (typeof window !== 'undefined' && window.dispatchEvent) {
+          window.dispatchEvent(new CustomEvent('service-recovered', {
+            detail: { from: previousStatus, to: newStatusValue }
+          }));
+        }
+      }
+      
+      setPreviousStatus(newStatusValue);
+      setStatus(newStatusValue);
       setHealthStatus(newStatus);
       setIsChecking(false);
     });
@@ -51,7 +65,7 @@ export function useHealthCheck(
     return () => {
       unsubscribe();
     };
-  }, [autoCheck, pollInterval]);
+  }, [autoCheck, pollInterval, previousStatus]);
 
   const checkHealth = useCallback(async (): Promise<HealthStatus> => {
     setIsChecking(true);

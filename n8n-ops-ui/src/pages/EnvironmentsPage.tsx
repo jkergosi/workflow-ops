@@ -48,6 +48,7 @@ import type { Environment, EnvironmentType } from '@/types';
 import { useFeatures } from '@/lib/features';
 import { useEffect } from 'react';
 import { useBackgroundJobsSSE } from '@/lib/use-background-jobs-sse';
+import { SmartEmptyState } from '@/components/SmartEmptyState';
 
 export function EnvironmentsPage() {
   const navigate = useNavigate();
@@ -111,9 +112,15 @@ export function EnvironmentsPage() {
   });
   const [testingGitInDialog, setTestingGitInDialog] = useState(false);
 
-  const { data: environments, isLoading } = useQuery({
+  const { data: environments, isLoading, error, refetch } = useQuery({
     queryKey: ['environments'],
     queryFn: () => api.getEnvironments(),
+    retry: (failureCount, error) => {
+      // Don't retry on 503 - service is down
+      if ((error as any)?.response?.status === 503) return false;
+      return failureCount < 2;
+    },
+    keepPreviousData: true, // Cached data fallback
   });
 
   // Fetch environment health data for status and drift
@@ -607,12 +614,23 @@ export function EnvironmentsPage() {
       </div>
 
 
-      <Card>
-        <CardContent className="p-0">
-          {isLoading ? (
-            <div className="text-center py-8">Loading environments...</div>
-          ) : (
-            <Table>
+      {/* Show SmartEmptyState for service errors */}
+      {error && !isLoading && !environments?.data && (
+        <SmartEmptyState
+          title="Unable to load environments"
+          error={error as Error}
+          isLoading={isLoading}
+          onRetry={refetch}
+        />
+      )}
+
+      {!error && (
+        <Card>
+          <CardContent className="p-0">
+            {isLoading && !environments?.data ? (
+              <div className="text-center py-8">Loading environments...</div>
+            ) : (
+              <Table>
               <TableHeader>
                 <TableRow>
                   <TableHead>Environment</TableHead>
@@ -777,6 +795,7 @@ export function EnvironmentsPage() {
           )}
         </CardContent>
       </Card>
+      )}
 
       {/* Add/Edit Environment Dialog */}
       <Dialog open={!!editingEnv || isAddMode} onOpenChange={(open) => !open && handleClose()}>

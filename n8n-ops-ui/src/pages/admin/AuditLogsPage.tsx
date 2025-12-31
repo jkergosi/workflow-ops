@@ -54,7 +54,7 @@ import { apiClient } from '@/lib/api-client';
 import { toast } from 'sonner';
 import { Link } from 'react-router-dom';
 import { exportToCSV } from '@/lib/export-utils';
-import type { AuditLog } from '@/types';
+import type { AuditLog, Provider } from '@/types';
 
 // Action type presets for quick filtering
 const ACTION_PRESETS = [
@@ -77,6 +77,7 @@ export function AuditLogsPage() {
   const [searchTerm, setSearchTerm] = useState('');
   const [actionTypeFilter, setActionTypeFilter] = useState<string>('all');
   const [presetFilter, setPresetFilter] = useState<string>('all');
+  const [providerFilter, setProviderFilter] = useState<Provider | 'all' | 'platform'>('all');
   const [page, setPage] = useState(1);
   const [pageSize] = useState(20);
   const [detailSheetOpen, setDetailSheetOpen] = useState(false);
@@ -84,11 +85,12 @@ export function AuditLogsPage() {
 
   // Fetch audit logs with filters
   const { data: logsData, isLoading, refetch } = useQuery({
-    queryKey: ['audit-logs', page, pageSize, actionTypeFilter, searchTerm],
+    queryKey: ['audit-logs', page, pageSize, actionTypeFilter, searchTerm, providerFilter],
     queryFn: () => apiClient.getAuditLogs({
       page,
       page_size: pageSize,
       action_type: actionTypeFilter !== 'all' ? actionTypeFilter : undefined,
+      provider: providerFilter !== 'all' ? providerFilter : undefined,
       search: searchTerm || undefined,
     }),
   });
@@ -111,6 +113,7 @@ export function AuditLogsPage() {
       { key: 'actorEmail' as const, header: 'Actor Email' },
       { key: 'tenantId' as const, header: 'Tenant ID' },
       { key: 'actionType' as const, header: 'Action Type' },
+      { key: 'provider' as const, header: 'Provider' },
       { key: 'resourceType' as const, header: 'Resource Type' },
       { key: 'resourceId' as const, header: 'Resource ID' },
       { key: 'ipAddress' as const, header: 'IP Address' },
@@ -137,6 +140,7 @@ export function AuditLogsPage() {
   const exportMutation = useMutation({
     mutationFn: () => apiClient.exportAuditLogs({
       action_type: actionTypeFilter !== 'all' ? actionTypeFilter : undefined,
+      provider: providerFilter !== 'all' ? providerFilter : undefined,
       format: 'csv',
     }),
     onSuccess: (response) => {
@@ -174,10 +178,11 @@ export function AuditLogsPage() {
     setSearchTerm('');
     setActionTypeFilter('all');
     setPresetFilter('all');
+    setProviderFilter('all');
     setPage(1);
   };
 
-  const hasActiveFilters = searchTerm || actionTypeFilter !== 'all' || presetFilter !== 'all';
+  const hasActiveFilters = searchTerm || actionTypeFilter !== 'all' || presetFilter !== 'all' || providerFilter !== 'all';
 
   const getActionIcon = (actionType: string | undefined) => {
     if (!actionType) return <FileText className="h-4 w-4" />;
@@ -396,6 +401,17 @@ export function AuditLogsPage() {
                 ))}
               </SelectContent>
             </Select>
+            <Select value={providerFilter} onValueChange={(v) => { setProviderFilter(v as Provider | 'all' | 'platform'); setPage(1); }}>
+              <SelectTrigger className="w-[160px]">
+                <SelectValue placeholder="Provider" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">All Providers</SelectItem>
+                <SelectItem value="platform">Platform</SelectItem>
+                <SelectItem value="n8n">n8n</SelectItem>
+                <SelectItem value="make">Make</SelectItem>
+              </SelectContent>
+            </Select>
           </div>
         </CardContent>
       </Card>
@@ -431,6 +447,7 @@ export function AuditLogsPage() {
                     <TableHead>Actor</TableHead>
                     <TableHead>Tenant</TableHead>
                     <TableHead>Action</TableHead>
+                    <TableHead>Provider</TableHead>
                     <TableHead>Details</TableHead>
                     <TableHead>IP Address</TableHead>
                   </TableRow>
@@ -489,6 +506,15 @@ export function AuditLogsPage() {
                             {getActionIcon(log.actionType)}
                             {formatActionType(log.actionType)}
                           </Badge>
+                        </TableCell>
+                        <TableCell>
+                          {log.provider ? (
+                            <Badge variant="outline" className="capitalize">
+                              {log.provider}
+                            </Badge>
+                          ) : (
+                            <span className="text-sm text-muted-foreground">—</span>
+                          )}
                         </TableCell>
                         <TableCell className="max-w-xs">
                           <div className="flex items-center gap-2">

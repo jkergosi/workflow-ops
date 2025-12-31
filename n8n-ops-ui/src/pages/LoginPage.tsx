@@ -1,9 +1,36 @@
 import { useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '@/lib/auth';
+import { useFeatures } from '@/lib/features';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Loader2, Workflow } from 'lucide-react';
+
+/**
+ * Get plan-based default landing page.
+ * Based on reqs/lifecycle.md Phase 5:
+ * - Free: Environments / Workflows
+ * - Pro: Snapshots
+ * - Agency: Pipelines (Deployments)
+ * - Enterprise: Drift Dashboard
+ */
+function getDefaultLandingPage(planName: string | null): string {
+  if (!planName) return '/environments';
+  
+  const planLower = planName.toLowerCase();
+  switch (planLower) {
+    case 'free':
+      return '/environments'; // Environments / Workflows
+    case 'pro':
+      return '/snapshots'; // Snapshots
+    case 'agency':
+      return '/deployments?tab=pipelines'; // Pipelines (Deployments)
+    case 'enterprise':
+      return '/drift-dashboard'; // Drift Dashboard
+    default:
+      return '/environments';
+  }
+}
 
 export function LoginPage() {
   useEffect(() => {
@@ -14,6 +41,7 @@ export function LoginPage() {
   }, []);
 
   const { isAuthenticated, isLoading, needsOnboarding, login } = useAuth();
+  const { planName } = useFeatures();
   const navigate = useNavigate();
 
   // Redirect if already authenticated
@@ -24,11 +52,12 @@ export function LoginPage() {
         console.log('[LoginPage] Redirecting to onboarding');
         navigate('/onboarding', { replace: true });
       } else {
-        console.log('[LoginPage] Redirecting to dashboard');
-        navigate('/', { replace: true });
+        const defaultPage = getDefaultLandingPage(planName);
+        console.log('[LoginPage] Redirecting to plan-based default:', defaultPage);
+        navigate(defaultPage, { replace: true });
       }
     }
-  }, [isAuthenticated, isLoading, needsOnboarding, navigate]);
+  }, [isAuthenticated, isLoading, needsOnboarding, planName, navigate]);
 
   const handleLogin = () => {
     login();

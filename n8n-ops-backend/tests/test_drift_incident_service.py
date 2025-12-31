@@ -118,7 +118,10 @@ class TestGetIncidents:
     async def test_get_incidents_success(self):
         """Test successful retrieval of incidents."""
         mock_response = MagicMock()
-        mock_response.data = [{"id": "inc-1"}, {"id": "inc-2"}]
+        mock_response.data = [
+            {"id": "inc-1", "payload_purged_at": None},
+            {"id": "inc-2", "payload_purged_at": None}
+        ]
         mock_response.count = 2
 
         with patch("app.services.drift_incident_service.db_service") as mock_db:
@@ -134,7 +137,11 @@ class TestGetIncidents:
             service = DriftIncidentService()
             result = await service.get_incidents(MOCK_TENANT_ID)
 
-            assert result["items"] == [{"id": "inc-1"}, {"id": "inc-2"}]
+            # Verify enriched items with payload_available and is_deleted
+            assert len(result["items"]) == 2
+            assert result["items"][0]["id"] == "inc-1"
+            assert result["items"][0]["payload_available"] is True
+            assert result["items"][0]["is_deleted"] is False
             assert result["total"] == 2
             assert result["has_more"] is False
 
@@ -564,3 +571,221 @@ class TestRefreshIncidentDrift:
                 )
 
             assert exc_info.value.status_code == 400
+
+
+class TestEnrichIncident:
+    """Tests for _enrich_incident method (retention support)."""
+
+    def test_enrich_incident_with_none(self):
+        """Test that enriching None returns None."""
+        service = DriftIncidentService()
+        result = service._enrich_incident(None)
+        assert result is None
+
+    def test_enrich_incident_payload_available_true(self):
+        """Test payload_available is True when payload_purged_at is None."""
+        service = DriftIncidentService()
+        incident = {
+            "id": "inc-1",
+            "payload_purged_at": None,
+        }
+        result = service._enrich_incident(incident)
+        assert result["payload_available"] is True
+
+    def test_enrich_incident_payload_available_false(self):
+        """Test payload_available is False when payload_purged_at is set."""
+        service = DriftIncidentService()
+        incident = {
+            "id": "inc-1",
+            "payload_purged_at": "2024-01-01T00:00:00Z",
+        }
+        result = service._enrich_incident(incident)
+        assert result["payload_available"] is False
+
+    def test_enrich_incident_is_deleted_default(self):
+        """Test is_deleted defaults to False when not present."""
+        service = DriftIncidentService()
+        incident = {
+            "id": "inc-1",
+            "payload_purged_at": None,
+        }
+        result = service._enrich_incident(incident)
+        assert result["is_deleted"] is False
+
+    def test_enrich_incident_preserves_is_deleted(self):
+        """Test is_deleted is preserved when already present."""
+        service = DriftIncidentService()
+        incident = {
+            "id": "inc-1",
+            "payload_purged_at": None,
+            "is_deleted": True,
+        }
+        result = service._enrich_incident(incident)
+        assert result["is_deleted"] is True
+
+
+class TestEnrichIncidents:
+    """Tests for _enrich_incidents method (batch enrichment)."""
+
+    def test_enrich_incidents_empty_list(self):
+        """Test enriching empty list returns empty list."""
+        service = DriftIncidentService()
+        result = service._enrich_incidents([])
+        assert result == []
+
+    def test_enrich_incidents_multiple(self):
+        """Test enriching multiple incidents."""
+        service = DriftIncidentService()
+        incidents = [
+            {"id": "inc-1", "payload_purged_at": None},
+            {"id": "inc-2", "payload_purged_at": "2024-01-01T00:00:00Z"},
+            {"id": "inc-3", "payload_purged_at": None, "is_deleted": True},
+        ]
+        result = service._enrich_incidents(incidents)
+
+        assert len(result) == 3
+        assert result[0]["payload_available"] is True
+        assert result[0]["is_deleted"] is False
+        assert result[1]["payload_available"] is False
+        assert result[1]["is_deleted"] is False
+        assert result[2]["payload_available"] is True
+        assert result[2]["is_deleted"] is True
+
+
+class TestGetIncidentsWithDeleted:
+    """Tests for get_incidents with include_deleted parameter."""
+
+    @pytest.mark.asyncio
+    async def test_get_incidents_excludes_deleted_by_default(self):
+        """Test that deleted incidents are excluded by default."""
+        mock_response = MagicMock()
+        mock_response.data = [{"id": "inc-1", "payload_purged_at": None}]
+        mock_response.count = 1
+
+        with patch("app.services.drift_incident_service.db_service") as mock_db:
+            mock_query = MagicMock()
+            mock_query.select.return_value = mock_query
+            mock_query.eq.return_value = mock_query
+            mock_query.neq.return_value = mock_query
+            mock_query.order.return_value = mock_query
+            mock_query.range.return_value = mock_query
+            mock_query.execute.return_value = mock_response
+            mock_db.client.table.return_value = mock_query
+
+            service = DriftIncidentService()
+            result = await service.get_incidents(MOCK_TENANT_ID)
+
+            # Verify is_deleted=False filter was applied
+            eq_calls = mock_query.eq.call_args_list
+            assert any("is_deleted" in str(c) for c in eq_calls)
+
+    @pytest.mark.asyncio
+    async def test_get_incidents_includes_deleted_when_requested(self):
+        """Test that deleted incidents are included when include_deleted=True."""
+        mock_response = MagicMock()
+        mock_response.data = [
+            {"id": "inc-1", "payload_purged_at": None, "is_deleted": False},
+            {"id": "inc-2", "payload_purged_at": "2024-01-01T00:00:00Z", "is_deleted": True},
+        ]
+        mock_response.count = 2
+
+        with patch("app.services.drift_incident_service.db_service") as mock_db:
+            mock_query = MagicMock()
+            mock_query.select.return_value = mock_query
+            mock_query.eq.return_value = mock_query
+            mock_query.neq.return_value = mock_query
+            mock_query.order.return_value = mock_query
+            mock_query.range.return_value = mock_query
+            mock_query.execute.return_value = mock_response
+            mock_db.client.table.return_value = mock_query
+
+            service = DriftIncidentService()
+            result = await service.get_incidents(MOCK_TENANT_ID, include_deleted=True)
+
+            # Should include both incidents
+            assert len(result["items"]) == 2
+            assert result["items"][0]["payload_available"] is True
+            assert result["items"][1]["payload_available"] is False
+
+
+class TestGetActiveIncidentForEnvironment:
+    """Tests for get_active_incident_for_environment with soft-delete support."""
+
+    @pytest.mark.asyncio
+    async def test_get_active_excludes_deleted(self):
+        """Test that deleted incidents are excluded from active query."""
+        mock_response = MagicMock()
+        mock_response.data = [{"id": "inc-1", "payload_purged_at": None, "status": "detected"}]
+
+        with patch("app.services.drift_incident_service.db_service") as mock_db:
+            mock_query = MagicMock()
+            mock_query.select.return_value = mock_query
+            mock_query.eq.return_value = mock_query
+            mock_query.neq.return_value = mock_query
+            mock_query.order.return_value = mock_query
+            mock_query.limit.return_value = mock_query
+            mock_query.execute.return_value = mock_response
+            mock_db.client.table.return_value = mock_query
+
+            service = DriftIncidentService()
+            result = await service.get_active_incident_for_environment(
+                MOCK_TENANT_ID, MOCK_ENVIRONMENT_ID
+            )
+
+            # Verify is_deleted=False filter was applied
+            eq_calls = mock_query.eq.call_args_list
+            assert any("is_deleted" in str(c) for c in eq_calls)
+            assert result is not None
+            assert result["payload_available"] is True
+
+    @pytest.mark.asyncio
+    async def test_get_active_returns_none_when_no_active(self):
+        """Test that None is returned when no active incident exists."""
+        mock_response = MagicMock()
+        mock_response.data = []
+
+        with patch("app.services.drift_incident_service.db_service") as mock_db:
+            mock_query = MagicMock()
+            mock_query.select.return_value = mock_query
+            mock_query.eq.return_value = mock_query
+            mock_query.neq.return_value = mock_query
+            mock_query.order.return_value = mock_query
+            mock_query.limit.return_value = mock_query
+            mock_query.execute.return_value = mock_response
+            mock_db.client.table.return_value = mock_query
+
+            service = DriftIncidentService()
+            result = await service.get_active_incident_for_environment(
+                MOCK_TENANT_ID, MOCK_ENVIRONMENT_ID
+            )
+
+            assert result is None
+
+
+class TestGetIncidentEnrichment:
+    """Tests for get_incident enrichment."""
+
+    @pytest.mark.asyncio
+    async def test_get_incident_returns_enriched_data(self, mock_incident):
+        """Test that get_incident returns enriched data with payload_available."""
+        incident_with_purge = {
+            **mock_incident,
+            "payload_purged_at": "2024-01-01T00:00:00Z",
+        }
+
+        mock_response = MagicMock()
+        mock_response.data = incident_with_purge
+
+        with patch("app.services.drift_incident_service.db_service") as mock_db:
+            mock_query = MagicMock()
+            mock_query.select.return_value = mock_query
+            mock_query.eq.return_value = mock_query
+            mock_query.single.return_value = mock_query
+            mock_query.execute.return_value = mock_response
+            mock_db.client.table.return_value = mock_query
+
+            service = DriftIncidentService()
+            result = await service.get_incident(MOCK_TENANT_ID, MOCK_INCIDENT_ID)
+
+            assert result["payload_available"] is False
+            assert result["is_deleted"] is False

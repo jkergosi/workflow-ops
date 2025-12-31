@@ -4,9 +4,10 @@ import { ReactQueryDevtools } from '@tanstack/react-query-devtools';
 import { AuthProvider, useAuth } from '@/lib/auth';
 import { FeaturesProvider } from '@/lib/features';
 import { ThemeProvider } from '@/components/ThemeProvider';
-import { Toaster } from 'sonner';
+import { Toaster, toast } from 'sonner';
 import { ErrorBoundary } from '@/components/ErrorBoundary';
 import { ServiceStatusIndicator } from '@/components/ServiceStatusIndicator';
+import { useEffect } from 'react';
 import { AppLayout } from '@/components/AppLayout';
 import { LoginPage } from '@/pages/LoginPage';
 import { OnboardingPage } from '@/pages/OnboardingPage';
@@ -170,6 +171,26 @@ function RoleProtectedRoute({ children }: { children: React.ReactNode }) {
 }
 
 function App() {
+  // Listen for service recovery notifications
+  useEffect(() => {
+    const handleServiceRecovery = (event: CustomEvent) => {
+      const { from, to } = event.detail;
+      if (from === 'unhealthy' && (to === 'healthy' || to === 'degraded')) {
+        toast.success('Service recovered', {
+          description: to === 'healthy' 
+            ? 'All systems are now operational' 
+            : 'Some services have recovered',
+          duration: 5000,
+        });
+      }
+    };
+
+    window.addEventListener('service-recovered', handleServiceRecovery as EventListener);
+    return () => {
+      window.removeEventListener('service-recovered', handleServiceRecovery as EventListener);
+    };
+  }, []);
+
   return (
     <ThemeProvider defaultTheme="system" storageKey="n8n-ops-theme">
       <QueryClientProvider client={queryClient}>

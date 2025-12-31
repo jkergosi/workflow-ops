@@ -17,6 +17,8 @@ import {
 } from '@/components/ui/table';
 import { apiClient } from '@/lib/api-client';
 import { useDeploymentsSSE } from '@/lib/use-deployments-sse';
+import { useFeatures } from '@/lib/features';
+import { SmartEmptyState } from '@/components/SmartEmptyState';
 import { Rocket, ArrowRight, Clock, CheckCircle, AlertCircle, XCircle, Loader2, Trash2, Radio, RotateCcw, GitBranch, Plus, Edit, Copy, PlayCircle, PauseCircle } from 'lucide-react';
 import type { Deployment, Pipeline } from '@/types';
 import { Checkbox } from '@/components/ui/checkbox';
@@ -58,6 +60,18 @@ export function DeploymentsPage() {
   const [deploymentToCancel, setDeploymentToCancel] = useState<Deployment | null>(null);
   
   const activeTab = searchParams.get('tab') || 'deployments';
+  
+  // Get plan for terminology suppression (Pipeline: ❌ Free, ⚠️ Pro, ✅ Agency+)
+  const { planName } = useFeatures();
+  const planLower = planName?.toLowerCase() || 'free';
+  const canSeePipelines = planLower !== 'free'; // Free cannot see, Pro+ can see
+  
+  // Redirect free users away from pipelines tab
+  useEffect(() => {
+    if (activeTab === 'pipelines' && !canSeePipelines) {
+      setSearchParams({ tab: 'deployments' }, { replace: true });
+    }
+  }, [activeTab, canSeePipelines, setSearchParams]);
 
   // Force refetch when navigating to this page (e.g., after creating a deployment)
   useEffect(() => {
@@ -71,13 +85,19 @@ export function DeploymentsPage() {
     };
   }, []);
 
-  const { data: deploymentsData, isLoading } = useQuery({
+  const { data: deploymentsData, isLoading, error, refetch } = useQuery({
     queryKey: ['deployments'],
     queryFn: () => apiClient.getDeployments(),
     // SSE handles real-time updates, so we can use longer stale time
     staleTime: 30000, // 30 seconds
     // Only refetch on window focus as a fallback
     refetchOnWindowFocus: true,
+    retry: (failureCount, error) => {
+      // Don't retry on 503 - service is down
+      if ((error as any)?.response?.status === 503) return false;
+      return failureCount < 2;
+    },
+    keepPreviousData: true, // Cached data fallback
   });
 
   // Use SSE for real-time updates (replaces polling)
@@ -366,7 +386,9 @@ export function DeploymentsPage() {
         <div>
           <h1 className="text-3xl font-bold">Deployments</h1>
           <p className="text-muted-foreground">
-            Track workflow deployments and manage pipelines
+            {canSeePipelines 
+              ? 'Track workflow deployments and manage pipelines'
+              : 'Track workflow deployments'}
           </p>
         </div>
         {activeTab === 'deployments' && (
@@ -375,7 +397,7 @@ export function DeploymentsPage() {
             New Deployment
           </Button>
         )}
-        {activeTab === 'pipelines' && (
+        {activeTab === 'pipelines' && canSeePipelines && (
           <Button onClick={() => navigate('/pipelines/new')}>
             <Plus className="h-4 w-4 mr-2" />
             Create Pipeline
@@ -389,10 +411,12 @@ export function DeploymentsPage() {
             <Rocket className="h-4 w-4" />
             Deployments
           </TabsTrigger>
-          <TabsTrigger value="pipelines" className="flex items-center gap-2">
-            <GitBranch className="h-4 w-4" />
-            Pipelines
-          </TabsTrigger>
+          {canSeePipelines && (
+            <TabsTrigger value="pipelines" className="flex items-center gap-2">
+              <GitBranch className="h-4 w-4" />
+              Pipelines
+            </TabsTrigger>
+          )}
         </TabsList>
 
         <TabsContent value="deployments" className="space-y-6">
