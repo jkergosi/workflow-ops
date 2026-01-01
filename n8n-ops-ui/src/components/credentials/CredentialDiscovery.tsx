@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
@@ -7,6 +7,7 @@ import { Button } from '@/components/ui/button';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { apiClient } from '@/lib/api-client';
+import { getDefaultEnvironmentId, sortEnvironments } from '@/lib/environment-utils';
 import { toast } from 'sonner';
 import {
   Search, Key, CheckCircle2, XCircle, Plus, Loader2, RefreshCw, Workflow
@@ -32,6 +33,13 @@ export function CredentialDiscovery({
   });
 
   const environments: Environment[] = envsData?.data || [];
+  const envOptions = sortEnvironments(environments.filter((e) => e.isActive));
+
+  useEffect(() => {
+    if (selectedEnvId) return;
+    const defaultId = getDefaultEnvironmentId(envOptions);
+    if (defaultId) setSelectedEnvId(defaultId);
+  }, [envOptions, selectedEnvId]);
 
   const {
     data: discoveredData,
@@ -144,7 +152,7 @@ export function CredentialDiscovery({
                 <SelectValue placeholder="Select environment..." />
               </SelectTrigger>
               <SelectContent>
-                {environments.map((env) => (
+                {envOptions.map((env) => (
                   <SelectItem key={env.id} value={env.id}>
                     {env.name}
                   </SelectItem>

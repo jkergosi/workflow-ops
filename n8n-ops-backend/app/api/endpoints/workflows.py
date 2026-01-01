@@ -28,25 +28,34 @@ from app.services.background_job_service import (
     BackgroundJobType
 )
 from app.api.endpoints.sse import emit_backup_progress
+from app.services.auth_service import get_current_user
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
-# TODO: Replace with actual tenant ID from authenticated user
+# Fallback tenant ID (should not be used in production)
 MOCK_TENANT_ID = "00000000-0000-0000-0000-000000000000"
+
+
+def get_tenant_id(user_info: dict) -> str:
+    """Extract tenant_id from user_info, with fallback to MOCK_TENANT_ID"""
+    return user_info.get("tenant", {}).get("id", MOCK_TENANT_ID)
 
 
 async def resolve_environment_config(
     environment_id: Optional[str] = None,
-    environment: Optional[str] = None
+    environment: Optional[str] = None,
+    tenant_id: Optional[str] = None
 ) -> Dict[str, Any]:
     """
     Helper function to resolve environment configuration.
     Prefers environment_id, falls back to environment type for backward compatibility.
     """
+    if not tenant_id:
+        tenant_id = MOCK_TENANT_ID
     if environment_id:
-        env_config = await db_service.get_environment(environment_id, MOCK_TENANT_ID)
+        env_config = await db_service.get_environment(environment_id, tenant_id)
         if not env_config:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
@@ -54,7 +63,7 @@ async def resolve_environment_config(
             )
         return env_config
     elif environment:
-        env_config = await db_service.get_environment_by_type(MOCK_TENANT_ID, environment)
+        env_config = await db_service.get_environment_by_type(tenant_id, environment)
         if not env_config:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
@@ -73,6 +82,7 @@ async def get_workflows(
     environment_id: Optional[str] = None,
     environment: Optional[str] = None,  # Deprecated: use environment_id instead
     force_refresh: bool = False,
+    user_info: dict = Depends(get_current_user),
     _: dict = Depends(require_entitlement("workflow_read"))
 ):
     """
@@ -86,12 +96,13 @@ async def get_workflows(
         environment: Environment type string (deprecated, for backward compatibility)
     """
     try:
-        env_config = await resolve_environment_config(environment_id, environment)
+        tenant_id = get_tenant_id(user_info)
+        env_config = await resolve_environment_config(environment_id, environment, tenant_id)
         env_id = env_config.get("id")
 
         # Try to get workflows from cache first (unless force_refresh is requested)
         if not force_refresh:
-            cached_workflows = await db_service.get_workflows(MOCK_TENANT_ID, env_id)
+            cached_workflows = await db_service.get_workflows(tenant_id, env_id)
 
             if cached_workflows is not None:
                 # Transform cached workflows to match frontend expectations (including empty lists)
@@ -143,7 +154,7 @@ async def get_workflows(
 
         # Sync workflows to database cache with analysis
         await db_service.sync_workflows_from_n8n(
-            MOCK_TENANT_ID, 
+            tenant_id, 
             env_id, 
             workflows,
             workflows_with_analysis=workflows_with_analysis if workflows_with_analysis else None
@@ -179,7 +190,7 @@ async def get_workflows(
                         workflow_id = workflow.get("id")
                         try:
                             github_workflow = github_workflow_map.get(workflow_id)
-                            cached_workflow = await db_service.get_workflow(MOCK_TENANT_ID, env_id, workflow_id)
+                            cached_workflow = await db_service.get_workflow(tenant_id, env_id, workflow_id)
                             last_synced_at = cached_workflow.get("last_synced_at") if cached_workflow else None
                             
                             sync_status = compute_sync_status(
@@ -194,7 +205,7 @@ async def get_workflows(
                             
                             # Update in database
                             await db_service.update_workflow_sync_status(
-                                tenant_id=MOCK_TENANT_ID,
+                                tenant_id=tenant_id,
                                 environment_id=env_id,
                                 n8n_workflow_id=workflow_id,
                                 sync_status=sync_status
@@ -242,7 +253,7 @@ async def get_workflows(
         try:
             await db_service.update_environment_workflow_count(
                 environment_id=env_id,
-                tenant_id=MOCK_TENANT_ID,
+                tenant_id=tenant_id,
                 count=len(transformed_workflows)
             )
         except Exception as e:
@@ -273,12 +284,16 @@ def _sanitize_filename(name: str) -> str:
 
 
 @router.get("/download")
-async def download_workflows(environment_id: str):
+async def download_workflows(
+    environment_id: str,
+    user_info: dict = Depends(get_current_user)
+):
     """Download all workflows from an environment as a ZIP file"""
     try:
+        tenant_id = get_tenant_id(user_info)
         print(f"DEBUG: Attempting to download workflows for environment_id: {environment_id}")
         # Get environment configuration by ID
-        env_config = await db_service.get_environment(environment_id, MOCK_TENANT_ID)
+        env_config = await db_service.get_environment(environment_id, tenant_id)
         print(f"DEBUG: Retrieved env_config: {env_config}")
 
         if not env_config:
@@ -375,11 +390,13 @@ async def download_workflows(environment_id: str):
 async def sync_workflows_from_github(
     environment_id: Optional[str] = None,
     environment: Optional[str] = None,  # Deprecated: use environment_id instead
+    user_info: dict = Depends(get_current_user),
     _: dict = Depends(require_entitlement("workflow_push"))
 ):
     """Sync workflows from GitHub to N8N"""
     try:
-        env_config = await resolve_environment_config(environment_id, environment)
+        tenant_id = get_tenant_id(user_info)
+        env_config = await resolve_environment_config(environment_id, environment, tenant_id)
 
         if not env_config:
             raise HTTPException(
@@ -426,7 +443,7 @@ async def sync_workflows_from_github(
                 workflow_data,
                 adapter,
                 None,  # Don't sync back to GitHub
-                MOCK_TENANT_ID,
+                tenant_id,
                 env_config.get("id")
             )
             if result["success"]:
@@ -443,7 +460,7 @@ async def sync_workflows_from_github(
             workflow_id = workflow.get("id")
             try:
                 github_workflow = github_workflow_map.get(workflow_id)
-                cached_workflow = await db_service.get_workflow(MOCK_TENANT_ID, env_config.get("id"), workflow_id)
+                cached_workflow = await db_service.get_workflow(tenant_id, env_config.get("id"), workflow_id)
                 last_synced_at = cached_workflow.get("last_synced_at") if cached_workflow else None
                 
                 sync_status = compute_sync_status(
@@ -456,7 +473,7 @@ async def sync_workflows_from_github(
                 
                 # Update in database
                 await db_service.update_workflow_sync_status(
-                    tenant_id=MOCK_TENANT_ID,
+                    tenant_id=tenant_id,
                     environment_id=env_config.get("id"),
                     n8n_workflow_id=workflow_id,
                     sync_status=sync_status
@@ -601,7 +618,7 @@ async def _backup_workflows_to_github_background(
             try:
                 full_workflow = await adapter.get_workflow(workflow_id)
                 github_workflow = github_workflow_map.get(workflow_id)
-                cached_workflow = await db_service.get_workflow(MOCK_TENANT_ID, env_config.get("id"), workflow_id)
+                cached_workflow = await db_service.get_workflow(tenant_id, env_config.get("id"), workflow_id)
                 last_synced_at = cached_workflow.get("last_synced_at") if cached_workflow else None
                 
                 sync_status = compute_sync_status(
@@ -613,7 +630,7 @@ async def _backup_workflows_to_github_background(
                 )
                 
                 await db_service.update_workflow_sync_status(
-                    tenant_id=MOCK_TENANT_ID,
+                    tenant_id=tenant_id,
                     environment_id=env_config.get("id"),
                     n8n_workflow_id=workflow_id,
                     sync_status=sync_status
@@ -626,7 +643,7 @@ async def _backup_workflows_to_github_background(
         if synced_workflows:
             await db_service.update_environment(
                 env_config.get("id"),
-                MOCK_TENANT_ID,
+                tenant_id,
                 {"last_backup": datetime.utcnow().isoformat()}
             )
 
@@ -745,7 +762,7 @@ async def sync_workflows_to_github(
         user_id = user.get("id", "00000000-0000-0000-0000-000000000000")
         user_role = user.get("role", "user")
         
-        env_config = await resolve_environment_config(environment_id, environment)
+        env_config = await resolve_environment_config(environment_id, environment, tenant_id)
 
         if not env_config:
             raise HTTPException(
@@ -856,7 +873,8 @@ async def sync_workflows_to_github(
 @router.get("/drift", response_model=Dict[str, Any])
 async def get_all_workflows_drift(
     environment_id: Optional[str] = None,
-    environment: Optional[str] = None  # Deprecated: use environment_id instead
+    environment: Optional[str] = None,  # Deprecated: use environment_id instead
+    user_info: dict = Depends(get_current_user)
 ):
     """
     Get drift status for all workflows in the environment.
@@ -865,7 +883,8 @@ async def get_all_workflows_drift(
     Returns aggregated drift analysis for the entire environment.
     """
     try:
-        env_config = await resolve_environment_config(environment_id, environment)
+        tenant_id = get_tenant_id(user_info)
+        env_config = await resolve_environment_config(environment_id, environment, tenant_id)
 
         # Check if GitHub is configured
         if not env_config.get("git_repo_url") or not env_config.get("git_pat"):
@@ -1020,11 +1039,13 @@ async def get_workflow(
     workflow_id: str,
     environment_id: Optional[str] = None,
     environment: Optional[str] = None,  # Deprecated: use environment_id instead
+    user_info: dict = Depends(get_current_user),
     _: dict = Depends(require_entitlement("workflow_read"))
 ):
     """Get a specific workflow by ID"""
     try:
-        env_config = await resolve_environment_config(environment_id, environment)
+        tenant_id = get_tenant_id(user_info)
+        env_config = await resolve_environment_config(environment_id, environment, tenant_id)
 
         if not env_config:
             raise HTTPException(
@@ -1035,7 +1056,7 @@ async def get_workflow(
         env_id = env_config.get("id")
 
         # Try to get workflow from database first (to get analysis)
-        cached_workflow = await db_service.get_workflow(MOCK_TENANT_ID, env_id, workflow_id)
+        cached_workflow = await db_service.get_workflow(tenant_id, env_id, workflow_id)
 
         # Create provider adapter
         adapter = ProviderRegistry.get_adapter_for_environment(env_config)
@@ -1069,7 +1090,7 @@ async def upload_workflows(
     tenant_id = user_info["tenant"]["id"]
 
     try:
-        env_config = await resolve_environment_config(None, environment)
+        env_config = await resolve_environment_config(None, environment, tenant_id)
 
         # Create provider adapter
         adapter = ProviderRegistry.get_adapter_for_environment(env_config)
@@ -1115,7 +1136,7 @@ async def upload_workflows(
                                         workflow_data,
                                         adapter,
                                         github_service,
-                                        MOCK_TENANT_ID,
+                                        tenant_id,
                                         env_config.get("id"),
                                         environment_type=env_type
                                     )
@@ -1131,7 +1152,7 @@ async def upload_workflows(
                         workflow_data,
                         adapter,
                         github_service,
-                        MOCK_TENANT_ID,
+                        tenant_id,
                         env_config.get("id"),
                         environment_type=env_type
                     )
@@ -1227,11 +1248,13 @@ async def activate_workflow(
     workflow_id: str,
     environment_id: Optional[str] = None,
     environment: Optional[str] = None,  # Deprecated: use environment_id instead
+    user_info: dict = Depends(get_current_user),
     _: dict = Depends(require_entitlement("workflow_push"))
 ):
     """Activate a workflow"""
     try:
-        env_config = await resolve_environment_config(environment_id, environment)
+        tenant_id = get_tenant_id(user_info)
+        env_config = await resolve_environment_config(environment_id, environment, tenant_id)
 
         adapter = ProviderRegistry.get_adapter_for_environment(env_config)
 
@@ -1240,7 +1263,7 @@ async def activate_workflow(
         # Update cache with activated workflow
         try:
             await db_service.update_workflow_in_cache(
-                MOCK_TENANT_ID,
+                tenant_id,
                 env_config.get("id"),
                 workflow_id,
                 workflow
@@ -1253,7 +1276,7 @@ async def activate_workflow(
             await create_audit_log(
                 action_type="WORKFLOW_ACTIVATED",
                 action=f"Activated workflow '{workflow.get('name', workflow_id)}'",
-                tenant_id=MOCK_TENANT_ID,
+                tenant_id=tenant_id,
                 resource_type="workflow",
                 resource_id=workflow_id,
                 resource_name=workflow.get("name", workflow_id),
@@ -1284,11 +1307,13 @@ async def deactivate_workflow(
     workflow_id: str,
     environment_id: Optional[str] = None,
     environment: Optional[str] = None,  # Deprecated: use environment_id instead
+    user_info: dict = Depends(get_current_user),
     _: dict = Depends(require_entitlement("workflow_push"))
 ):
     """Deactivate a workflow"""
     try:
-        env_config = await resolve_environment_config(environment_id, environment)
+        tenant_id = get_tenant_id(user_info)
+        env_config = await resolve_environment_config(environment_id, environment, tenant_id)
 
         adapter = ProviderRegistry.get_adapter_for_environment(env_config)
 
@@ -1297,7 +1322,7 @@ async def deactivate_workflow(
         # Update cache with deactivated workflow
         try:
             await db_service.update_workflow_in_cache(
-                MOCK_TENANT_ID,
+                tenant_id,
                 env_config.get("id"),
                 workflow_id,
                 workflow
@@ -1310,7 +1335,7 @@ async def deactivate_workflow(
             await create_audit_log(
                 action_type="WORKFLOW_DEACTIVATED",
                 action=f"Deactivated workflow '{workflow.get('name', workflow_id)}'",
-                tenant_id=MOCK_TENANT_ID,
+                tenant_id=tenant_id,
                 resource_type="workflow",
                 resource_id=workflow_id,
                 resource_name=workflow.get("name", workflow_id),
@@ -1341,12 +1366,14 @@ async def update_workflow_tags(
     workflow_id: str,
     tag_names: List[str] = Body(...),
     environment_id: Optional[str] = None,
-    environment: Optional[str] = None  # Deprecated: use environment_id instead
+    environment: Optional[str] = None,  # Deprecated: use environment_id instead
+    user_info: dict = Depends(get_current_user)
 ):
     """Update workflow tags - expects body: ["tag1", "tag2"]"""
     print(f"DEBUG: update_workflow_tags called with workflow_id={workflow_id}, environment_id={environment_id}, environment={environment}, tag_names={tag_names}")
     try:
-        env_config = await resolve_environment_config(environment_id, environment)
+        tenant_id = get_tenant_id(user_info)
+        env_config = await resolve_environment_config(environment_id, environment, tenant_id)
 
         adapter = ProviderRegistry.get_adapter_for_environment(env_config)
 
@@ -1379,7 +1406,7 @@ async def update_workflow_tags(
             # Fetch the updated workflow from provider to get the complete data
             updated_workflow = await adapter.get_workflow(workflow_id)
             await db_service.update_workflow_in_cache(
-                MOCK_TENANT_ID,
+                tenant_id,
                 env_config.get("id"),
                 workflow_id,
                 updated_workflow
@@ -1404,11 +1431,13 @@ async def update_workflow(
     workflow_data: Dict[str, Any],
     environment_id: Optional[str] = None,
     environment: Optional[str] = None,  # Deprecated: use environment_id instead
+    user_info: dict = Depends(get_current_user),
     _: dict = Depends(require_entitlement("workflow_push"))
 ):
     """Update a workflow (name, active status, tags)"""
     try:
-        env_config = await db_service.get_environment_by_type(MOCK_TENANT_ID, environment)
+        tenant_id = get_tenant_id(user_info)
+        env_config = await resolve_environment_config(environment_id, environment, tenant_id)
 
         if not env_config:
             raise HTTPException(
@@ -1428,7 +1457,7 @@ async def update_workflow(
         # Update cache with modified workflow
         try:
             await db_service.update_workflow_in_cache(
-                MOCK_TENANT_ID,
+                tenant_id,
                 env_config.get("id"),
                 workflow_id,
                 updated_workflow
@@ -1473,11 +1502,13 @@ async def delete_workflow(
     workflow_id: str,
     environment_id: Optional[str] = None,
     environment: Optional[str] = None,  # Deprecated: use environment_id instead
+    user_info: dict = Depends(get_current_user),
     _: dict = Depends(require_entitlement("workflow_push"))
 ):
     """Delete a workflow from provider"""
     try:
-        env_config = await resolve_environment_config(environment_id, environment)
+        tenant_id = get_tenant_id(user_info)
+        env_config = await resolve_environment_config(environment_id, environment, tenant_id)
 
         adapter = ProviderRegistry.get_adapter_for_environment(env_config)
 
@@ -1494,7 +1525,7 @@ async def delete_workflow(
         # Soft delete from cache
         try:
             await db_service.delete_workflow_from_cache(
-                MOCK_TENANT_ID,
+                tenant_id,
                 env_config.get("id"),
                 workflow_id
             )
@@ -1506,7 +1537,7 @@ async def delete_workflow(
             all_workflows = await adapter.get_workflows()
             await db_service.update_environment_workflow_count(
                 environment_id=env_config.get("id"),
-                tenant_id=MOCK_TENANT_ID,
+                tenant_id=tenant_id,
                 count=len(all_workflows)
             )
         except Exception as count_error:
@@ -1517,7 +1548,7 @@ async def delete_workflow(
             await create_audit_log(
                 action_type="WORKFLOW_DELETED",
                 action=f"Deleted workflow '{workflow_name}'",
-                tenant_id=MOCK_TENANT_ID,
+                tenant_id=tenant_id,
                 resource_type="workflow",
                 resource_id=workflow_id,
                 resource_name=workflow_name,
@@ -1555,13 +1586,12 @@ async def archive_workflow(
     Use this for workflows that should be hidden but may need to be restored.
     """
     try:
-        env_config = await resolve_environment_config(environment_id, environment)
+        tenant_id = get_tenant_id(user_info)
+        env_config = await resolve_environment_config(environment_id, environment, tenant_id)
 
         # Extract user info for audit
         user = user_info.get("user", {})
-        tenant = user_info.get("tenant", {})
         user_id = user.get("id")
-        tenant_id = tenant.get("id") or MOCK_TENANT_ID  # Fallback for dev mode
 
         # Archive the workflow in cache
         result = await db_service.archive_workflow(
@@ -1620,11 +1650,8 @@ async def unarchive_workflow(
     Makes the workflow visible again in the default workflow list.
     """
     try:
-        env_config = await resolve_environment_config(environment_id, environment)
-
-        # Extract user info
-        tenant = user_info.get("tenant", {})
-        tenant_id = tenant.get("id") or MOCK_TENANT_ID
+        tenant_id = get_tenant_id(user_info)
+        env_config = await resolve_environment_config(environment_id, environment, tenant_id)
 
         # Unarchive the workflow
         result = await db_service.unarchive_workflow(
@@ -1673,6 +1700,7 @@ async def get_workflow_drift(
     workflow_id: str,
     environment_id: Optional[str] = None,
     environment: Optional[str] = None,  # Deprecated: use environment_id instead
+    user_info: dict = Depends(get_current_user),
     _: dict = Depends(require_entitlement("workflow_dirty_check"))
 ):
     """
@@ -1685,7 +1713,8 @@ async def get_workflow_drift(
     - Summary of changes (nodes added/removed/modified)
     """
     try:
-        env_config = await resolve_environment_config(environment_id, environment)
+        tenant_id = get_tenant_id(user_info)
+        env_config = await resolve_environment_config(environment_id, environment, tenant_id)
 
         # Create provider adapter
         adapter = ProviderRegistry.get_adapter_for_environment(env_config)

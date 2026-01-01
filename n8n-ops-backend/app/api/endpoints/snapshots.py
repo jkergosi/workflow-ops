@@ -33,8 +33,15 @@ class ManualSnapshotRequest(BaseModel):
 
 router = APIRouter()
 
-# TODO: Replace with actual tenant ID from authenticated user
+# Fallback tenant ID (should not be used in production)
 MOCK_TENANT_ID = "00000000-0000-0000-0000-000000000000"
+
+from app.services.auth_service import get_current_user
+
+
+def get_tenant_id(user_info: dict) -> str:
+    """Extract tenant_id from user_info, with fallback to MOCK_TENANT_ID"""
+    return user_info.get("tenant", {}).get("id", MOCK_TENANT_ID)
 
 
 @router.get("/", response_model=List[SnapshotResponse])
@@ -45,6 +52,7 @@ async def get_snapshots(
     to_date: Optional[datetime] = Query(None),
     page: int = Query(1, ge=1),
     page_size: int = Query(50, ge=1, le=100),
+    user_info: dict = Depends(get_current_user),
     _: dict = Depends(require_entitlement("snapshots_enabled"))
 ):
     """
@@ -52,8 +60,9 @@ async def get_snapshots(
     Environment-scoped by default.
     """
     try:
+        tenant_id = get_tenant_id(user_info)
         # Build query
-        query = db_service.client.table("snapshots").select("*").eq("tenant_id", MOCK_TENANT_ID)
+        query = db_service.client.table("snapshots").select("*").eq("tenant_id", tenant_id)
 
         if environment_id:
             query = query.eq("environment_id", environment_id)
@@ -84,17 +93,19 @@ async def get_snapshots(
 @router.get("/{snapshot_id}", response_model=SnapshotResponse)
 async def get_snapshot(
     snapshot_id: str,
+    user_info: dict = Depends(get_current_user),
     _: dict = Depends(require_entitlement("snapshots_enabled"))
 ):
     """
     Get snapshot details including metadata and related deployment.
     """
     try:
+        tenant_id = get_tenant_id(user_info)
         result = (
             db_service.client.table("snapshots")
             .select("*")
             .eq("id", snapshot_id)
-            .eq("tenant_id", MOCK_TENANT_ID)
+            .eq("tenant_id", tenant_id)
             .single()
             .execute()
         )
@@ -127,7 +138,7 @@ async def create_manual_snapshot(
     """
     try:
         environment_id = request.environment_id
-        tenant_id = user_info.get("tenant", {}).get("id", MOCK_TENANT_ID)
+        tenant_id = get_tenant_id(user_info)
         user = user_info.get("user", {})
         user_role = user.get("role", "user")
         
@@ -243,7 +254,7 @@ async def create_manual_snapshot(
         
         snapshot_data = {
             "id": snapshot_id,
-            "tenant_id": MOCK_TENANT_ID,
+            "tenant_id": tenant_id,
             "environment_id": environment_id,
             "git_commit_sha": commit_sha or "",
             "type": SnapshotType.MANUAL_BACKUP.value,
@@ -263,7 +274,7 @@ async def create_manual_snapshot(
         # Emit snapshot.created event
         try:
             await notification_service.emit_event(
-                tenant_id=MOCK_TENANT_ID,
+                tenant_id=tenant_id,
                 event_type="snapshot.created",
                 environment_id=environment_id,
                 metadata={
@@ -308,6 +319,7 @@ class SnapshotComparisonResponse(BaseModel):
 async def compare_snapshots(
     snapshot1: str = Query(..., description="First snapshot ID (older)"),
     snapshot2: str = Query(..., description="Second snapshot ID (newer)"),
+    user_info: dict = Depends(get_current_user),
     _: dict = Depends(require_entitlement("snapshots_enabled"))
 ):
     """
@@ -315,12 +327,13 @@ async def compare_snapshots(
     Shows which workflows were added, removed, or modified between snapshots.
     """
     try:
+        tenant_id = get_tenant_id(user_info)
         # Get both snapshots
         snap1_result = (
             db_service.client.table("snapshots")
             .select("*")
             .eq("id", snapshot1)
-            .eq("tenant_id", MOCK_TENANT_ID)
+            .eq("tenant_id", tenant_id)
             .single()
             .execute()
         )
@@ -329,7 +342,7 @@ async def compare_snapshots(
             db_service.client.table("snapshots")
             .select("*")
             .eq("id", snapshot2)
-            .eq("tenant_id", MOCK_TENANT_ID)
+            .eq("tenant_id", tenant_id)
             .single()
             .execute()
         )
@@ -356,7 +369,7 @@ async def compare_snapshots(
             )
 
         # Get environment config
-        env_config = await db_service.get_environment(snap1["environment_id"], MOCK_TENANT_ID)
+        env_config = await db_service.get_environment(snap1["environment_id"], tenant_id)
         if not env_config:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,

@@ -3,8 +3,9 @@ from fastapi import APIRouter, HTTPException, status, Depends, Query
 from typing import List
 
 from app.services.auth_service import get_current_user
-from app.services.feature_service import feature_service
 from app.services.database import db_service
+from app.core.entitlements_gate import require_entitlement
+from app.services.entitlements_service import entitlements_service
 from app.schemas.drift_policy import (
     DriftPolicyCreate,
     DriftPolicyUpdate,
@@ -18,21 +19,10 @@ router = APIRouter()
 @router.get("/", response_model=DriftPolicyResponse)
 async def get_policy(
     user_info: dict = Depends(get_current_user),
+    _: dict = Depends(require_entitlement("drift_policies")),
 ):
     """Get the drift policy for the tenant (creates default if none exists)."""
     tenant_id = user_info["tenant"]["id"]
-
-    # Check feature access for drift policies
-    can_use, message = await feature_service.can_use_feature(tenant_id, "drift_policies")
-    if not can_use:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail={
-                "error": "feature_not_available",
-                "feature": "drift_policies",
-                "message": message,
-            },
-        )
 
     try:
         response = db_service.client.table("drift_policies").select(
@@ -42,11 +32,8 @@ async def get_policy(
         if response.data and len(response.data) > 0:
             return DriftPolicyResponse(**response.data[0])
 
-        # Create default policy if none exists
-        # Get plan to set plan-based retention defaults
-        from app.services.feature_service import feature_service
-        subscription = await feature_service.get_tenant_subscription(tenant_id)
-        plan = subscription.get("plan", {}).get("name", "free").lower() if subscription else "free"
+        entitlements = await entitlements_service.get_tenant_entitlements(tenant_id)
+        plan = (entitlements.get("plan_name") or "free").lower()
         
         # Get plan-based retention defaults
         from app.services.drift_retention_service import drift_retention_service
@@ -88,21 +75,10 @@ async def get_policy(
 async def create_policy(
     payload: DriftPolicyCreate,
     user_info: dict = Depends(get_current_user),
+    _: dict = Depends(require_entitlement("drift_policies")),
 ):
     """Create or replace the drift policy for the tenant."""
     tenant_id = user_info["tenant"]["id"]
-
-    # Check feature access
-    can_use, message = await feature_service.can_use_feature(tenant_id, "drift_policies")
-    if not can_use:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail={
-                "error": "feature_not_available",
-                "feature": "drift_policies",
-                "message": message,
-            },
-        )
 
     try:
         # Upsert the policy (one per tenant)
@@ -137,21 +113,10 @@ async def create_policy(
 async def update_policy(
     payload: DriftPolicyUpdate,
     user_info: dict = Depends(get_current_user),
+    _: dict = Depends(require_entitlement("drift_policies")),
 ):
     """Update the drift policy for the tenant."""
     tenant_id = user_info["tenant"]["id"]
-
-    # Check feature access
-    can_use, message = await feature_service.can_use_feature(tenant_id, "drift_policies")
-    if not can_use:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail={
-                "error": "feature_not_available",
-                "feature": "drift_policies",
-                "message": message,
-            },
-        )
 
     try:
         # Get existing policy first
@@ -195,21 +160,10 @@ async def update_policy(
 @router.get("/templates", response_model=List[DriftPolicyTemplateResponse])
 async def list_templates(
     user_info: dict = Depends(get_current_user),
+    _: dict = Depends(require_entitlement("drift_policies")),
 ):
     """List available policy templates."""
     tenant_id = user_info["tenant"]["id"]
-
-    # Check feature access
-    can_use, message = await feature_service.can_use_feature(tenant_id, "drift_policies")
-    if not can_use:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail={
-                "error": "feature_not_available",
-                "feature": "drift_policies",
-                "message": message,
-            },
-        )
 
     try:
         response = db_service.client.table("drift_policy_templates").select(
@@ -228,6 +182,7 @@ async def list_templates(
 @router.post("/cleanup", status_code=status.HTTP_200_OK)
 async def trigger_cleanup(
     user_info: dict = Depends(get_current_user),
+    _: dict = Depends(require_entitlement("drift_policies")),
 ):
     """
     Manually trigger retention cleanup for the tenant.
@@ -236,18 +191,6 @@ async def trigger_cleanup(
     Useful for testing or immediate cleanup.
     """
     tenant_id = user_info["tenant"]["id"]
-
-    # Check feature access
-    can_use, message = await feature_service.can_use_feature(tenant_id, "drift_policies")
-    if not can_use:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail={
-                "error": "feature_not_available",
-                "feature": "drift_policies",
-                "message": message,
-            },
-        )
 
     try:
         from app.services.drift_retention_service import drift_retention_service
@@ -270,21 +213,10 @@ async def trigger_cleanup(
 async def apply_template(
     template_id: str,
     user_info: dict = Depends(get_current_user),
+    _: dict = Depends(require_entitlement("drift_policies")),
 ):
     """Apply a policy template to the tenant."""
     tenant_id = user_info["tenant"]["id"]
-
-    # Check feature access
-    can_use, message = await feature_service.can_use_feature(tenant_id, "drift_policies")
-    if not can_use:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail={
-                "error": "feature_not_available",
-                "feature": "drift_policies",
-                "message": message,
-            },
-        )
 
     try:
         # Get the template

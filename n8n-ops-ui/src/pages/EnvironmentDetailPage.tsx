@@ -737,8 +737,8 @@ export function EnvironmentDetailPage() {
   const envState =
     environment.activeDriftIncidentId ? 'DRIFT_INCIDENT_ACTIVE' : (environment.driftStatus || 'IN_SYNC');
   const envStateLabel =
-    envState === 'DRIFT_INCIDENT_ACTIVE' ? 'Drift Incident Active' :
-    envState === 'DRIFT_DETECTED' ? 'Drift Detected' :
+    envState === 'DRIFT_INCIDENT_ACTIVE' ? (canUseDriftIncidents ? 'Drift Incident Active' : 'Changes Detected') :
+    envState === 'DRIFT_DETECTED' ? (canUseDriftIncidents ? 'Drift Detected' : 'Changes Detected') :
     'In Sync';
 
   useEffect(() => {
@@ -803,7 +803,7 @@ export function EnvironmentDetailPage() {
           </div>
         </div>
         <div className="flex items-center gap-2">
-          {envState === 'DRIFT_INCIDENT_ACTIVE' && environment.activeDriftIncidentId && (
+          {envState === 'DRIFT_INCIDENT_ACTIVE' && environment.activeDriftIncidentId && canUseDriftIncidents && (
             <Button asChild variant="default">
               <Link to={`/incidents/${environment.activeDriftIncidentId}`}>
                 View Drift Incident
@@ -1044,7 +1044,7 @@ export function EnvironmentDetailPage() {
                   )}
                 </div>
                 <div className="flex items-center gap-2">
-                  {envState === 'DRIFT_INCIDENT_ACTIVE' && environment.activeDriftIncidentId && (
+                  {envState === 'DRIFT_INCIDENT_ACTIVE' && environment.activeDriftIncidentId && canUseDriftIncidents && (
                     <Button asChild>
                       <Link to={`/incidents/${environment.activeDriftIncidentId}`}>
                         View Drift Incident
@@ -1067,8 +1067,8 @@ export function EnvironmentDetailPage() {
                         Create Drift Incident
                       </Button>
                     ) : (
-                      <Button variant="outline" onClick={() => toast.info('Upgrade to Agency+ to use Drift Incidents')}>
-                        Manage Drift
+                      <Button variant="outline" onClick={() => toast.info('Advanced governance features available on Agency+ plans')}>
+                        View Changes
                       </Button>
                     )
                   )}

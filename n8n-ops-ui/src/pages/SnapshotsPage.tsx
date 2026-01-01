@@ -1,6 +1,6 @@
 // @ts-nocheck
 // TODO: Fix TypeScript errors in this file
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useSearchParams, Link } from 'react-router-dom';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
@@ -47,6 +47,8 @@ import { Camera, History, RotateCcw, Loader2, Eye, Plus, GitCompare, ArrowRight,
 import { toast } from 'sonner';
 import { apiClient } from '@/lib/api-client';
 import { useAppStore } from '@/store/use-app-store';
+import { getDefaultEnvironmentId, resolveEnvironment, sortEnvironments } from '@/lib/environment-utils';
+import { useFeatures } from '@/lib/features';
 import type { Snapshot, SnapshotComparison } from '@/types';
 
 export function SnapshotsPage() {
@@ -59,9 +61,12 @@ export function SnapshotsPage() {
   const queryClient = useQueryClient();
   const [searchParams, setSearchParams] = useSearchParams();
   const selectedEnvironment = useAppStore((state) => state.selectedEnvironment);
+  const { planName, isLoading: loadingFeatures } = useFeatures();
+  const planLower = planName?.toLowerCase() || 'free';
   const [selectedSnapshot, setSelectedSnapshot] = useState<Snapshot | null>(null);
   const [restoreSnapshot, setRestoreSnapshot] = useState<Snapshot | null>(null);
   const [detailDialogOpen, setDetailDialogOpen] = useState(false);
+  const [showRestoreUpsell, setShowRestoreUpsell] = useState(false);
   
   // Create snapshot state
   const [createDialogOpen, setCreateDialogOpen] = useState(false);
@@ -83,8 +88,25 @@ export function SnapshotsPage() {
     queryFn: () => apiClient.getEnvironments(),
   });
 
-  // Get current environment ID (use selectedEnvironment or first available)
-  const currentEnvironmentId = selectedEnvironment || environments?.data?.[0]?.id;
+  const availableEnvironments = useMemo(() => {
+    if (!environments?.data) return [];
+    return sortEnvironments(environments.data.filter((env) => env.isActive));
+  }, [environments?.data]);
+
+  const currentEnvironment = useMemo(
+    () => resolveEnvironment(availableEnvironments, selectedEnvironment),
+    [availableEnvironments, selectedEnvironment]
+  );
+
+  // Get current environment ID (default to dev, normalize legacy type selections to id)
+  const currentEnvironmentId = currentEnvironment?.id || getDefaultEnvironmentId(availableEnvironments);
+
+  useEffect(() => {
+    if (!currentEnvironmentId) return;
+    if (selectedEnvironment !== currentEnvironmentId) {
+      useAppStore.getState().setSelectedEnvironment(currentEnvironmentId);
+    }
+  }, [currentEnvironmentId, selectedEnvironment]);
 
   // Fetch snapshots for current environment
   const { data: snapshots, isLoading } = useQuery({
@@ -192,6 +214,10 @@ export function SnapshotsPage() {
   };
 
   const handleRestore = (snapshot: Snapshot) => {
+    if (!loadingFeatures && planLower === 'free') {
+      setShowRestoreUpsell(true);
+      return;
+    }
     setRestoreSnapshot(snapshot);
   };
 
@@ -235,6 +261,40 @@ export function SnapshotsPage() {
   };
 
   const snapshotsList = snapshots?.data || [];
+
+  if (!loadingFeatures && planLower === 'free' && !isLoading && snapshotsList.length === 0) {
+    return (
+      <div className="space-y-6">
+        <div className="flex items-center justify-between">
+          <div>
+            <h1 className="text-3xl font-bold">Snapshots</h1>
+            <p className="text-muted-foreground">
+              Version control and rollback for your workflows
+            </p>
+          </div>
+        </div>
+
+        <Card>
+          <CardContent className="py-12">
+            <div className="max-w-2xl">
+              <div className="text-xl font-semibold">Snapshots protect your workflows</div>
+              <div className="text-muted-foreground mt-2">
+                Upgrade to enable automatic snapshots and one-click restore when something breaks.
+              </div>
+              <div className="flex flex-col sm:flex-row gap-2 mt-6">
+                <Link to="/billing">
+                  <Button>Upgrade to Pro</Button>
+                </Link>
+                <Link to="/environments">
+                  <Button variant="outline">Manual Git backup</Button>
+                </Link>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-6">
@@ -295,7 +355,7 @@ export function SnapshotsPage() {
       </div>
 
       {/* Environment Selector */}
-      {environments?.data && environments.data.length > 1 && (
+      {availableEnvironments.length > 1 && (
         <Card>
           <CardHeader>
             <CardTitle className="text-sm">Environment</CardTitle>
@@ -311,7 +371,7 @@ export function SnapshotsPage() {
                 <SelectValue placeholder="Select environment" />
               </SelectTrigger>
               <SelectContent>
-                {environments.data.map((env) => (
+                {availableEnvironments.map((env) => (
                   <SelectItem key={env.id} value={env.id}>
                     {env.name}
                   </SelectItem>
@@ -336,6 +396,19 @@ export function SnapshotsPage() {
           </CardDescription>
         </CardHeader>
         <CardContent>
+          {showRestoreUpsell && !loadingFeatures && planLower === 'free' && (
+            <div className="mb-4 rounded-md border p-4">
+              <div className="font-semibold">Restore requires snapshots</div>
+              <div className="text-sm text-muted-foreground mt-1">
+                Pro enables snapshots and one-click restore so you can undo mistakes instantly.
+              </div>
+              <div className="mt-3">
+                <Link to="/billing">
+                  <Button>Upgrade to Pro</Button>
+                </Link>
+              </div>
+            </div>
+          )}
           {!currentEnvironmentId ? (
             <p className="text-muted-foreground text-center py-8">
               Select an environment above to view its snapshot history

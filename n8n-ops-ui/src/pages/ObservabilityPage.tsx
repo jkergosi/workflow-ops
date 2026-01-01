@@ -24,6 +24,7 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/comp
 import { apiClient } from '@/lib/api-client';
 import { api } from '@/lib/api';
 import { useAppStore } from '@/store/use-app-store';
+import { getDefaultEnvironmentId, resolveEnvironment, sortEnvironments } from '@/lib/environment-utils';
 import type {
   TimeRange,
   EnvironmentStatus,
@@ -190,13 +191,24 @@ export function ObservabilityPage() {
     },
   });
 
-  // Get current environment ID
-  const currentEnvironmentId = useMemo(() => {
-    const envData = environments?.data;
-    if (!envData) return undefined;
-    const env = envData.find((e: { id: string; type?: string }) => e.type === selectedEnvironment);
-    return env?.id;
-  }, [environments, selectedEnvironment]);
+  const availableEnvironments = useMemo(() => {
+    if (!environments?.data) return [];
+    return sortEnvironments(environments.data.filter((env: any) => env.isActive));
+  }, [environments?.data]);
+
+  const currentEnvironment = useMemo(
+    () => resolveEnvironment(availableEnvironments, selectedEnvironment),
+    [availableEnvironments, selectedEnvironment]
+  );
+  const currentEnvironmentId = currentEnvironment?.id;
+
+  useEffect(() => {
+    if (availableEnvironments.length === 0) return;
+    const nextId = currentEnvironment?.id || getDefaultEnvironmentId(availableEnvironments);
+    if (nextId && selectedEnvironment !== nextId) {
+      setSelectedEnvironment(nextId);
+    }
+  }, [availableEnvironments, currentEnvironment?.id, selectedEnvironment, setSelectedEnvironment]);
 
   const { data: overview, isLoading, error, refetch, isFetching } = useQuery({
     queryKey: ['observability-overview', timeRange, currentEnvironmentId],
@@ -212,11 +224,12 @@ export function ObservabilityPage() {
 
   // Filter environment health by selected environment
   const filteredEnvHealth = useMemo(() => {
-    if (!selectedEnvironment) {
+    const envKey = currentEnvironment?.environmentClass || currentEnvironment?.type;
+    if (!envKey) {
       return envHealth || [];
     }
-    return (envHealth || []).filter((env) => env.environmentType === selectedEnvironment);
-  }, [envHealth, selectedEnvironment]);
+    return (envHealth || []).filter((env) => env.environmentType === envKey);
+  }, [envHealth, currentEnvironment?.environmentClass, currentEnvironment?.type]);
 
   // Sort workflows based on sortBy
   const sortedWorkflows = useMemo(() => {
@@ -261,7 +274,7 @@ export function ObservabilityPage() {
           <div>
             <h1 className="text-3xl font-bold">Observability</h1>
             <p className="text-muted-foreground text-sm mt-1">
-              Active filters: {selectedEnvironment || 'all'} · {TIME_RANGE_OPTIONS.find(o => o.value === timeRange)?.label}
+              Active filters: {currentEnvironment?.name || '—'} · {TIME_RANGE_OPTIONS.find(o => o.value === timeRange)?.label}
             </p>
           </div>
           <div className="flex items-center gap-4">
@@ -269,16 +282,16 @@ export function ObservabilityPage() {
               <Label htmlFor="environment" className="sr-only">Environment</Label>
               <select
                 id="environment"
-                value={selectedEnvironment || ''}
+                value={currentEnvironmentId || ''}
                 onChange={(e) => setSelectedEnvironment(e.target.value as EnvironmentType)}
                 className="flex h-9 w-[180px] rounded-md border border-input bg-background text-foreground px-3 py-1 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-                disabled={!environments?.data || (environments.data as Array<{id: string; name: string; type?: string}>).length === 0}
+                disabled={availableEnvironments.length === 0}
               >
-                {!environments?.data || (environments.data as Array<{id: string; name: string; type?: string}>).length === 0 ? (
+                {availableEnvironments.length === 0 ? (
                   <option value="" className="bg-background text-foreground">No environments</option>
                 ) : (
-                  (environments.data as Array<{id: string; name: string; type?: string}>).map((env) => (
-                    <option key={env.id} value={env.type || ''} className="bg-background text-foreground">
+                  availableEnvironments.map((env: any) => (
+                    <option key={env.id} value={env.id} className="bg-background text-foreground">
                       {env.name}
                     </option>
                   ))

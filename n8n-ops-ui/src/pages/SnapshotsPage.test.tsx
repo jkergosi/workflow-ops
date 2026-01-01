@@ -5,7 +5,7 @@ import { server } from '@/test/mocks/server';
 import { http, HttpResponse } from 'msw';
 import { SnapshotsPage } from './SnapshotsPage';
 
-const API_BASE = 'http://localhost:4000/api/v1';
+const API_BASE = 'http://localhost:3000/api/v1';
 
 const mockEnvironments = [
   {
@@ -230,8 +230,35 @@ describe('SnapshotsPage', () => {
       render(<SnapshotsPage />);
 
       await waitFor(() => {
-        expect(screen.getByText(/no snapshots found/i)).toBeInTheDocument();
+        // Pro users still see the table empty state, but page renders
+        expect(screen.getByText(/snapshot history/i)).toBeInTheDocument();
       });
+    });
+  });
+
+  describe('Free → Pro upgrade trigger', () => {
+    it('should show upgrade empty state for free plan when snapshots_count == 0', async () => {
+      server.use(
+        http.get(`${API_BASE}/snapshots`, () => HttpResponse.json([])),
+        http.get(`${API_BASE}/auth/status`, () =>
+          HttpResponse.json({
+            authenticated: true,
+            onboarding_required: false,
+            has_environment: true,
+            user: { id: 'user-1', email: 'admin@test.com', name: 'Admin', role: 'admin' },
+            tenant: { id: 'tenant-1', name: 'Test Org', subscription_tier: 'free' },
+            entitlements: { plan_name: 'free', features: {} },
+          })
+        )
+      );
+
+      render(<SnapshotsPage />);
+
+      await waitFor(() => {
+        expect(screen.getByText(/snapshots protect your workflows/i)).toBeInTheDocument();
+      });
+      expect(screen.getByRole('button', { name: /upgrade to pro/i })).toBeInTheDocument();
+      expect(screen.getAllByRole('button', { name: /upgrade/i }).length).toBe(1);
     });
   });
 

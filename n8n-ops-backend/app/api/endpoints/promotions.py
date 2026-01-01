@@ -63,12 +63,11 @@ async def check_drift_policy_blocking(
     - reason: str - reason for blocking (if blocked)
     - details: dict - additional details about the block
     """
-    from app.services.feature_service import feature_service
+    from app.services.entitlements_service import entitlements_service
 
     try:
-        # Check if tenant has drift_policies feature
-        can_use_policies, _ = await feature_service.can_use_feature(tenant_id, "drift_policies")
-        if not can_use_policies:
+        # Check if tenant has drift_policies entitlement
+        if not await entitlements_service.has_flag(tenant_id, "drift_policies"):
             # No policy feature = no blocking
             return {"blocked": False, "reason": None, "details": {}}
 
@@ -154,8 +153,13 @@ async def check_drift_policy_blocking(
         # On error, don't block - fail open
         return {"blocked": False, "reason": None, "details": {"error": str(e)}}
 
-# TODO: Replace with actual tenant ID from authenticated user
+# Fallback tenant ID (should not be used in production)
 MOCK_TENANT_ID = "00000000-0000-0000-0000-000000000000"
+
+
+def get_tenant_id(user_info: dict) -> str:
+    """Extract tenant_id from user_info, with fallback to MOCK_TENANT_ID"""
+    return user_info.get("tenant", {}).get("id", MOCK_TENANT_ID)
 
 
 @router.post("/initiate", response_model=PromotionInitiateResponse)
@@ -169,7 +173,7 @@ async def initiate_deployment(
     Heavy operations (snapshots, drift checks) are done during execution.
     """
     try:
-        tenant_id = user_info.get("tenant", {}).get("id", MOCK_TENANT_ID)
+        tenant_id = get_tenant_id(user_info)
         user = user_info.get("user", {})
         user_role = user.get("role", "user")
         
@@ -375,7 +379,8 @@ async def _execute_promotion_background(
     promotion: dict,
     source_env: dict,
     target_env: dict,
-    selected_workflows: list
+    selected_workflows: list,
+    tenant_id: str
 ):
     """
     Background task to execute promotion - transfers workflows from source to target.
@@ -550,7 +555,7 @@ async def _execute_promotion_background(
                     progress_current=idx,
                     progress_total=total_workflows,
                     current_workflow_name=workflow_name,
-                    tenant_id=MOCK_TENANT_ID
+                    tenant_id=tenant_id
                 )
             except Exception as sse_error:
                 logger.warning(f"Failed to emit SSE progress event: {str(sse_error)}")
@@ -580,16 +585,16 @@ async def _execute_promotion_background(
         # Emit SSE events for deployment completion
         try:
             # Fetch updated deployment for full data
-            updated_deployment = await db_service.get_deployment(deployment_id, MOCK_TENANT_ID)
+            updated_deployment = await db_service.get_deployment(deployment_id, tenant_id)
             if updated_deployment:
-                await emit_deployment_upsert(updated_deployment, MOCK_TENANT_ID)
-            await emit_counts_update(MOCK_TENANT_ID)
+                await emit_deployment_upsert(updated_deployment, tenant_id)
+            await emit_counts_update(tenant_id)
         except Exception as sse_error:
             logger.warning(f"Failed to emit SSE event for deployment completion: {str(sse_error)}")
 
         # Update promotion as completed
         promotion_status = "completed" if failed_count == 0 else "failed"
-        await db_service.update_promotion(promotion_id, MOCK_TENANT_ID, {
+        await db_service.update_promotion(promotion_id, tenant_id, {
             "status": promotion_status,
             "completed_at": datetime.utcnow().isoformat()
         })
@@ -623,7 +628,7 @@ async def _execute_promotion_background(
         
         # Update promotion and deployment status to failed
         try:
-            await db_service.update_promotion(promotion_id, MOCK_TENANT_ID, {
+            await db_service.update_promotion(promotion_id, tenant_id, {
                 "status": "failed",
                 "completed_at": datetime.utcnow().isoformat()
             })
@@ -642,10 +647,10 @@ async def _execute_promotion_background(
             })
             # Emit SSE events for deployment failure
             try:
-                updated_deployment = await db_service.get_deployment(deployment_id, MOCK_TENANT_ID)
+                updated_deployment = await db_service.get_deployment(deployment_id, tenant_id)
                 if updated_deployment:
-                    await emit_deployment_upsert(updated_deployment, MOCK_TENANT_ID)
-                await emit_counts_update(MOCK_TENANT_ID)
+                    await emit_deployment_upsert(updated_deployment, tenant_id)
+                await emit_counts_update(tenant_id)
             except Exception as sse_error:
                 logger.warning(f"Failed to emit SSE event for deployment failure: {str(sse_error)}")
         except Exception as update_error:
@@ -657,6 +662,7 @@ async def execute_deployment(
     deployment_id: str,
     request: Optional[PromotionExecuteRequest] = None,
     background_tasks: BackgroundTasks = None,
+    user_info: dict = Depends(get_current_user),
     _: None = Depends(require_entitlement("workflow_ci_cd"))
 ):
     """
@@ -679,12 +685,13 @@ async def execute_deployment(
             )
 
     try:
+        tenant_id = get_tenant_id(user_info)
         # The deployment_id parameter is actually the promotion_id from the initiate step
         # We'll create a new deployment_id later, so alias this correctly
         promotion_id = deployment_id
 
         # Get promotion record (still uses promotion_id in DB)
-        promotion = await db_service.get_promotion(promotion_id, MOCK_TENANT_ID)
+        promotion = await db_service.get_promotion(promotion_id, tenant_id)
         if not promotion:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
@@ -699,8 +706,8 @@ async def execute_deployment(
             )
 
         # Get source and target environments
-        source_env = await db_service.get_environment(promotion.get("source_environment_id"), MOCK_TENANT_ID)
-        target_env = await db_service.get_environment(promotion.get("target_environment_id"), MOCK_TENANT_ID)
+        source_env = await db_service.get_environment(promotion.get("source_environment_id"), tenant_id)
+        target_env = await db_service.get_environment(promotion.get("target_environment_id"), tenant_id)
 
         if not source_env or not target_env:
             raise HTTPException(
@@ -710,7 +717,7 @@ async def execute_deployment(
 
         # Re-check drift policy blocking before execution (may have changed since initiation)
         drift_block = await check_drift_policy_blocking(
-            tenant_id=MOCK_TENANT_ID,
+            tenant_id=tenant_id,
             target_environment_id=promotion.get("target_environment_id")
         )
         if drift_block.get("blocked"):
@@ -735,7 +742,7 @@ async def execute_deployment(
 
         # Create background job (link to both promotion and deployment)
         job = await background_job_service.create_job(
-            tenant_id=MOCK_TENANT_ID,
+            tenant_id=tenant_id,
             job_type=BackgroundJobType.PROMOTION_EXECUTE,
             resource_id=promotion_id,
             resource_type="promotion",
@@ -756,18 +763,18 @@ async def execute_deployment(
         # Update promotion status
         if is_scheduled:
             # Keep promotion as pending until scheduled execution
-            await db_service.update_promotion(promotion_id, MOCK_TENANT_ID, {
+            await db_service.update_promotion(promotion_id, tenant_id, {
                 "status": PromotionStatus.PENDING.value,
                 "scheduled_at": scheduled_at.isoformat() if scheduled_at else None
             })
         else:
-            await db_service.update_promotion(promotion_id, MOCK_TENANT_ID, {"status": "running"})
+            await db_service.update_promotion(promotion_id, tenant_id, {"status": "running"})
 
         # Create deployment record
         deployment_id = str(uuid4())
         deployment_data = {
             "id": deployment_id,
-            "tenant_id": MOCK_TENANT_ID,
+            "tenant_id": tenant_id,
             "pipeline_id": promotion.get("pipeline_id"),
             "source_environment_id": promotion.get("source_environment_id"),
             "target_environment_id": promotion.get("target_environment_id"),
@@ -812,8 +819,8 @@ async def execute_deployment(
 
         # Emit SSE events for new deployment
         try:
-            await emit_deployment_upsert(deployment_data, MOCK_TENANT_ID)
-            await emit_counts_update(MOCK_TENANT_ID)
+            await emit_deployment_upsert(deployment_data, tenant_id)
+            await emit_counts_update(tenant_id)
         except Exception as sse_error:
             logger.warning(f"Failed to emit SSE event for deployment creation: {str(sse_error)}")
 
@@ -824,7 +831,7 @@ async def execute_deployment(
                 action_type="DEPLOYMENT_CREATED",
                 action=f"Created deployment for {len(selected_workflows)} workflow(s)",
                 actor_id=promotion.get("created_by") or "00000000-0000-0000-0000-000000000000",
-                tenant_id=MOCK_TENANT_ID,
+                tenant_id=tenant_id,
                 resource_type="deployment",
                 resource_id=deployment_id,
                 resource_name=f"Deployment {deployment_id[:8]}",
@@ -866,7 +873,8 @@ async def execute_deployment(
                         promotion=promotion,
                         source_env=source_env,
                         target_env=target_env,
-                        selected_workflows=selected_workflows
+                        selected_workflows=selected_workflows,
+                        tenant_id=tenant_id
                     )
                 )
             else:
@@ -908,7 +916,7 @@ async def execute_deployment(
     except Exception as e:
         # Update promotion status to failed
         try:
-            await db_service.update_promotion(promotion_id, MOCK_TENANT_ID, {
+            await db_service.update_promotion(promotion_id, tenant_id, {
                 "status": "failed",
                 "completed_at": datetime.utcnow().isoformat()
             })
@@ -924,17 +932,19 @@ async def execute_deployment(
 @router.get("/{promotion_id}/job")
 async def get_promotion_job(
     promotion_id: str,
+    user_info: dict = Depends(get_current_user),
     _: None = Depends(require_entitlement("workflow_ci_cd"))
 ):
     """
     Get the latest background job status for a promotion execution.
     """
     try:
+        tenant_id = get_tenant_id(user_info)
         # Get the latest job for this promotion
         job = await background_job_service.get_latest_job_by_resource(
             resource_type="promotion",
             resource_id=promotion_id,
-            tenant_id=MOCK_TENANT_ID
+            tenant_id=tenant_id
         )
 
         if not job:
@@ -970,6 +980,7 @@ async def get_promotion_job(
 async def approve_deployment(
     deployment_id: str,
     request: PromotionApprovalRequest,
+    user_info: dict = Depends(get_current_user),
     _: None = Depends(require_entitlement("workflow_ci_cd"))
 ):
     """
@@ -977,8 +988,9 @@ async def approve_deployment(
     Supports multi-approver workflows (1 of N / All).
     """
     try:
+        tenant_id = get_tenant_id(user_info)
         # Get promotion (still uses promotion_id in DB)
-        promotion = await db_service.get_promotion(deployment_id, MOCK_TENANT_ID)
+        promotion = await db_service.get_promotion(deployment_id, tenant_id)
         if not promotion:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
@@ -992,7 +1004,7 @@ async def approve_deployment(
             )
         
         # Get pipeline and stage for approval requirements
-        pipeline = await db_service.get_pipeline(promotion.get("pipeline_id"), MOCK_TENANT_ID)
+        pipeline = await db_service.get_pipeline(promotion.get("pipeline_id"), tenant_id)
         if not pipeline:
             raise HTTPException(status_code=404, detail="Pipeline not found")
         
@@ -1023,7 +1035,7 @@ async def approve_deployment(
                 )
             
             # Update promotion to rejected
-            await db_service.update_promotion(promotion_id, MOCK_TENANT_ID, {
+            await db_service.update_promotion(promotion_id, tenant_id, {
                 "status": "rejected",
                 "rejection_reason": request.comment,
                 "rejected_by": approver_id,
@@ -1034,7 +1046,7 @@ async def approve_deployment(
             # Emit promotion.blocked event for rejection
             try:
                 await notification_service.emit_event(
-                    tenant_id=MOCK_TENANT_ID,
+                    tenant_id=tenant_id,
                     event_type="promotion.blocked",
                     environment_id=promotion.get("target_environment_id"),
                     metadata={
@@ -1052,7 +1064,7 @@ async def approve_deployment(
             
             # Create audit log
             await promotion_service._create_audit_log(
-                tenant_id=MOCK_TENANT_ID,
+                tenant_id=tenant_id,
                 promotion_id=promotion_id,
                 action="reject",
                 result={"reason": request.comment, "rejected_by": approver_id}
@@ -1099,14 +1111,14 @@ async def approve_deployment(
         
         if needs_more_approvals:
             # Update promotion with approval but keep pending
-            await db_service.update_promotion(promotion_id, MOCK_TENANT_ID, {
+            await db_service.update_promotion(promotion_id, tenant_id, {
                 "approvals": existing_approvals,
                 "updated_at": datetime.utcnow().isoformat()
             })
             
             # Create audit log
             await promotion_service._create_audit_log(
-                tenant_id=MOCK_TENANT_ID,
+                tenant_id=tenant_id,
                 promotion_id=promotion_id,
                 action="approve",
                 result={"approval_count": approval_count, "approver": approver_id}
@@ -1121,7 +1133,7 @@ async def approve_deployment(
             }
         else:
             # All approvals received - update to approved
-            await db_service.update_promotion(promotion_id, MOCK_TENANT_ID, {
+            await db_service.update_promotion(promotion_id, tenant_id, {
                 "status": "approved",
                 "approvals": existing_approvals,
                 "approved_by": approver_id,
@@ -1131,7 +1143,7 @@ async def approve_deployment(
             
             # Create audit log
             await promotion_service._create_audit_log(
-                tenant_id=MOCK_TENANT_ID,
+                tenant_id=tenant_id,
                 promotion_id=promotion_id,
                 action="approve_final",
                 result={"approval_count": approval_count, "approver": approver_id, "all_approvals_received": True}
@@ -1141,13 +1153,13 @@ async def approve_deployment(
             try:
                 # Call execute_promotion directly (avoid circular import)
                 # Get promotion again to ensure we have latest data
-                updated_promotion = await db_service.get_promotion(promotion_id, MOCK_TENANT_ID)
+                updated_promotion = await db_service.get_promotion(promotion_id, tenant_id)
                 
                 # Update status to running
-                await db_service.update_promotion(promotion_id, MOCK_TENANT_ID, {"status": "running"})
+                await db_service.update_promotion(promotion_id, tenant_id, {"status": "running"})
                 
                 # Get pipeline and stage
-                pipeline = await db_service.get_pipeline(updated_promotion.get("pipeline_id"), MOCK_TENANT_ID)
+                pipeline = await db_service.get_pipeline(updated_promotion.get("pipeline_id"), tenant_id)
                 active_stage = None
                 for stage in pipeline.get("stages", []):
                     if (stage.get("source_environment_id") == updated_promotion.get("source_environment_id") and
@@ -1157,7 +1169,7 @@ async def approve_deployment(
                 
                 # Create pre-promotion snapshot
                 target_pre_snapshot_id, _ = await promotion_service.create_snapshot(
-                    tenant_id=MOCK_TENANT_ID,
+                    tenant_id=tenant_id,
                     environment_id=updated_promotion.get("target_environment_id"),
                     reason="Pre-promotion snapshot",
                     metadata={"promotion_id": promotion_id}
@@ -1172,7 +1184,7 @@ async def approve_deployment(
                 credential_issues = gate_results.get("credential_issues", [])
                 
                 execution_result = await promotion_service.execute_promotion(
-                    tenant_id=MOCK_TENANT_ID,
+                    tenant_id=tenant_id,
                     promotion_id=promotion_id,
                     source_env_id=updated_promotion.get("source_environment_id"),
                     target_env_id=updated_promotion.get("target_environment_id"),
@@ -1184,14 +1196,14 @@ async def approve_deployment(
                 
                 # Create post-promotion snapshot
                 target_post_snapshot_id, _ = await promotion_service.create_snapshot(
-                    tenant_id=MOCK_TENANT_ID,
+                    tenant_id=tenant_id,
                     environment_id=updated_promotion.get("target_environment_id"),
                     reason="Post-promotion snapshot",
                     metadata={"promotion_id": promotion_id, "source_snapshot_id": updated_promotion.get("source_snapshot_id")}
                 )
                 
                 # Update promotion with results
-                await db_service.update_promotion(promotion_id, MOCK_TENANT_ID, {
+                await db_service.update_promotion(promotion_id, tenant_id, {
                     "status": execution_result.status.value,
                     "target_pre_snapshot_id": target_pre_snapshot_id,
                     "target_post_snapshot_id": target_post_snapshot_id,
@@ -1249,6 +1261,7 @@ async def get_workflow_diff(
     target_environment_id: str = Query(..., description="Target environment ID"),
     source_snapshot_id: Optional[str] = Query(None, description="Source snapshot ID (defaults to latest)"),
     target_snapshot_id: Optional[str] = Query(None, description="Target snapshot ID (defaults to latest)"),
+    user_info: dict = Depends(get_current_user),
     _: None = Depends(require_entitlement("workflow_ci_cd"))
 ):
     """
@@ -1257,6 +1270,7 @@ async def get_workflow_diff(
     """
     logger.info(f"[WORKFLOW_DIFF] Route hit! workflow_id={workflow_id}, source={source_environment_id}, target={target_environment_id}")
     try:
+        tenant_id = get_tenant_id(user_info)
         if not source_environment_id or not target_environment_id:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
@@ -1268,7 +1282,7 @@ async def get_workflow_diff(
         target_snap = target_snapshot_id or "latest"
         
         diff_result = await promotion_service.get_workflow_diff(
-            tenant_id=MOCK_TENANT_ID,
+            tenant_id=tenant_id,
             workflow_id=workflow_id,
             source_env_id=source_environment_id,
             target_env_id=target_environment_id,
@@ -1300,11 +1314,13 @@ async def get_workflow_diff(
 @router.get("/initiate/{deployment_id}", response_model=PromotionDetail)
 async def get_promotion(
     promotion_id: str,
+    user_info: dict = Depends(get_current_user),
     _: None = Depends(require_entitlement("workflow_ci_cd"))
 ):
     """
     Get details of a specific promotion.
     """
+    tenant_id = get_tenant_id(user_info)
     logger.info(f"[GET_DEPLOYMENT_INITIATION] Route hit with deployment_id={deployment_id}")
     # Prevent this route from matching /workflows/... paths
     if deployment_id == "workflows":
@@ -1314,7 +1330,7 @@ async def get_promotion(
             detail=f"Deployment {deployment_id} not found"
         )
     try:
-        promo = await db_service.get_promotion(deployment_id, MOCK_TENANT_ID)
+        promo = await db_service.get_promotion(deployment_id, tenant_id)
         if not promo:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
@@ -1322,9 +1338,9 @@ async def get_promotion(
             )
         
         # Get pipeline and environment names
-        pipeline = await db_service.get_pipeline(promo.get("pipeline_id"), MOCK_TENANT_ID)
-        source_env = await db_service.get_environment(promo.get("source_environment_id"), MOCK_TENANT_ID)
-        target_env = await db_service.get_environment(promo.get("target_environment_id"), MOCK_TENANT_ID)
+        pipeline = await db_service.get_pipeline(promo.get("pipeline_id"), tenant_id)
+        source_env = await db_service.get_environment(promo.get("source_environment_id"), tenant_id)
+        target_env = await db_service.get_environment(promo.get("target_environment_id"), tenant_id)
         
         return {
             "id": promo.get("id"),
@@ -1362,14 +1378,16 @@ async def get_promotion(
 @router.post("/snapshots", response_model=PromotionSnapshotResponse)
 async def create_snapshot(
     request: PromotionSnapshotRequest,
+    user_info: dict = Depends(get_current_user),
     _: None = Depends(require_entitlement("workflow_ci_cd"))
 ):
     """
     Create a snapshot of an environment (used for drift checking).
     """
     try:
+        tenant_id = get_tenant_id(user_info)
         snapshot_id, commit_sha = await promotion_service.create_snapshot(
-            tenant_id=MOCK_TENANT_ID,
+            tenant_id=tenant_id,
             environment_id=request.environment_id,
             reason=request.reason,
             metadata=request.metadata
@@ -1395,14 +1413,16 @@ async def create_snapshot(
 async def check_drift(
     environment_id: str,
     snapshot_id: str,
+    user_info: dict = Depends(get_current_user),
     _: None = Depends(require_entitlement("workflow_ci_cd"))
 ):
     """
     Check if an environment has drifted from its snapshot.
     """
     try:
+        tenant_id = get_tenant_id(user_info)
         drift_check = await promotion_service.check_drift(
-            tenant_id=MOCK_TENANT_ID,
+            tenant_id=tenant_id,
             environment_id=environment_id,
             snapshot_id=snapshot_id
         )
@@ -1421,6 +1441,7 @@ async def check_drift(
 @router.post("/compare-workflows")
 async def compare_workflows(
     request: dict,
+    user_info: dict = Depends(get_current_user),
     _: None = Depends(require_entitlement("workflow_ci_cd"))
 ):
     """
@@ -1428,6 +1449,7 @@ async def compare_workflows(
     Returns list of workflow selections with change types.
     """
     try:
+        tenant_id = get_tenant_id(user_info)
         source_environment_id = request.get("source_environment_id")
         target_environment_id = request.get("target_environment_id")
         source_snapshot_id = request.get("source_snapshot_id")
@@ -1444,7 +1466,7 @@ async def compare_workflows(
         target_snap = target_snapshot_id or "latest"
         
         selections = await promotion_service.compare_workflows(
-            tenant_id=MOCK_TENANT_ID,
+            tenant_id=tenant_id,
             source_env_id=source_environment_id,
             target_env_id=target_environment_id,
             source_snapshot_id=source_snap,

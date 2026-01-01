@@ -9,6 +9,7 @@ import {
 } from '@/components/ui/select';
 import { ArrowRight, X, ChevronUp, ChevronDown } from 'lucide-react';
 import type { Environment } from '@/types';
+import { sortEnvironments } from '@/lib/environment-utils';
 
 interface EnvironmentSequenceProps {
   environments: Environment[];
@@ -21,7 +22,7 @@ export function EnvironmentSequence({
   selectedEnvironmentIds = [],
   onChange,
 }: EnvironmentSequenceProps) {
-  const availableEnvironments = environments.filter(
+  const availableEnvironments = sortEnvironments(environments).filter(
     (env) => !selectedEnvironmentIds.includes(env.id)
   );
 
@@ -81,7 +82,6 @@ export function EnvironmentSequence({
                     </span>
                     <div className="flex-1">
                       <div className="font-medium">{env?.name || envId}</div>
-                      <div className="text-sm text-muted-foreground">{env?.type || ''}</div>
                     </div>
                   </div>
                   <div className="flex items-center gap-1">

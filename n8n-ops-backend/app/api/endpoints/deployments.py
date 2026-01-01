@@ -24,11 +24,15 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
-
-# Entitlement gates for CI/CD features
-
-# TODO: Replace with actual tenant ID from authenticated user
+# Fallback tenant ID (should not be used in production)
 MOCK_TENANT_ID = "00000000-0000-0000-0000-000000000000"
+
+from app.services.auth_service import get_current_user
+
+
+def get_tenant_id(user_info: dict) -> str:
+    """Extract tenant_id from user_info, with fallback to MOCK_TENANT_ID"""
+    return user_info.get("tenant", {}).get("id", MOCK_TENANT_ID)
 
 
 def _attach_progress_fields(deployment: dict, workflows: Optional[List[dict]] = None) -> dict:
@@ -79,6 +83,7 @@ async def get_deployments(
     to_date: Optional[datetime] = Query(None),
     page: int = Query(1, ge=1),
     page_size: int = Query(50, ge=1, le=100),
+    user_info: dict = Depends(get_current_user),
     _: dict = Depends(require_entitlement("workflow_ci_cd"))
 ):
     """
@@ -86,9 +91,10 @@ async def get_deployments(
     Returns summary counts for cards.
     """
     try:
+        tenant_id = get_tenant_id(user_info)
         # Build query - exclude deleted deployments by default
         # Note: deleted_at column may not exist if migration hasn't run yet
-        query = db_service.client.table("deployments").select("*").eq("tenant_id", MOCK_TENANT_ID)
+        query = db_service.client.table("deployments").select("*").eq("tenant_id", tenant_id)
         
         # Try to filter by deleted_at, but handle gracefully if column doesn't exist
         # We'll catch the error when executing if the column doesn't exist
@@ -121,7 +127,7 @@ async def get_deployments(
             error_str = str(db_error)
             if "deleted_at" in error_str or "42703" in error_str or "column" in error_str.lower():
                 # Rebuild query without deleted_at filter
-                query = db_service.client.table("deployments").select("*").eq("tenant_id", MOCK_TENANT_ID)
+                query = db_service.client.table("deployments").select("*").eq("tenant_id", tenant_id)
                 if status:
                     query = query.eq("status", status.value)
                 if pipeline_id:
@@ -188,7 +194,7 @@ async def get_deployments(
         this_week_query = (
             db_service.client.table("deployments")
             .select("id")
-            .eq("tenant_id", MOCK_TENANT_ID)
+            .eq("tenant_id", tenant_id)
             .eq("status", DeploymentStatus.SUCCESS.value)
             .gte("started_at", week_ago.isoformat())
         )
@@ -223,19 +229,21 @@ async def get_deployments(
 @router.get("/{deployment_id}", response_model=DeploymentDetailResponse)
 async def get_deployment(
     deployment_id: str,
+    user_info: dict = Depends(get_current_user),
     _: dict = Depends(require_entitlement("workflow_ci_cd"))
 ):
     """
     Get deployment details including workflows and linked snapshots.
     """
     try:
+        tenant_id = get_tenant_id(user_info)
         # Get deployment - exclude deleted deployments
         # Note: deleted_at column may not exist if migration hasn't run yet
         query = (
             db_service.client.table("deployments")
             .select("*")
             .eq("id", deployment_id)
-            .eq("tenant_id", MOCK_TENANT_ID)
+            .eq("tenant_id", tenant_id)
         )
         
         # Try to filter by deleted_at, but handle gracefully if column doesn't exist
@@ -250,7 +258,7 @@ async def get_deployment(
                     db_service.client.table("deployments")
                     .select("*")
                     .eq("id", deployment_id)
-                    .eq("tenant_id", MOCK_TENANT_ID)
+                    .eq("tenant_id", tenant_id)
                 )
                 deployment_result = query.single().execute()
             else:
@@ -307,7 +315,7 @@ async def get_deployment(
                             db_service.client.table("deployments")
                             .select("*")
                             .eq("id", deployment_id)
-                            .eq("tenant_id", MOCK_TENANT_ID)
+                            .eq("tenant_id", tenant_id)
                             .single()
                             .execute()
                         )
@@ -324,7 +332,7 @@ async def get_deployment(
                 promotion_result = (
                     db_service.client.table("promotions")
                     .select("id")
-                    .eq("tenant_id", MOCK_TENANT_ID)
+                    .eq("tenant_id", tenant_id)
                     .eq("source_environment_id", deployment.source_environment_id)
                     .eq("target_environment_id", deployment.target_environment_id)
                     .order("created_at", desc=True)
@@ -336,7 +344,7 @@ async def get_deployment(
                     job = await background_job_service.get_latest_job_by_resource(
                         resource_type="promotion",
                         resource_id=promotion_id,
-                        tenant_id=MOCK_TENANT_ID
+                        tenant_id=tenant_id
                     )
                     # Verify this job is for this deployment by checking result.deployment_id
                     if job and job.get("result", {}).get("deployment_id") == deployment_id:
@@ -360,7 +368,7 @@ async def get_deployment(
                                 db_service.client.table("deployments")
                                 .select("*")
                                 .eq("id", deployment_id)
-                                .eq("tenant_id", MOCK_TENANT_ID)
+                                .eq("tenant_id", tenant_id)
                                 .single()
                                 .execute()
                             )
@@ -428,12 +436,14 @@ async def delete_deployment(
     - Failed/canceled deployments can be deleted immediately
     """
     try:
+        tenant_id = get_tenant_id(user_info)
+
         # Get deployment
         deployment_result = (
             db_service.client.table("deployments")
             .select("*")
             .eq("id", deployment_id)
-            .eq("tenant_id", MOCK_TENANT_ID)
+            .eq("tenant_id", tenant_id)
             .single()
             .execute()
         )
@@ -498,7 +508,7 @@ async def delete_deployment(
         # Perform soft delete
         deleted_deployment = await db_service.delete_deployment(
             deployment_id=deployment_id,
-            tenant_id=MOCK_TENANT_ID,
+            tenant_id=tenant_id,
             deleted_by_user_id=actor_id or "00000000-0000-0000-0000-000000000000"
         )
 
@@ -511,7 +521,7 @@ async def delete_deployment(
         # Create audit log entry
         try:
             # Get environment info for provider context
-            source_env = await db_service.get_environment(deployment.get("source_environment_id"), MOCK_TENANT_ID)
+            source_env = await db_service.get_environment(deployment.get("source_environment_id"), tenant_id)
             provider = source_env.get("provider", "n8n") if source_env else "n8n"
             
             await create_audit_log(
@@ -520,7 +530,7 @@ async def delete_deployment(
                 actor_id=actor_id,
                 actor_email=actor_email,
                 actor_name=actor_name,
-                tenant_id=MOCK_TENANT_ID,
+                tenant_id=tenant_id,
                 resource_type="deployment",
                 resource_id=deployment_id,
                 resource_name=f"Deployment {deployment_id[:8]}",
@@ -569,12 +579,13 @@ async def cancel_scheduled_deployment(
     Only allowed for deployments with status 'scheduled'.
     """
     try:
+        tenant_id = get_tenant_id(user_info)
         # Get deployment
         deployment_result = (
             db_service.client.table("deployments")
             .select("*")
             .eq("id", deployment_id)
-            .eq("tenant_id", MOCK_TENANT_ID)
+            .eq("tenant_id", tenant_id)
             .single()
             .execute()
         )
@@ -613,7 +624,7 @@ async def cancel_scheduled_deployment(
             promotions_response = (
                 db_service.client.table("promotions")
                 .select("*")
-                .eq("tenant_id", MOCK_TENANT_ID)
+                .eq("tenant_id", tenant_id)
                 .eq("source_environment_id", deployment.get("source_environment_id"))
                 .eq("target_environment_id", deployment.get("target_environment_id"))
                 .eq("pipeline_id", deployment.get("pipeline_id"))
@@ -625,7 +636,7 @@ async def cancel_scheduled_deployment(
             
             if promotions_response.data:
                 promotion = promotions_response.data[0]
-                await db_service.update_promotion(promotion.get("id"), MOCK_TENANT_ID, {
+                await db_service.update_promotion(promotion.get("id"), tenant_id, {
                     "status": "cancelled",
                     "completed_at": datetime.utcnow().isoformat()
                 })
@@ -634,11 +645,11 @@ async def cancel_scheduled_deployment(
 
         # Emit SSE event
         try:
-            updated_deployment = await db_service.get_deployment(deployment_id, MOCK_TENANT_ID)
+            updated_deployment = await db_service.get_deployment(deployment_id, tenant_id)
             if updated_deployment:
                 from app.api.endpoints.sse import emit_deployment_upsert, emit_counts_update
-                await emit_deployment_upsert(updated_deployment, MOCK_TENANT_ID)
-                await emit_counts_update(MOCK_TENANT_ID)
+                await emit_deployment_upsert(updated_deployment, tenant_id)
+                await emit_counts_update(tenant_id)
         except Exception as sse_error:
             logger.warning(f"Failed to emit SSE event for cancelled deployment: {str(sse_error)}")
 
@@ -650,7 +661,7 @@ async def cancel_scheduled_deployment(
                 action_type="DEPLOYMENT_CANCELED",
                 action=f"Cancelled scheduled deployment",
                 actor_id=actor_id,
-                tenant_id=MOCK_TENANT_ID,
+                tenant_id=tenant_id,
                 resource_type="deployment",
                 resource_id=deployment_id,
                 resource_name=f"Deployment {deployment_id[:8]}",
@@ -694,12 +705,13 @@ async def rerun_deployment(
     Only allowed for terminal states (failed/canceled; optionally success as "re-deploy").
     """
     try:
+        tenant_id = get_tenant_id(user_info)
         # Get original deployment
         deployment_result = (
             db_service.client.table("deployments")
             .select("*")
             .eq("id", deployment_id)
-            .eq("tenant_id", MOCK_TENANT_ID)
+            .eq("tenant_id", tenant_id)
             .single()
             .execute()
         )
@@ -783,7 +795,7 @@ async def rerun_deployment(
                 detail="Cannot rerun deployment: no pipeline associated"
             )
 
-        pipeline_data = await db_service.get_pipeline(pipeline_id, MOCK_TENANT_ID)
+        pipeline_data = await db_service.get_pipeline(pipeline_id, tenant_id)
         if not pipeline_data:
             raise HTTPException(
                 status_code=http_status.HTTP_404_NOT_FOUND,
@@ -807,8 +819,8 @@ async def rerun_deployment(
             )
 
         # Get source and target environments
-        source_env = await db_service.get_environment(source_env_id, MOCK_TENANT_ID)
-        target_env = await db_service.get_environment(target_env_id, MOCK_TENANT_ID)
+        source_env = await db_service.get_environment(source_env_id, tenant_id)
+        target_env = await db_service.get_environment(target_env_id, tenant_id)
 
         if not source_env or not target_env:
             raise HTTPException(
@@ -844,7 +856,7 @@ async def rerun_deployment(
 
         promotion_data = {
             "id": promotion_id,
-            "tenant_id": MOCK_TENANT_ID,
+            "tenant_id": tenant_id,
             "pipeline_id": pipeline_id,
             "source_environment_id": source_env_id,
             "target_environment_id": target_env_id,
@@ -862,7 +874,7 @@ async def rerun_deployment(
 
         # Create background job
         job = await background_job_service.create_job(
-            tenant_id=MOCK_TENANT_ID,
+            tenant_id=tenant_id,
             job_type=BackgroundJobType.PROMOTION_EXECUTE,
             resource_id=promotion_id,
             resource_type="promotion",
@@ -877,13 +889,13 @@ async def rerun_deployment(
         job_id = job["id"]
 
         # Update promotion status to running
-        await db_service.update_promotion(promotion_id, MOCK_TENANT_ID, {"status": PromotionStatus.RUNNING.value})
+        await db_service.update_promotion(promotion_id, tenant_id, {"status": PromotionStatus.RUNNING.value})
 
         # Create new deployment record
         new_deployment_id = str(uuid4())
         deployment_data = {
             "id": new_deployment_id,
-            "tenant_id": MOCK_TENANT_ID,
+            "tenant_id": tenant_id,
             "pipeline_id": pipeline_id,
             "source_environment_id": source_env_id,
             "target_environment_id": target_env_id,
@@ -934,7 +946,7 @@ async def rerun_deployment(
                 actor_id=actor_id,
                 actor_email=actor_email,
                 actor_name=actor_name,
-                tenant_id=MOCK_TENANT_ID,
+                tenant_id=tenant_id,
                 resource_type="deployment",
                 resource_id=new_deployment_id,
                 resource_name=f"Deployment {new_deployment_id[:8]}",

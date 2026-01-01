@@ -21,6 +21,7 @@ import { useAppStore } from '@/store/use-app-store';
 import { Search, ArrowUpDown, ArrowUp, ArrowDown, X, Tag as TagIcon, Calendar, Download, RefreshCw } from 'lucide-react';
 import type { EnvironmentType } from '@/types';
 import { toast } from 'sonner';
+import { getDefaultEnvironmentId, resolveEnvironment, sortEnvironments } from '@/lib/environment-utils';
 
 type SortField = 'name' | 'workflows' | 'createdAt' | 'updatedAt';
 type SortDirection = 'asc' | 'desc';
@@ -50,12 +51,24 @@ export function TagsPage() {
     queryFn: () => api.getEnvironments(),
   });
 
-  // Get current environment ID
-  const currentEnvironmentId = useMemo(() => {
-    if (!environments?.data) return undefined;
-    const env = environments.data.find((e) => e.type === selectedEnvironment);
-    return env?.id;
-  }, [environments, selectedEnvironment]);
+  const availableEnvironments = useMemo(() => {
+    if (!environments?.data) return [];
+    return sortEnvironments(environments.data.filter((env) => env.isActive));
+  }, [environments?.data]);
+
+  const currentEnvironment = useMemo(
+    () => resolveEnvironment(availableEnvironments, selectedEnvironment),
+    [availableEnvironments, selectedEnvironment]
+  );
+  const currentEnvironmentId = currentEnvironment?.id;
+
+  useEffect(() => {
+    if (availableEnvironments.length === 0) return;
+    const nextId = currentEnvironment?.id || getDefaultEnvironmentId(availableEnvironments);
+    if (nextId && selectedEnvironment !== nextId) {
+      setSelectedEnvironment(nextId);
+    }
+  }, [availableEnvironments, currentEnvironment?.id, selectedEnvironment, setSelectedEnvironment]);
 
   // Fetch tags from database
   const { data: tags, isLoading, refetch } = useQuery({
@@ -89,16 +102,9 @@ export function TagsPage() {
   // Sync mutation to refresh from N8N (tags only)
   const syncMutation = useMutation({
     mutationFn: async () => {
-      const envsToSync = environments?.data?.filter((env: any) =>
-        selectedEnvironment === 'dev' || env.type === selectedEnvironment
-      ) || [];
-
-      const results = [];
-      for (const env of envsToSync) {
-        const result = await api.syncTagsOnly(env.id);
-        results.push({ env: env.name, ...result.data });
-      }
-      return results;
+      if (!currentEnvironmentId) return [];
+      const result = await api.syncTagsOnly(currentEnvironmentId);
+      return [{ env: currentEnvironment?.name || currentEnvironmentId, ...result.data }];
     },
     onSuccess: (results) => {
       setIsSyncing(false);
@@ -284,13 +290,15 @@ export function TagsPage() {
               <Label htmlFor="environment">Environment</Label>
               <select
                 id="environment"
-                value={selectedEnvironment}
+                value={currentEnvironmentId || ''}
                 onChange={(e) => setSelectedEnvironment(e.target.value as EnvironmentType)}
                 className="flex h-9 w-full rounded-md border border-input bg-background text-foreground px-3 py-1 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
               >
-                <option value="dev" className="bg-background text-foreground">Development</option>
-                <option value="staging" className="bg-background text-foreground">Staging</option>
-                <option value="production" className="bg-background text-foreground">Production</option>
+                {availableEnvironments.map((env) => (
+                  <option key={env.id} value={env.id} className="bg-background text-foreground">
+                    {env.name}
+                  </option>
+                ))}
               </select>
             </div>
           </div>
@@ -311,7 +319,7 @@ export function TagsPage() {
 
       <Card>
         <CardHeader>
-          <CardTitle>Tags in {selectedEnvironment}</CardTitle>
+          <CardTitle>Tags in {currentEnvironment?.name || '—'}</CardTitle>
           <CardDescription>
             View all tags available in the selected environment
           </CardDescription>

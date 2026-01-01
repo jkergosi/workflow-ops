@@ -1,6 +1,6 @@
 """add_provider_columns
 
-Revision ID: a1b2c3d4e5f6
+Revision ID: m3n4o5p6q7r8
 Revises: 'd2e3f4a5b6c7'
 Create Date: 2025-01-20
 
@@ -9,7 +9,7 @@ from alembic import op
 import sqlalchemy as sa
 
 # revision identifiers, used by Alembic.
-revision = 'a1b2c3d4e5f6'
+revision = 'm3n4o5p6q7r8'
 down_revision = 'd2e3f4a5b6c7'
 branch_labels = None
 depends_on = None

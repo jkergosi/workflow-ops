@@ -585,7 +585,7 @@ export function EnvironmentsPage() {
   };
 
   // Use the new features system for limits
-  const { features } = useFeatures();
+  const { features, planName } = useFeatures();
   const environmentCount = environments?.data?.length || 0;
   const maxEnvironments = features?.max_environments;
   const atLimit = maxEnvironments !== 'unlimited' && environmentCount >= (maxEnvironments || 1);
@@ -635,7 +635,7 @@ export function EnvironmentsPage() {
                 <TableRow>
                   <TableHead>Environment</TableHead>
                   <TableHead>Status</TableHead>
-                  <TableHead>Drift</TableHead>
+                  {planName?.toLowerCase() !== 'free' && <TableHead>Drift</TableHead>}
                   <TableHead>Workflows</TableHead>
                   <TableHead>Last Sync</TableHead>
                   <TableHead className="sticky right-0 bg-background">Actions</TableHead>
@@ -694,21 +694,23 @@ export function EnvironmentsPage() {
                           )}
                         </div>
                       </TableCell>
-                      <TableCell>
-                        <Link to={`/environments/${env.id}#drift`}>
-                          <Badge
-                            variant={driftBadge.variant}
-                            className="text-xs cursor-pointer hover:opacity-80"
-                          >
-                            {driftBadge.label}
-                          </Badge>
-                        </Link>
-                        {env.lastDriftDetectedAt && (
-                          <p className="text-xs text-muted-foreground mt-0.5">
-                            Checked {formatRelativeTime(env.lastDriftDetectedAt)}
-                          </p>
-                        )}
-                      </TableCell>
+                      {planName?.toLowerCase() !== 'free' && (
+                        <TableCell>
+                          <Link to={`/environments/${env.id}#drift`}>
+                            <Badge
+                              variant={driftBadge.variant}
+                              className="text-xs cursor-pointer hover:opacity-80"
+                            >
+                              {driftBadge.label}
+                            </Badge>
+                          </Link>
+                          {env.lastDriftDetectedAt && (
+                            <p className="text-xs text-muted-foreground mt-0.5">
+                              Checked {formatRelativeTime(env.lastDriftDetectedAt)}
+                            </p>
+                          )}
+                        </TableCell>
+                      )}
                       <TableCell>
                         <Link
                           to={`/environments/${env.id}`}

@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 import logging
 
 from app.services.database import db_service
+from app.services.tenant_plan_service import get_current_active_plan
 from app.services.audit_service import audit_service
 
 logger = logging.getLogger(__name__)
@@ -384,26 +385,28 @@ class EntitlementsService:
     async def _get_tenant_plan(self, tenant_id: str) -> Optional[Dict[str, Any]]:
         """Get tenant's current plan assignment with plan details."""
         try:
-            response = db_service.client.table("tenant_plans").select(
-                "*, plan:plan_id(id, name, display_name)"
-            ).eq("tenant_id", tenant_id).order("created_at", desc=True).limit(1).execute()
+            current = await get_current_active_plan(tenant_id)
+            if not current:
+                return None
 
-            if response.data and len(response.data) > 0:
-                tp = response.data[0]
-                plan = tp.get("plan", {})
-                if not plan and tp.get("plan_id"):
-                    plan_response = db_service.client.table("plans").select("*").eq("id", tp.get("plan_id")).single().execute()
-                    if plan_response.data:
-                        plan = plan_response.data
-                
-                if plan:
-                    return {
-                        "plan_id": plan.get("id"),
-                        "plan_name": plan.get("name"),
-                        "plan_display_name": plan.get("display_name"),
-                        "entitlements_version": tp.get("entitlements_version", 1)
-                    }
-            return None
+            plan_response = (
+                db_service.client.table("plans")
+                .select("id, name, display_name")
+                .eq("id", current.plan_id)
+                .single()
+                .execute()
+            )
+
+            plan = plan_response.data or {}
+            if not plan:
+                return None
+
+            return {
+                "plan_id": plan.get("id"),
+                "plan_name": plan.get("name"),
+                "plan_display_name": plan.get("display_name"),
+                "entitlements_version": current.entitlements_version,
+            }
         except Exception as e:
             logger.error(f"Failed to get tenant plan for {tenant_id}: {e}")
             import traceback

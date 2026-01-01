@@ -2,40 +2,14 @@
 // TODO: Fix TypeScript errors in this file
 import { useQuery } from '@tanstack/react-query';
 import { useEffect } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
+import { Link } from 'react-router-dom';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { apiClient } from '@/lib/api-client';
 import { useAuth } from '@/lib/auth';
 import { useFeatures } from '@/lib/features';
-import { Activity, Workflow, Server, Plus, Rocket } from 'lucide-react';
-
-/**
- * Get plan-based default landing page.
- * Based on reqs/lifecycle.md Phase 5:
- * - Free: Environments / Workflows
- * - Pro: Snapshots
- * - Agency: Pipelines (Deployments)
- * - Enterprise: Drift Dashboard
- */
-function getDefaultLandingPage(planName: string | null): string {
-  if (!planName) return '/environments';
-  
-  const planLower = planName.toLowerCase();
-  switch (planLower) {
-    case 'free':
-      return '/environments'; // Environments / Workflows
-    case 'pro':
-      return '/snapshots'; // Snapshots
-    case 'agency':
-      return '/deployments?tab=pipelines'; // Pipelines (Deployments)
-    case 'enterprise':
-      return '/drift-dashboard'; // Drift Dashboard
-    default:
-      return '/environments';
-  }
-}
+import { Activity, Workflow, Server, Plus, Rocket, Camera, History, GitBranch, ArrowRight, Settings, Shield, RotateCcw, AlertTriangle } from 'lucide-react';
 
 export function DashboardPage() {
   useEffect(() => {
@@ -45,16 +19,7 @@ export function DashboardPage() {
     };
   }, []);
   const { user, hasEnvironment } = useAuth();
-  const { planName } = useFeatures();
-  const navigate = useNavigate();
-
-  // Redirect to plan-based default landing page
-  useEffect(() => {
-    const defaultPage = getDefaultLandingPage(planName);
-    if (defaultPage !== '/') {
-      navigate(defaultPage, { replace: true });
-    }
-  }, [planName, navigate]);
+  const { planName, isLoading: loadingFeatures } = useFeatures();
 
   const { data: environments, isLoading: loadingEnvs } = useQuery({
     queryKey: ['environments'],
@@ -67,9 +32,38 @@ export function DashboardPage() {
     enabled: hasEnvironment,
   });
 
+  // Context-aware queries for recommended actions
+  const firstEnvironmentId = environments?.data?.[0]?.id;
+  const planLower = planName?.toLowerCase() || 'free';
+
+  const { data: snapshots } = useQuery({
+    queryKey: ['snapshots', firstEnvironmentId],
+    queryFn: () => apiClient.getSnapshots({ 
+      environmentId: firstEnvironmentId 
+    }),
+    enabled: !!firstEnvironmentId && (planLower === 'pro' || planLower === 'agency' || planLower === 'enterprise'),
+  });
+
+  const { data: pipelines } = useQuery({
+    queryKey: ['pipelines', 'all'],
+    queryFn: () => apiClient.getPipelines({ includeInactive: true }),
+    enabled: planLower === 'agency' || planLower === 'enterprise',
+  });
+
+  const { data: incidents } = useQuery({
+    queryKey: ['incidents', 'recent'],
+    queryFn: () => apiClient.getIncidents({ limit: 10 }),
+    enabled: planLower === 'agency',
+  });
+
   const envCount = environments?.data?.filter((e) => e.isActive).length || 0;
   const totalWorkflows = environments?.data?.reduce((sum, e) => sum + (e.workflowCount || 0), 0) || 0;
   const totalExecutions = executions?.data?.length || 0;
+  
+  // Context checks
+  const hasSnapshots = (snapshots?.data?.length || 0) > 0;
+  const hasPipelines = (pipelines?.data?.length || 0) > 0;
+  const hasRepeatedDriftIncidents = (incidents?.data?.length || 0) >= 2;
 
   const stats = [
     {
@@ -148,7 +142,7 @@ export function DashboardPage() {
             </CardHeader>
             <CardContent>
               <p className="text-sm text-muted-foreground">
-                Track executions, manage versions, and deploy across environments.
+                Track executions, manage versions, and monitor your workflows.
               </p>
             </CardContent>
           </Card>
@@ -232,29 +226,262 @@ export function DashboardPage() {
 
         <Card>
           <CardHeader>
-            <CardTitle>Quick Actions</CardTitle>
-            <CardDescription>Common tasks</CardDescription>
+            <CardTitle>Recommended Next Step</CardTitle>
+            <CardDescription>What you should do next based on your plan</CardDescription>
           </CardHeader>
           <CardContent>
-            <div className="grid gap-2">
-              <Link to="/workflows">
-                <Button variant="outline" className="w-full justify-start">
-                  <Workflow className="h-4 w-4 mr-2" />
-                  View Workflows
-                </Button>
-              </Link>
-              <Link to="/executions">
-                <Button variant="outline" className="w-full justify-start">
-                  <Activity className="h-4 w-4 mr-2" />
-                  View Executions
-                </Button>
-              </Link>
-              <Link to="/environments">
-                <Button variant="outline" className="w-full justify-start">
-                  <Server className="h-4 w-4 mr-2" />
-                  Manage Environments
-                </Button>
-              </Link>
+            <div className="space-y-4">
+              {(() => {
+                // Free plan
+                if (planLower === 'free') {
+                  const shouldUpsellToPro = !loadingFeatures && envCount > 0; // Free has no snapshots, so "no snapshots exist" is effectively true once connected
+                  if (shouldUpsellToPro) {
+                    return (
+                      <>
+                        <div className="space-y-1">
+                          <div className="font-semibold">Protect your workflows automatically</div>
+                          <div className="text-sm text-muted-foreground">
+                            Automatic snapshots and instant restore let you recover from mistakes without fear.
+                          </div>
+                        </div>
+                        <Link to="/billing">
+                          <Button className="w-full" size="lg">
+                            Upgrade to Pro
+                          </Button>
+                        </Link>
+                        <div className="grid gap-2">
+                          <Link to="/workflows">
+                            <Button variant="outline" className="w-full justify-start">
+                              <Workflow className="h-4 w-4 mr-2" />
+                              View Workflows
+                            </Button>
+                          </Link>
+                        </div>
+                      </>
+                    );
+                  }
+
+                  const primary = {
+                    label: envCount === 0 ? 'Add Environment' : 'View Workflows',
+                    href: envCount === 0 ? '/environments/new' : '/workflows',
+                    icon: envCount === 0 ? Plus : Workflow,
+                  };
+                  const secondary = [
+                    { label: 'Sync Workflows', href: '/workflows', icon: Workflow },
+                    { label: 'View Executions', href: '/executions', icon: Activity },
+                  ];
+                  
+                  return (
+                    <>
+                      <Link to={primary.href}>
+                        <Button className="w-full" size="lg">
+                          <primary.icon className="h-5 w-5 mr-2" />
+                          {primary.label}
+                        </Button>
+                      </Link>
+                      <div className="grid gap-2">
+                        {secondary.map((action, idx) => (
+                          <Link key={idx} to={action.href}>
+                            <Button variant="outline" className="w-full justify-start">
+                              <action.icon className="h-4 w-4 mr-2" />
+                              {action.label}
+                            </Button>
+                          </Link>
+                        ))}
+                      </div>
+                    </>
+                  );
+                }
+                
+                // Pro plan
+                if (planLower === 'pro') {
+                  const shouldUpsellToAgency = !loadingFeatures && envCount >= 2;
+                  if (shouldUpsellToAgency) {
+                    return (
+                      <>
+                        <div className="space-y-1">
+                          <div className="font-semibold">Deliver changes safely as a team</div>
+                          <div className="text-sm text-muted-foreground">
+                            Pipelines, approvals, and drift management help teams promote changes without surprises.
+                          </div>
+                        </div>
+                        <Link to="/billing">
+                          <Button className="w-full" size="lg">
+                            Upgrade to Agency
+                          </Button>
+                        </Link>
+                        <div className="grid gap-2">
+                          <Link to="/snapshots">
+                            <Button variant="outline" className="w-full justify-start">
+                              <History className="h-4 w-4 mr-2" />
+                              View Snapshots
+                            </Button>
+                          </Link>
+                        </div>
+                      </>
+                    );
+                  }
+
+                  const primary = {
+                    label: !hasSnapshots ? 'Set Up Snapshots' : 'View Snapshots',
+                    href: '/snapshots',
+                    icon: !hasSnapshots ? Camera : History,
+                  };
+                  const secondary = [
+                    { 
+                      label: hasSnapshots ? 'Promote Workflows' : 'View Snapshots', 
+                      href: hasSnapshots ? '/deployments/new' : '/snapshots', 
+                      icon: hasSnapshots ? GitBranch : Camera 
+                    },
+                    { label: 'Restore from Snapshot', href: '/snapshots', icon: RotateCcw },
+                  ];
+                  
+                  return (
+                    <>
+                      <Link to={primary.href}>
+                        <Button className="w-full" size="lg">
+                          <primary.icon className="h-5 w-5 mr-2" />
+                          {primary.label}
+                        </Button>
+                      </Link>
+                      <div className="grid gap-2">
+                        {secondary.map((action, idx) => (
+                          <Link key={idx} to={action.href}>
+                            <Button variant="outline" className="w-full justify-start">
+                              <action.icon className="h-4 w-4 mr-2" />
+                              {action.label}
+                            </Button>
+                          </Link>
+                        ))}
+                      </div>
+                    </>
+                  );
+                }
+                
+                // Agency plan
+                if (planLower === 'agency') {
+                  const shouldUpsellToEnterprise = !loadingFeatures && hasRepeatedDriftIncidents;
+                  if (shouldUpsellToEnterprise) {
+                    return (
+                      <>
+                        <div className="space-y-1">
+                          <div className="font-semibold">Enforce automation governance at scale</div>
+                          <div className="text-sm text-muted-foreground">
+                            Policies, SLAs, and audit logs provide compliance and operational guarantees.
+                          </div>
+                        </div>
+                        <Link to="/billing">
+                          <Button className="w-full" size="lg">
+                            Contact Sales
+                          </Button>
+                        </Link>
+                        <div className="grid gap-2">
+                          <Link to="/incidents">
+                            <Button variant="outline" className="w-full justify-start">
+                              <AlertTriangle className="h-4 w-4 mr-2" />
+                              Review Incidents
+                            </Button>
+                          </Link>
+                        </div>
+                      </>
+                    );
+                  }
+
+                  const primary = {
+                    label: !hasPipelines ? 'Configure Pipeline' : 'Run Promotion',
+                    href: !hasPipelines ? '/deployments?tab=pipelines' : '/deployments/new',
+                    icon: !hasPipelines ? Settings : ArrowRight,
+                  };
+                  const secondary = [
+                    { 
+                      label: hasPipelines ? 'View Pipelines' : 'Create Pipeline', 
+                      href: '/deployments?tab=pipelines', 
+                      icon: GitBranch 
+                    },
+                    { label: 'Resolve Drift', href: '/incidents', icon: AlertTriangle },
+                  ];
+                  
+                  return (
+                    <>
+                      <Link to={primary.href}>
+                        <Button className="w-full" size="lg">
+                          <primary.icon className="h-5 w-5 mr-2" />
+                          {primary.label}
+                        </Button>
+                      </Link>
+                      <div className="grid gap-2">
+                        {secondary.map((action, idx) => (
+                          <Link key={idx} to={action.href}>
+                            <Button variant="outline" className="w-full justify-start">
+                              <action.icon className="h-4 w-4 mr-2" />
+                              {action.label}
+                            </Button>
+                          </Link>
+                        ))}
+                      </div>
+                    </>
+                  );
+                }
+                
+                // Enterprise plan
+                if (planLower === 'enterprise') {
+                  const primary = {
+                    label: 'Review Drift Posture',
+                    href: '/drift-dashboard',
+                    icon: Shield,
+                  };
+                  const secondary = [
+                    { label: 'Manage Policies', href: '/admin/drift-policies', icon: Shield },
+                    { label: 'Review Incidents', href: '/incidents', icon: AlertTriangle },
+                  ];
+                  
+                  return (
+                    <>
+                      <Link to={primary.href}>
+                        <Button className="w-full" size="lg">
+                          <primary.icon className="h-5 w-5 mr-2" />
+                          {primary.label}
+                        </Button>
+                      </Link>
+                      <div className="grid gap-2">
+                        {secondary.map((action, idx) => (
+                          <Link key={idx} to={action.href}>
+                            <Button variant="outline" className="w-full justify-start">
+                              <action.icon className="h-4 w-4 mr-2" />
+                              {action.label}
+                            </Button>
+                          </Link>
+                        ))}
+                      </div>
+                    </>
+                  );
+                }
+                
+                // Fallback for unknown plans
+                const primary = { label: 'Manage Environments', href: '/environments', icon: Server };
+                const secondary = [{ label: 'View Workflows', href: '/workflows', icon: Workflow }];
+                
+                return (
+                  <>
+                    <Link to={primary.href}>
+                      <Button className="w-full" size="lg">
+                        <primary.icon className="h-5 w-5 mr-2" />
+                        {primary.label}
+                      </Button>
+                    </Link>
+                    <div className="grid gap-2">
+                      {secondary.map((action, idx) => (
+                        <Link key={idx} to={action.href}>
+                          <Button variant="outline" className="w-full justify-start">
+                            <action.icon className="h-4 w-4 mr-2" />
+                            {action.label}
+                          </Button>
+                        </Link>
+                      ))}
+                    </div>
+                  </>
+                );
+              })()}
             </div>
           </CardContent>
         </Card>

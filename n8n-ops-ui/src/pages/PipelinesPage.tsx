@@ -25,6 +25,7 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog';
 import { apiClient } from '@/lib/api-client';
+import { useFeatures } from '@/lib/features';
 import { Plus, Edit, Copy, PlayCircle, PauseCircle, Trash2, ArrowRight } from 'lucide-react';
 import { toast } from 'sonner';
 import type { Pipeline } from '@/types';
@@ -42,6 +43,8 @@ export function PipelinesPage() {
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const [pipelineToDelete, setPipelineToDelete] = useState<Pipeline | null>(null);
   const [showInactive, setShowInactive] = useState(true);
+  const { planName, isLoading: loadingFeatures } = useFeatures();
+  const planLower = planName?.toLowerCase() || 'free';
 
   const { data: pipelines, isLoading } = useQuery({
     queryKey: ['pipelines', showInactive],
@@ -126,6 +129,38 @@ export function PipelinesPage() {
     duplicateMutation.mutate(pipeline);
   };
 
+  if (!loadingFeatures && planLower === 'pro') {
+    return (
+      <div className="space-y-6">
+        <div>
+          <h1 className="text-3xl font-bold">Pipelines</h1>
+          <p className="text-muted-foreground">
+            Define promotion rules and workflows between environments
+          </p>
+        </div>
+
+        <Card>
+          <CardContent className="py-12">
+            <div className="max-w-2xl">
+              <div className="text-xl font-semibold">Pipelines are built for teams</div>
+              <div className="text-muted-foreground mt-2">
+                Agency adds pipelines, approvals, and drift management for safe multi-environment delivery.
+              </div>
+              <div className="flex flex-col sm:flex-row gap-2 mt-6">
+                <Link to="/billing">
+                  <Button>Upgrade to Agency</Button>
+                </Link>
+                <Link to="/deployments/new">
+                  <Button variant="outline">Promote manually</Button>
+                </Link>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+      </div>
+    );
+  }
+
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between">
@@ -170,10 +205,13 @@ export function PipelinesPage() {
             <div className="text-center py-8">Loading pipelines...</div>
           ) : !pipelines?.data || pipelines.data.length === 0 ? (
             <div className="text-center py-8 text-muted-foreground">
-              <p className="mb-4">No pipelines found</p>
+              <p className="mb-4">Create your first pipeline</p>
+              <p className="text-sm text-muted-foreground mb-4">
+                Define how workflows move from dev → staging → prod with gates and approvals.
+              </p>
               <Button onClick={() => navigate('/pipelines/new')}>
                 <Plus className="h-4 w-4 mr-2" />
-                Create Your First Pipeline
+                Create pipeline
               </Button>
             </div>
           ) : (

@@ -1,7 +1,7 @@
 """add_provider_to_audit_logs
 
 Revision ID: f7g8h9i0j1k2
-Revises: 'a1b2c3d4e5f6'
+Revises: 'm3n4o5p6q7r8'
 Create Date: 2025-01-20
 
 """
@@ -10,7 +10,7 @@ import sqlalchemy as sa
 
 # revision identifiers, used by Alembic.
 revision = 'f7g8h9i0j1k2'
-down_revision = 'a1b2c3d4e5f6'
+down_revision = 'm3n4o5p6q7r8'
 branch_labels = None
 depends_on = None
 

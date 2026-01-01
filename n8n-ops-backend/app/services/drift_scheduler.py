@@ -38,7 +38,7 @@ async def _get_environments_for_drift_check() -> List[Dict[str, Any]]:
     try:
         # Get environments with Git configured
         response = db_service.client.table("environments").select(
-            "id, tenant_id, name, git_repo_url, git_pat, n8n_type"
+            "id, tenant_id, n8n_name, git_repo_url, git_pat, n8n_type"
         ).not_.is_("git_repo_url", "null").not_.is_("git_pat", "null").execute()
 
         environments = response.data or []
@@ -80,7 +80,7 @@ async def _process_drift_detection():
             for env in environments:
                 env_id = env.get("id")
                 tenant_id = env.get("tenant_id")
-                env_name = env.get("name", "Unknown")
+                env_name = env.get("n8n_name", "Unknown")
 
                 try:
                     # Run drift detection

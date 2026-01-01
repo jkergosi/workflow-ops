@@ -8,8 +8,8 @@ from datetime import datetime
 from fastapi.testclient import TestClient
 
 
-# Mock data
-MOCK_TENANT_ID = "00000000-0000-0000-0000-000000000000"
+# Mock data (must match tests/conftest.py tenant id used by get_current_user override)
+MOCK_TENANT_ID = "00000000-0000-0000-0000-000000000001"
 
 MOCK_SUBSCRIPTION_PLANS = [
     {

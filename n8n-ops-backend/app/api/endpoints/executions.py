@@ -1,19 +1,30 @@
-from fastapi import APIRouter, HTTPException, status
-from typing import List, Dict, Any
+from fastapi import APIRouter, HTTPException, status, Depends
+from typing import List, Dict, Any, Optional
 from app.services.database import db_service
+from app.services.auth_service import get_current_user
 
 router = APIRouter()
 
-# TODO: Replace with actual tenant ID from authenticated user
+# Fallback tenant ID (should not be used in production)
 MOCK_TENANT_ID = "00000000-0000-0000-0000-000000000000"
 
 
+def get_tenant_id(user_info: dict) -> str:
+    """Extract tenant_id from user_info, with fallback to MOCK_TENANT_ID"""
+    return user_info.get("tenant", {}).get("id", MOCK_TENANT_ID)
+
+
 @router.get("/", response_model=List[Dict[str, Any]])
-async def get_executions(environment_id: str = None, workflow_id: str = None):
+async def get_executions(
+    environment_id: Optional[str] = None,
+    workflow_id: Optional[str] = None,
+    user_info: dict = Depends(get_current_user)
+):
     """Get all executions from the database cache, optionally filtered by environment and workflow"""
     try:
+        tenant_id = get_tenant_id(user_info)
         executions = await db_service.get_executions(
-            MOCK_TENANT_ID,
+            tenant_id,
             environment_id=environment_id,
             workflow_id=workflow_id
         )
@@ -48,10 +59,14 @@ async def get_executions(environment_id: str = None, workflow_id: str = None):
 
 
 @router.get("/{execution_id}", response_model=Dict[str, Any])
-async def get_execution(execution_id: str):
+async def get_execution(
+    execution_id: str,
+    user_info: dict = Depends(get_current_user)
+):
     """Get a specific execution by ID"""
     try:
-        execution = await db_service.get_execution(execution_id, MOCK_TENANT_ID)
+        tenant_id = get_tenant_id(user_info)
+        execution = await db_service.get_execution(execution_id, tenant_id)
 
         if not execution:
             raise HTTPException(

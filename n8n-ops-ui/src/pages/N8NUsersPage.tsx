@@ -19,6 +19,7 @@ import { useAppStore } from '@/store/use-app-store';
 import { Search, AlertCircle, CheckCircle2, Clock, RefreshCw, Download } from 'lucide-react';
 import type { EnvironmentType } from '@/types';
 import { toast } from 'sonner';
+import { getDefaultEnvironmentId, resolveEnvironment, sortEnvironments } from '@/lib/environment-utils';
 
 export function N8NUsersPage() {
   useEffect(() => {
@@ -37,32 +38,44 @@ export function N8NUsersPage() {
   const [selectedStatus, setSelectedStatus] = useState<string>('all');
   const [isSyncing, setIsSyncing] = useState(false);
 
-  // Fetch all N8N users
-  const { data: n8nUsers, isLoading, refetch } = useQuery({
-    queryKey: ['n8n-users', selectedEnvironment],
-    queryFn: () => api.getN8NUsers(selectedEnvironment === 'dev' ? undefined : selectedEnvironment),
-  });
-
   // Fetch environments for filter
   const { data: environments } = useQuery({
     queryKey: ['environments'],
     queryFn: () => api.getEnvironments(),
   });
 
+  const availableEnvironments = useMemo(() => {
+    if (!environments?.data) return [];
+    return sortEnvironments(environments.data.filter((env: any) => env.isActive));
+  }, [environments?.data]);
+
+  const currentEnvironment = useMemo(
+    () => resolveEnvironment(availableEnvironments, selectedEnvironment),
+    [availableEnvironments, selectedEnvironment]
+  );
+  const currentEnvironmentId = currentEnvironment?.id;
+  const currentEnvironmentType = currentEnvironment?.environmentClass || currentEnvironment?.type;
+
+  useEffect(() => {
+    if (availableEnvironments.length === 0) return;
+    const nextId = currentEnvironmentId || getDefaultEnvironmentId(availableEnvironments);
+    if (nextId && selectedEnvironment !== nextId) {
+      setSelectedEnvironment(nextId);
+    }
+  }, [availableEnvironments, currentEnvironmentId, selectedEnvironment, setSelectedEnvironment]);
+
+  // Fetch all N8N users (API expects environment_type, so we derive it from the selected environment)
+  const { data: n8nUsers, isLoading, refetch } = useQuery({
+    queryKey: ['n8n-users', currentEnvironmentType],
+    queryFn: () => api.getN8NUsers(currentEnvironmentType),
+  });
+
   // Sync mutation to refresh from N8N (users only)
   const syncMutation = useMutation({
     mutationFn: async () => {
-      // Get all environments or just the selected one
-      const envsToSync = environments?.data?.filter((env: any) =>
-        selectedEnvironment === 'dev' || env.type === selectedEnvironment
-      ) || [];
-
-      const results = [];
-      for (const env of envsToSync) {
-        const result = await api.syncUsersOnly(env.id);
-        results.push({ env: env.name, ...result.data });
-      }
-      return results;
+      if (!currentEnvironmentId) return [];
+      const result = await api.syncUsersOnly(currentEnvironmentId);
+      return [{ env: currentEnvironment?.name || currentEnvironmentId, ...result.data }];
     },
     onSuccess: (results) => {
       setIsSyncing(false);
@@ -222,13 +235,12 @@ export function N8NUsersPage() {
             </div>
 
             <select
-              value={selectedEnvironment}
+              value={currentEnvironmentId || ''}
               onChange={(e) => setSelectedEnvironment(e.target.value as EnvironmentType)}
               className="flex h-9 w-[180px] rounded-md border border-input bg-background px-3 py-1 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
             >
-              <option value="dev" className="bg-background text-foreground">All Environments</option>
-              {environments?.data?.map((env: any) => (
-                <option key={env.id} value={env.type} className="bg-background text-foreground">
+              {availableEnvironments.map((env: any) => (
+                <option key={env.id} value={env.id} className="bg-background text-foreground">
                   {env.name}
                 </option>
               ))}

@@ -5,8 +5,8 @@ from datetime import datetime, timedelta
 from pydantic import BaseModel
 
 from app.services.auth_service import get_current_user
-from app.services.feature_service import feature_service
 from app.services.database import db_service
+from app.core.entitlements_gate import require_entitlement
 
 router = APIRouter()
 
@@ -32,6 +32,7 @@ async def get_drift_compliance_report(
     end_date: Optional[str] = Query(None, description="End date (ISO format)"),
     environment_id: Optional[str] = Query(None, description="Filter by environment"),
     user_info: dict = Depends(get_current_user),
+    _: dict = Depends(require_entitlement("drift_policies")),
 ):
     """
     Get drift compliance report.
@@ -44,18 +45,6 @@ async def get_drift_compliance_report(
     - Resolution type distribution
     """
     tenant_id = user_info["tenant"]["id"]
-
-    # Check feature access (Enterprise only)
-    can_use, message = await feature_service.can_use_feature(tenant_id, "drift_policies")
-    if not can_use:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail={
-                "error": "feature_not_available",
-                "feature": "drift_policies",
-                "message": message,
-            },
-        )
 
     # Parse dates or use defaults (last 30 days)
     if end_date:
@@ -252,6 +241,7 @@ async def export_drift_compliance_report(
     end_date: Optional[str] = Query(None, description="End date (ISO format)"),
     environment_id: Optional[str] = Query(None, description="Filter by environment"),
     user_info: dict = Depends(get_current_user),
+    _: dict = Depends(require_entitlement("drift_policies")),
 ):
     """
     Export drift compliance report.
@@ -261,18 +251,6 @@ async def export_drift_compliance_report(
     from fastapi.responses import Response
 
     tenant_id = user_info["tenant"]["id"]
-
-    # Check feature access
-    can_use, message = await feature_service.can_use_feature(tenant_id, "drift_policies")
-    if not can_use:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail={
-                "error": "feature_not_available",
-                "feature": "drift_policies",
-                "message": message,
-            },
-        )
 
     # Get report data
     report = await get_drift_compliance_report(

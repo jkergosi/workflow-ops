@@ -21,6 +21,7 @@ import { useAppStore } from '@/store/use-app-store';
 import { Search, ArrowUpDown, ArrowUp, ArrowDown, X, ExternalLink, CheckCircle2, XCircle, Clock, Play, Download, RefreshCw } from 'lucide-react';
 import type { EnvironmentType } from '@/types';
 import { toast } from 'sonner';
+import { getDefaultEnvironmentId, resolveEnvironment, sortEnvironments } from '@/lib/environment-utils';
 
 type SortField = 'workflowName' | 'status' | 'startedAt' | 'executionTime';
 type SortDirection = 'asc' | 'desc';
@@ -63,18 +64,27 @@ export function ExecutionsPage() {
     queryFn: () => api.getEnvironments(),
   });
 
-  // Get current environment ID
-  const currentEnvironmentId = useMemo(() => {
-    if (!environments?.data) return undefined;
-    const env = environments.data.find((e) => e.type === selectedEnvironment);
-    return env?.id;
-  }, [environments, selectedEnvironment]);
+  const availableEnvironments = useMemo(() => {
+    if (!environments?.data) return [];
+    return sortEnvironments(environments.data.filter((env: any) => env.isActive));
+  }, [environments?.data]);
+
+  const currentEnvironment = useMemo(
+    () => resolveEnvironment(availableEnvironments, selectedEnvironment),
+    [availableEnvironments, selectedEnvironment]
+  );
+  const currentEnvironmentId = currentEnvironment?.id;
+
+  useEffect(() => {
+    if (availableEnvironments.length === 0) return;
+    const nextId = currentEnvironment?.id || getDefaultEnvironmentId(availableEnvironments);
+    if (nextId && selectedEnvironment !== nextId) {
+      setSelectedEnvironment(nextId);
+    }
+  }, [availableEnvironments, currentEnvironment?.id, selectedEnvironment, setSelectedEnvironment]);
 
   // Get the current environment's base URL
-  const currentEnvironment = useMemo(() => {
-    if (!environments?.data) return undefined;
-    return environments.data.find((env) => env.type === selectedEnvironment);
-  }, [environments, selectedEnvironment]);
+  // (currentEnvironment is now resolved from availableEnvironments above)
 
   // Fetch executions from database
   const { data: executions, isLoading, refetch } = useQuery({
@@ -89,16 +99,9 @@ export function ExecutionsPage() {
   // Sync mutation to refresh from N8N (executions only)
   const syncMutation = useMutation({
     mutationFn: async () => {
-      const envsToSync = environments?.data?.filter((env: any) =>
-        selectedEnvironment === 'dev' || env.type === selectedEnvironment
-      ) || [];
-
-      const results = [];
-      for (const env of envsToSync) {
-        const result = await api.syncExecutionsOnly(env.id);
-        results.push({ env: env.name, ...result.data });
-      }
-      return results;
+      if (!currentEnvironmentId) return [];
+      const result = await api.syncExecutionsOnly(currentEnvironmentId);
+      return [{ env: currentEnvironment?.name || currentEnvironmentId, ...result.data }];
     },
     onSuccess: (results) => {
       setIsSyncing(false);
@@ -414,13 +417,15 @@ export function ExecutionsPage() {
               <Label htmlFor="environment">Environment</Label>
               <select
                 id="environment"
-                value={selectedEnvironment}
+                value={currentEnvironmentId || ''}
                 onChange={(e) => setSelectedEnvironment(e.target.value as EnvironmentType)}
                 className="flex h-9 w-full rounded-md border border-input bg-background text-foreground px-3 py-1 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
               >
-                <option value="dev" className="bg-background text-foreground">Development</option>
-                <option value="staging" className="bg-background text-foreground">Staging</option>
-                <option value="production" className="bg-background text-foreground">Production</option>
+                {availableEnvironments.map((env: any) => (
+                  <option key={env.id} value={env.id} className="bg-background text-foreground">
+                    {env.name}
+                  </option>
+                ))}
               </select>
             </div>
           </div>

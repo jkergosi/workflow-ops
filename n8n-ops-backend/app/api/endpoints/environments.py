@@ -28,12 +28,18 @@ from app.services.environment_action_guard import (
     ActionGuardError
 )
 from app.schemas.environment import EnvironmentClass
+from app.services.auth_service import get_current_user
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
 
-# TODO: Replace with actual tenant ID from authenticated user
+# Fallback tenant ID (should not be used in production)
 MOCK_TENANT_ID = "00000000-0000-0000-0000-000000000000"
+
+
+def get_tenant_id(user_info: dict) -> str:
+    """Extract tenant_id from user_info, with fallback to MOCK_TENANT_ID"""
+    return user_info.get("tenant", {}).get("id", MOCK_TENANT_ID)
 
 
 @router.get("/test")
@@ -44,11 +50,13 @@ async def test_endpoint():
 
 @router.get("/", response_model=List[EnvironmentResponse], response_model_exclude_none=False)
 async def get_environments(
+    user_info: dict = Depends(get_current_user),
     _: dict = Depends(require_entitlement("environment_basic"))
 ):
     """Get all environments for the current tenant"""
     try:
-        environments = await db_service.get_environments(MOCK_TENANT_ID)
+        tenant_id = get_tenant_id(user_info)
+        environments = await db_service.get_environments(tenant_id)
         return environments
     except Exception as e:
         raise HTTPException(
@@ -58,10 +66,13 @@ async def get_environments(
 
 
 @router.get("/limits")
-async def get_environment_limits():
+async def get_environment_limits(
+    user_info: dict = Depends(get_current_user)
+):
     """Get environment limits and current usage for the tenant"""
     try:
-        can_add, message, current, max_allowed = await entitlements_service.can_add_environment(MOCK_TENANT_ID)
+        tenant_id = get_tenant_id(user_info)
+        can_add, message, current, max_allowed = await entitlements_service.can_add_environment(tenant_id)
         return {
             "can_add": can_add,
             "message": message,
@@ -185,11 +196,13 @@ async def test_git_connection(
 @router.get("/{environment_id}", response_model=EnvironmentResponse, response_model_exclude_none=False)
 async def get_environment(
     environment_id: str,
+    user_info: dict = Depends(get_current_user),
     _: dict = Depends(require_entitlement("environment_basic"))
 ):
     """Get a specific environment by ID"""
     try:
-        environment = await db_service.get_environment(environment_id, MOCK_TENANT_ID)
+        tenant_id = get_tenant_id(user_info)
+        environment = await db_service.get_environment(environment_id, tenant_id)
         if not environment:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
@@ -208,15 +221,17 @@ async def get_environment(
 @router.post("/", response_model=EnvironmentResponse, status_code=status.HTTP_201_CREATED, response_model_exclude_none=False)
 async def create_environment(
     environment: EnvironmentCreate,
+    user_info: dict = Depends(get_current_user),
     _: dict = Depends(require_environment_limit())
 ):
     """Create a new environment"""
     try:
+        tenant_id = get_tenant_id(user_info)
         # Type is now optional metadata - no uniqueness check needed
         # Multiple environments can have the same type
 
         environment_data = {
-            "tenant_id": MOCK_TENANT_ID,
+            "tenant_id": tenant_id,
             "n8n_name": environment.n8n_name,
             "n8n_type": environment.n8n_type,  # Optional, can be None
             "n8n_base_url": environment.n8n_base_url,
@@ -237,7 +252,7 @@ async def create_environment(
             await create_audit_log(
                 action_type="ENVIRONMENT_CREATED",
                 action=f"Created environment '{environment.n8n_name}'",
-                tenant_id=MOCK_TENANT_ID,
+                tenant_id=tenant_id,
                 resource_type="environment",
                 resource_id=created_environment.get("id"),
                 resource_name=environment.n8n_name,
@@ -265,12 +280,14 @@ async def create_environment(
 async def update_environment(
     environment_id: str,
     environment: EnvironmentUpdate,
+    user_info: dict = Depends(get_current_user),
     _: dict = Depends(require_entitlement("environment_basic"))
 ):
     """Update an environment"""
     try:
+        tenant_id = get_tenant_id(user_info)
         # Check if environment exists
-        existing = await db_service.get_environment(environment_id, MOCK_TENANT_ID)
+        existing = await db_service.get_environment(environment_id, tenant_id)
         if not existing:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
@@ -285,7 +302,7 @@ async def update_environment(
 
         updated_environment = await db_service.update_environment(
             environment_id,
-            MOCK_TENANT_ID,
+            tenant_id,
             update_data
         )
 
@@ -308,12 +325,14 @@ async def update_environment(
 @router.delete("/{environment_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_environment(
     environment_id: str,
+    user_info: dict = Depends(get_current_user),
     _: dict = Depends(require_entitlement("environment_basic"))
 ):
     """Delete an environment"""
     try:
+        tenant_id = get_tenant_id(user_info)
         # Check if environment exists
-        existing = await db_service.get_environment(environment_id, MOCK_TENANT_ID)
+        existing = await db_service.get_environment(environment_id, tenant_id)
         if not existing:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
@@ -324,14 +343,14 @@ async def delete_environment(
         env_name = existing.get("n8n_name", existing.get("name", environment_id))
         env_provider = existing.get("provider", "n8n")
 
-        await db_service.delete_environment(environment_id, MOCK_TENANT_ID)
+        await db_service.delete_environment(environment_id, tenant_id)
 
         # Create audit log with provider context
         try:
             await create_audit_log(
                 action_type="ENVIRONMENT_DELETED",
                 action=f"Deleted environment '{env_name}'",
-                tenant_id=MOCK_TENANT_ID,
+                tenant_id=tenant_id,
                 resource_type="environment",
                 resource_id=environment_id,
                 resource_name=env_name,
@@ -356,10 +375,14 @@ async def delete_environment(
 
 
 @router.post("/{environment_id}/update-connection-status")
-async def update_connection_status(environment_id: str):
+async def update_connection_status(
+    environment_id: str,
+    user_info: dict = Depends(get_current_user)
+):
     """Update the last_connected timestamp for an environment"""
     try:
-        environment = await db_service.get_environment(environment_id, MOCK_TENANT_ID)
+        tenant_id = get_tenant_id(user_info)
+        environment = await db_service.get_environment(environment_id, tenant_id)
         if not environment:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
@@ -374,7 +397,7 @@ async def update_connection_status(environment_id: str):
             # Update last_connected timestamp
             await db_service.update_environment(
                 environment_id,
-                MOCK_TENANT_ID,
+                tenant_id,
                 {"last_connected": datetime.utcnow().isoformat()}
             )
 
@@ -566,7 +589,7 @@ async def _sync_environment_background(
             if not users:
                 logger.warning(f"No users returned from N8N for environment {environment_id}")
             synced_users = await db_service.sync_n8n_users_from_n8n(
-                MOCK_TENANT_ID,
+                tenant_id,
                 environment_id,
                 users or []
             )
@@ -588,7 +611,7 @@ async def _sync_environment_background(
             )
             tags = await adapter.get_tags()
             synced_tags = await db_service.sync_tags_from_n8n(
-                MOCK_TENANT_ID,
+                tenant_id,
                 environment_id,
                 tags
             )
@@ -815,15 +838,17 @@ async def sync_environment(
 @router.get("/{environment_id}/jobs")
 async def get_environment_jobs(
     environment_id: str,
+    user_info: dict = Depends(get_current_user),
     limit: int = 10,
     _: dict = Depends(require_entitlement("environment_basic"))
 ):
     """Get recent background jobs for an environment"""
     try:
+        tenant_id = get_tenant_id(user_info)
         jobs = await background_job_service.get_jobs_by_resource(
             resource_type="environment",
             resource_id=environment_id,
-            tenant_id=MOCK_TENANT_ID,
+            tenant_id=tenant_id,
             limit=limit
         )
         return jobs
@@ -835,13 +860,17 @@ async def get_environment_jobs(
 
 
 @router.post("/{environment_id}/sync-users")
-async def sync_users_only(environment_id: str):
+async def sync_users_only(
+    environment_id: str,
+    user_info: dict = Depends(get_current_user)
+):
     """
     Sync only users from N8N to database.
     """
     try:
+        tenant_id = get_tenant_id(user_info)
         # Get environment details
-        environment = await db_service.get_environment(environment_id, MOCK_TENANT_ID)
+        environment = await db_service.get_environment(environment_id, tenant_id)
         if not environment:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
@@ -866,7 +895,7 @@ async def sync_users_only(environment_id: str):
                 logger.warning(f"No users returned from N8N for environment {environment_id}")
             logger.info(f"Fetched {len(users) if users else 0} users from N8N for environment {environment_id}")
             synced_users = await db_service.sync_n8n_users_from_n8n(
-                MOCK_TENANT_ID,
+                tenant_id,
                 environment_id,
                 users or []
             )
@@ -896,13 +925,17 @@ async def sync_users_only(environment_id: str):
 
 
 @router.post("/{environment_id}/sync-executions")
-async def sync_executions_only(environment_id: str):
+async def sync_executions_only(
+    environment_id: str,
+    user_info: dict = Depends(get_current_user)
+):
     """
     Sync only executions from N8N to database.
     """
     try:
+        tenant_id = get_tenant_id(user_info)
         # Get environment details
-        environment = await db_service.get_environment(environment_id, MOCK_TENANT_ID)
+        environment = await db_service.get_environment(environment_id, tenant_id)
         if not environment:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
@@ -929,7 +962,7 @@ async def sync_executions_only(environment_id: str):
                 logger.warning(f"No executions returned from N8N for environment {environment_id}")
             
             synced_executions = await db_service.sync_executions_from_n8n(
-                MOCK_TENANT_ID,
+                tenant_id,
                 environment_id,
                 executions
             )
@@ -959,13 +992,17 @@ async def sync_executions_only(environment_id: str):
 
 
 @router.post("/{environment_id}/sync-tags")
-async def sync_tags_only(environment_id: str):
+async def sync_tags_only(
+    environment_id: str,
+    user_info: dict = Depends(get_current_user)
+):
     """
     Sync only tags from N8N to database.
     """
     try:
+        tenant_id = get_tenant_id(user_info)
         # Get environment details
-        environment = await db_service.get_environment(environment_id, MOCK_TENANT_ID)
+        environment = await db_service.get_environment(environment_id, tenant_id)
         if not environment:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
@@ -987,7 +1024,7 @@ async def sync_tags_only(environment_id: str):
         try:
             tags = await adapter.get_tags()
             synced_tags = await db_service.sync_tags_from_n8n(
-                MOCK_TENANT_ID,
+                tenant_id,
                 environment_id,
                 tags
             )
@@ -1020,6 +1057,7 @@ async def sync_tags_only(environment_id: str):
 @router.get("/{environment_id}/drift")
 async def get_environment_drift(
     environment_id: str,
+    user_info: dict = Depends(get_current_user),
     refresh: bool = False,
     _: dict = Depends(require_entitlement("environment_basic"))
 ):
@@ -1036,10 +1074,11 @@ async def get_environment_drift(
     from app.services.drift_detection_service import drift_detection_service
 
     try:
+        tenant_id = get_tenant_id(user_info)
         if refresh:
             # Run fresh drift detection
             summary = await drift_detection_service.detect_drift(
-                tenant_id=MOCK_TENANT_ID,
+                tenant_id=tenant_id,
                 environment_id=environment_id,
                 update_status=True
             )
@@ -1053,7 +1092,7 @@ async def get_environment_drift(
         else:
             # Return cached status
             cached = await drift_detection_service.get_cached_drift_status(
-                tenant_id=MOCK_TENANT_ID,
+                tenant_id=tenant_id,
                 environment_id=environment_id
             )
             return cached
@@ -1069,6 +1108,7 @@ async def get_environment_drift(
 async def refresh_environment_drift(
     environment_id: str,
     background_tasks: BackgroundTasks,
+    user_info: dict = Depends(get_current_user),
     _: dict = Depends(require_entitlement("environment_basic"))
 ):
     """
@@ -1080,8 +1120,9 @@ async def refresh_environment_drift(
     from app.services.drift_detection_service import drift_detection_service
 
     try:
+        tenant_id = get_tenant_id(user_info)
         # Verify environment exists
-        environment = await db_service.get_environment(environment_id, MOCK_TENANT_ID)
+        environment = await db_service.get_environment(environment_id, tenant_id)
         if not environment:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
@@ -1090,7 +1131,7 @@ async def refresh_environment_drift(
 
         # Run drift detection
         summary = await drift_detection_service.detect_drift(
-            tenant_id=MOCK_TENANT_ID,
+            tenant_id=tenant_id,
             environment_id=environment_id,
             update_status=True
         )

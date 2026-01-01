@@ -58,6 +58,7 @@ import {
 import { Link } from 'react-router-dom';
 import type { EnvironmentType, Credential, Environment } from '@/types';
 import { toast } from 'sonner';
+import { getDefaultEnvironmentId, resolveEnvironment, sortEnvironments } from '@/lib/environment-utils';
 import { formatNodeType } from '@/lib/workflow-analysis';
 import { CredentialMatrix, CredentialDiscovery, MappingHealthCheck } from '@/components/credentials';
 
@@ -174,13 +175,21 @@ export function CredentialsPage() {
   // Get the selected environment ID (handle type vs id selection)
   const selectedEnvId = useMemo(() => {
     if (!selectedEnvironment || selectedEnvironment === 'all') return 'all';
-    // Check if selectedEnvironment is an ID or a type
-    const envById = environments?.data?.find((e: Environment) => e.id === selectedEnvironment);
-    if (envById) return envById.id;
-    // Otherwise, find by type
-    const envByType = environments?.data?.find((e: Environment) => e.type === selectedEnvironment);
-    return envByType?.id || 'all';
+    return resolveEnvironment(environments?.data, selectedEnvironment)?.id || 'all';
   }, [selectedEnvironment, environments?.data]);
+
+  // Default to dev (and normalize legacy type selections to environment_id)
+  useEffect(() => {
+    const envs = environments?.data || [];
+    if (envs.length === 0) return;
+    if (selectedEnvironment === 'all') return;
+
+    const resolved = resolveEnvironment(envs, selectedEnvironment);
+    const nextId = resolved?.id || getDefaultEnvironmentId(envs);
+    if (nextId && selectedEnvironment !== nextId) {
+      setSelectedEnvironment(nextId);
+    }
+  }, [environments?.data, selectedEnvironment, setSelectedEnvironment]);
 
   // Fetch credentials from the database cache (synced from N8N)
   const { data: credentials, isLoading, refetch } = useQuery({
@@ -650,7 +659,7 @@ export function CredentialsPage() {
               className="flex h-9 w-[180px] rounded-md border border-input bg-background text-foreground px-3 py-1 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
             >
               <option value="all" className="bg-background text-foreground">All Environments</option>
-              {environments?.data?.map((env: Environment) => (
+              {sortEnvironments((environments?.data || []).filter((env: Environment) => env.isActive)).map((env: Environment) => (
                 <option key={env.id} value={env.id} className="bg-background text-foreground">
                   {env.name}
                 </option>

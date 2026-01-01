@@ -29,6 +29,7 @@ import {
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog';
 import { apiClient } from '@/lib/api-client';
+import { getDefaultEnvironmentId, sortEnvironments } from '@/lib/environment-utils';
 import type { Environment } from '@/types';
 import type { LogicalCredential, CredentialMapping } from '@/types/credentials';
 import { Shield, Server, Globe, Plus, Pencil, Trash2 } from 'lucide-react';
@@ -197,7 +198,8 @@ export function CredentialHealthPage() {
   // Auto-select first environment
   useEffect(() => {
     if (!selectedEnvId && envsData?.data?.length) {
-      setSelectedEnvId(envsData.data[0].id);
+      const sorted = sortEnvironments(envsData.data.filter((e) => e.isActive));
+      setSelectedEnvId(getDefaultEnvironmentId(sorted) || sorted[0].id);
     }
   }, [envsData, selectedEnvId]);
 
@@ -209,7 +211,7 @@ export function CredentialHealthPage() {
     }
   }, [providersData, selectedProvider]);
 
-  const envOptions: Environment[] = envsData?.data || [];
+  const envOptions: Environment[] = sortEnvironments((envsData?.data || []).filter((e) => e.isActive));
   const providers = providersData?.data?.providers || [];
   const logicalCreds = logicalCredsData?.data || [];
   const mappings = mappingsData?.data || [];

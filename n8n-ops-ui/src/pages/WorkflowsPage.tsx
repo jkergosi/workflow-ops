@@ -39,6 +39,7 @@ import { HardDeleteConfirmDialog } from '@/components/workflow/HardDeleteConfirm
 import { getWorkflowActionPolicy } from '@/lib/workflow-action-policy';
 import { useFeatures } from '@/lib/features';
 import { useAuth } from '@/lib/auth';
+import { getDefaultEnvironmentId, resolveEnvironment, sortEnvironments } from '@/lib/environment-utils';
 
 type SortField = 'name' | 'description' | 'active' | 'executions' | 'updatedAt';
 type SortDirection = 'asc' | 'desc';
@@ -125,32 +126,20 @@ export function WorkflowsPage() {
   // Get available environments for the tenant (filtered and sorted)
   const availableEnvironments = useMemo(() => {
     if (!environments?.data) return [];
-    // Filter to only active environments and sort by name (type is now optional)
-    return environments.data
-      .filter((env) => env.isActive)
-      .sort((a, b) => {
-        // Sort by type if available, then by name
-        if (a.type && b.type && a.type !== b.type) {
-          return a.type.localeCompare(b.type);
-        }
-        return a.name.localeCompare(b.name);
-      });
+    return sortEnvironments(environments.data.filter((env) => env.isActive));
   }, [environments]);
 
   // Get the current environment's base URL and ID
   // selectedEnvironment can now be either a type string or an environment ID
-  const currentEnvironment = environments?.data?.find(
-    (env) => env.id === selectedEnvironment || env.type === selectedEnvironment
-  );
+  const currentEnvironment = resolveEnvironment(environments?.data, selectedEnvironment);
 
   // Set default environment if none selected and environments are available
   useEffect(() => {
-    if (availableEnvironments.length > 0) {
-      const found = availableEnvironments.find(env => env.id === selectedEnvironment || env.type === selectedEnvironment);
-      if (!found) {
-        // Default to first environment's ID (prefer ID over type)
-        setSelectedEnvironment(availableEnvironments[0].id);
-      }
+    if (availableEnvironments.length === 0) return;
+    const resolved = resolveEnvironment(availableEnvironments, selectedEnvironment);
+    const nextId = resolved?.id || getDefaultEnvironmentId(availableEnvironments);
+    if (nextId && selectedEnvironment !== nextId) {
+      setSelectedEnvironment(nextId);
     }
   }, [availableEnvironments, selectedEnvironment, setSelectedEnvironment]);
 
@@ -725,7 +714,7 @@ export function WorkflowsPage() {
               <Label htmlFor="environment">Environment</Label>
               <select
                 id="environment"
-                value={selectedEnvironment}
+                value={currentEnvironment?.id || ''}
                 onChange={(e) => setSelectedEnvironment(e.target.value as EnvironmentType)}
                 className="flex h-9 w-full rounded-md border border-input bg-background text-foreground px-3 py-1 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                 disabled={availableEnvironments.length === 0}
@@ -734,7 +723,7 @@ export function WorkflowsPage() {
                   <option value="" className="bg-background text-foreground">No environments available</option>
                 ) : (
                   availableEnvironments.map((env) => (
-                    <option key={env.id} value={env.type} className="bg-background text-foreground">
+                    <option key={env.id} value={env.id} className="bg-background text-foreground">
                       {env.name}
                     </option>
                   ))
@@ -772,7 +761,7 @@ export function WorkflowsPage() {
         <CardHeader>
           <div className="flex items-center justify-between">
             <div>
-              <CardTitle>Workflows in {selectedEnvironment}</CardTitle>
+              <CardTitle>Workflows in {currentEnvironment?.name || '—'}</CardTitle>
               <CardDescription>
                 View and manage workflows in the selected environment
               </CardDescription>

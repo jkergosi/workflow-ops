@@ -4,7 +4,7 @@ import { server } from '@/test/mocks/server';
 import { http, HttpResponse } from 'msw';
 import { DashboardPage } from './DashboardPage';
 
-const API_BASE = 'http://localhost:4000/api/v1';
+const API_BASE = 'http://localhost:3000/api/v1';
 
 const mockEnvironments = [
   {
@@ -55,6 +55,9 @@ describe('DashboardPage', () => {
       }),
       http.get(`${API_BASE}/executions`, () => {
         return HttpResponse.json(mockExecutions);
+      }),
+      http.get(`${API_BASE}/snapshots`, () => {
+        return HttpResponse.json([]);
       }),
       http.get(`${API_BASE}/auth/status`, () => {
         return HttpResponse.json({
@@ -205,23 +208,23 @@ describe('DashboardPage', () => {
       expect(screen.getByText('Production')).toBeInTheDocument();
     });
 
-    it('should display Quick Actions section', async () => {
+    it('should display Recommended Next Step section', async () => {
       render(<DashboardPage />);
 
       await waitFor(() => {
-        expect(screen.getByText(/quick actions/i)).toBeInTheDocument();
+        expect(screen.getByText(/recommended next step/i)).toBeInTheDocument();
       });
     });
 
-    it('should display quick action buttons', async () => {
+    it('should show Pro → Agency upgrade trigger when pro has 2+ environments', async () => {
       render(<DashboardPage />);
 
       await waitFor(() => {
-        expect(screen.getByRole('button', { name: /view workflows/i })).toBeInTheDocument();
+        expect(screen.getByText(/deliver changes safely as a team/i)).toBeInTheDocument();
       });
 
-      expect(screen.getByRole('button', { name: /view executions/i })).toBeInTheDocument();
-      expect(screen.getByRole('button', { name: /manage environments/i })).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: /upgrade to agency/i })).toBeInTheDocument();
+      expect(screen.getAllByRole('button', { name: /upgrade/i }).length).toBe(1);
     });
   });
 

@@ -3,8 +3,9 @@ from fastapi import APIRouter, HTTPException, status, Depends, Query
 from typing import Optional
 
 from app.services.auth_service import get_current_user
-from app.services.feature_service import feature_service
 from app.services.drift_incident_service import drift_incident_service
+from app.core.entitlements_gate import require_entitlement
+from app.services.entitlements_service import entitlements_service
 from app.schemas.drift_incident import (
     DriftIncidentCreate,
     DriftIncidentUpdate,
@@ -25,21 +26,10 @@ async def list_incidents(
     limit: int = Query(50, ge=1, le=100),
     offset: int = Query(0, ge=0),
     user_info: dict = Depends(get_current_user),
+    _: dict = Depends(require_entitlement("drift_incidents")),
 ):
     """List drift incidents for the tenant."""
     tenant_id = user_info["tenant"]["id"]
-
-    # Check feature access for drift incidents
-    can_use, message = await feature_service.can_use_feature(tenant_id, "drift_incidents")
-    if not can_use:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail={
-                "error": "feature_not_available",
-                "feature": "drift_incidents",
-                "message": message,
-            },
-        )
 
     result = await drift_incident_service.get_incidents(
         tenant_id=tenant_id,
@@ -60,22 +50,11 @@ async def list_incidents(
 async def create_incident(
     payload: DriftIncidentCreate,
     user_info: dict = Depends(get_current_user),
+    _: dict = Depends(require_entitlement("drift_incidents")),
 ):
     """Create a new drift incident."""
     tenant_id = user_info["tenant"]["id"]
     user_id = user_info["user"]["id"]
-
-    # Check feature access
-    can_use, message = await feature_service.can_use_feature(tenant_id, "drift_incidents")
-    if not can_use:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail={
-                "error": "feature_not_available",
-                "feature": "drift_incidents",
-                "message": message,
-            },
-        )
 
     # Check drift mode enforcement - incidents cannot be created in passive mode
     from app.core.drift_mode import DriftMode, get_drift_mode_for_plan, can_create_drift_incident
@@ -89,9 +68,8 @@ async def create_incident(
             detail="Environment not found"
         )
     
-    # Get tenant plan from subscription
-    subscription = await feature_service.get_tenant_subscription(tenant_id)
-    plan_name = subscription.get("plan", {}).get("name", "free").lower() if subscription else "free"
+    entitlements = await entitlements_service.get_tenant_entitlements(tenant_id)
+    plan_name = (entitlements.get("plan_name") or "free").lower()
     
     # Determine drift mode: use environment setting if set, otherwise plan default
     env_drift_mode_str = environment.get("drift_handling_mode")
@@ -151,21 +129,10 @@ async def get_incident_stats(
 async def get_incident(
     incident_id: str,
     user_info: dict = Depends(get_current_user),
+    _: dict = Depends(require_entitlement("drift_incidents")),
 ):
     """Get a single drift incident."""
     tenant_id = user_info["tenant"]["id"]
-
-    # Check feature access
-    can_use, message = await feature_service.can_use_feature(tenant_id, "drift_incidents")
-    if not can_use:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail={
-                "error": "feature_not_available",
-                "feature": "drift_incidents",
-                "message": message,
-            },
-        )
 
     incident = await drift_incident_service.get_incident(tenant_id, incident_id)
     if not incident:
@@ -182,22 +149,11 @@ async def update_incident(
     incident_id: str,
     payload: DriftIncidentUpdate,
     user_info: dict = Depends(get_current_user),
+    _: dict = Depends(require_entitlement("drift_incidents")),
 ):
     """Update drift incident fields (not status transitions)."""
     tenant_id = user_info["tenant"]["id"]
     user_id = user_info["user"]["id"]
-
-    # Check feature access
-    can_use, message = await feature_service.can_use_feature(tenant_id, "drift_incidents")
-    if not can_use:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail={
-                "error": "feature_not_available",
-                "feature": "drift_incidents",
-                "message": message,
-            },
-        )
 
     incident = await drift_incident_service.update_incident(
         tenant_id=tenant_id,
@@ -219,22 +175,11 @@ async def acknowledge_incident(
     incident_id: str,
     payload: DriftIncidentAcknowledge,
     user_info: dict = Depends(get_current_user),
+    _: dict = Depends(require_entitlement("drift_incidents")),
 ):
     """Acknowledge a drift incident."""
     tenant_id = user_info["tenant"]["id"]
     user_id = user_info["user"]["id"]
-
-    # Check feature access
-    can_use, message = await feature_service.can_use_feature(tenant_id, "drift_incidents")
-    if not can_use:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail={
-                "error": "feature_not_available",
-                "feature": "drift_incidents",
-                "message": message,
-            },
-        )
 
     incident = await drift_incident_service.acknowledge_incident(
         tenant_id=tenant_id,
@@ -254,22 +199,11 @@ async def stabilize_incident(
     incident_id: str,
     reason: Optional[str] = None,
     user_info: dict = Depends(get_current_user),
+    _: dict = Depends(require_entitlement("drift_incidents")),
 ):
     """Mark incident as stabilized (no new drift changes)."""
     tenant_id = user_info["tenant"]["id"]
     user_id = user_info["user"]["id"]
-
-    # Check feature access
-    can_use, message = await feature_service.can_use_feature(tenant_id, "drift_incidents")
-    if not can_use:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail={
-                "error": "feature_not_available",
-                "feature": "drift_incidents",
-                "message": message,
-            },
-        )
 
     incident = await drift_incident_service.stabilize_incident(
         tenant_id=tenant_id,
@@ -286,22 +220,11 @@ async def reconcile_incident(
     incident_id: str,
     payload: DriftIncidentResolve,
     user_info: dict = Depends(get_current_user),
+    _: dict = Depends(require_entitlement("drift_incidents")),
 ):
     """Reconcile a drift incident with resolution tracking."""
     tenant_id = user_info["tenant"]["id"]
     user_id = user_info["user"]["id"]
-
-    # Check feature access
-    can_use, message = await feature_service.can_use_feature(tenant_id, "drift_incidents")
-    if not can_use:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail={
-                "error": "feature_not_available",
-                "feature": "drift_incidents",
-                "message": message,
-            },
-        )
 
     incident = await drift_incident_service.reconcile_incident(
         tenant_id=tenant_id,
@@ -320,22 +243,11 @@ async def close_incident(
     incident_id: str,
     reason: Optional[str] = None,
     user_info: dict = Depends(get_current_user),
+    _: dict = Depends(require_entitlement("drift_incidents")),
 ):
     """Close a drift incident."""
     tenant_id = user_info["tenant"]["id"]
     user_id = user_info["user"]["id"]
-
-    # Check feature access
-    can_use, message = await feature_service.can_use_feature(tenant_id, "drift_incidents")
-    if not can_use:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail={
-                "error": "feature_not_available",
-                "feature": "drift_incidents",
-                "message": message,
-            },
-        )
 
     incident = await drift_incident_service.close_incident(
         tenant_id=tenant_id,

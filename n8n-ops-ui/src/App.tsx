@@ -7,6 +7,7 @@ import { ThemeProvider } from '@/components/ThemeProvider';
 import { Toaster, toast } from 'sonner';
 import { ErrorBoundary } from '@/components/ErrorBoundary';
 import { ServiceStatusIndicator } from '@/components/ServiceStatusIndicator';
+import { RouteTracker } from '@/components/RouteTracker';
 import { useEffect } from 'react';
 import { AppLayout } from '@/components/AppLayout';
 import { LoginPage } from '@/pages/LoginPage';
@@ -60,9 +61,9 @@ import {
   RequestFeaturePage,
   GetHelpPage,
 } from '@/pages/support';
-import { useEffect } from 'react';
 import { useLocation } from 'react-router-dom';
 import { canAccessRoute, mapBackendRoleToFrontendRole } from '@/lib/permissions';
+import { setLastRoute } from '@/lib/lastRoute';
 
 // Create a client
 const queryClient = new QueryClient({
@@ -198,6 +199,8 @@ function App() {
           <AuthProvider>
             <FeaturesProvider>
               <BrowserRouter>
+                {/* Route Tracker - tracks lastRoute for navigation persistence */}
+                <RouteTracker />
                 {/* Service Status Indicator - shows when services are unhealthy */}
                 <ServiceStatusIndicator position="fixed" />
                 <Routes>

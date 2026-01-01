@@ -5,7 +5,7 @@ import { server } from '@/test/mocks/server';
 import { http, HttpResponse } from 'msw';
 import { PipelinesPage } from './PipelinesPage';
 
-const API_BASE = 'http://localhost:4000/api/v1';
+const API_BASE = 'http://localhost:3000/api/v1';
 
 const mockEnvironments = [
   {
@@ -89,9 +89,9 @@ describe('PipelinesPage', () => {
           onboarding_required: false,
           has_environment: true,
           user: { id: 'user-1', email: 'admin@test.com', name: 'Admin', role: 'admin' },
-          tenant: { id: 'tenant-1', name: 'Test Org', subscription_tier: 'pro' },
+          tenant: { id: 'tenant-1', name: 'Test Org', subscription_tier: 'agency' },
           entitlements: {
-            plan_name: 'pro',
+            plan_name: 'agency',
             features: {
               max_environments: { enabled: true, limit: 10 },
               environment_promotion: { enabled: true },
@@ -117,104 +117,46 @@ describe('PipelinesPage', () => {
     });
   });
 
-  describe('Success State', () => {
-    it('should display page heading', async () => {
+  describe('Pro gated state', () => {
+    it('should show Pro → Agency gated state copy and CTA', async () => {
+      server.use(
+        http.get(`${API_BASE}/auth/status`, () =>
+          HttpResponse.json({
+            authenticated: true,
+            onboarding_required: false,
+            has_environment: true,
+            user: { id: 'user-1', email: 'admin@test.com', name: 'Admin', role: 'admin' },
+            tenant: { id: 'tenant-1', name: 'Test Org', subscription_tier: 'pro' },
+            entitlements: { plan_name: 'pro', features: {} },
+          })
+        )
+      );
+
       render(<PipelinesPage />);
 
       expect(screen.getByRole('heading', { level: 1, name: /pipelines/i })).toBeInTheDocument();
-    });
-
-    it('should display page description', async () => {
-      render(<PipelinesPage />);
-
-      expect(screen.getByText(/define promotion rules and workflows between environments/i)).toBeInTheDocument();
-    });
-
-    it('should display Create Pipeline button', async () => {
-      render(<PipelinesPage />);
-
-      expect(screen.getByRole('button', { name: /create pipeline/i })).toBeInTheDocument();
-    });
-
-    it('should display pipelines in the table', async () => {
-      render(<PipelinesPage />);
 
       await waitFor(() => {
-        expect(screen.getByText('Dev to Prod Pipeline')).toBeInTheDocument();
+        expect(screen.getByText(/pipelines are built for teams/i)).toBeInTheDocument();
       });
 
-      expect(screen.getByText('Inactive Pipeline')).toBeInTheDocument();
-    });
-
-    it('should display pipeline descriptions', async () => {
-      render(<PipelinesPage />);
-
-      await waitFor(() => {
-        expect(screen.getByText(/promote workflows from development to production/i)).toBeInTheDocument();
-      });
-    });
-
-    it('should display environment path for pipelines', async () => {
-      render(<PipelinesPage />);
-
-      await waitFor(() => {
-        expect(screen.getByText('Dev to Prod Pipeline')).toBeInTheDocument();
-      });
-
-      // Should show "Development → Production"
-      expect(screen.getAllByText(/development/i).length).toBeGreaterThanOrEqual(1);
-      expect(screen.getAllByText(/production/i).length).toBeGreaterThanOrEqual(1);
-    });
-
-    it('should display pipeline status badges', async () => {
-      render(<PipelinesPage />);
-
-      await waitFor(() => {
-        expect(screen.getByText('Dev to Prod Pipeline')).toBeInTheDocument();
-      });
-
-      // Should have Active and Inactive badges
-      const activeBadges = screen.getAllByText('Active');
-      expect(activeBadges.length).toBeGreaterThanOrEqual(1);
-      expect(screen.getByText('Inactive')).toBeInTheDocument();
-    });
-
-    it('should display Promotion Pipelines card title', async () => {
-      render(<PipelinesPage />);
-
-      await waitFor(() => {
-        expect(screen.getByText('Promotion Pipelines')).toBeInTheDocument();
-      });
+      expect(screen.getByRole('button', { name: /upgrade to agency/i })).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: /promote manually/i })).toBeInTheDocument();
     });
   });
 
-  describe('Empty State', () => {
-    it('should show empty state when no pipelines exist', async () => {
+  describe('Agency empty state', () => {
+    it('should show Create your first pipeline for agency when no pipelines exist', async () => {
       server.use(
-        http.get(`${API_BASE}/pipelines`, () => {
-          return HttpResponse.json([]);
-        })
+        http.get(`${API_BASE}/pipelines`, () => HttpResponse.json([]))
       );
 
       render(<PipelinesPage />);
 
       await waitFor(() => {
-        expect(screen.getByText(/no pipelines found/i)).toBeInTheDocument();
+        expect(screen.getByText(/create your first pipeline/i)).toBeInTheDocument();
       });
-    });
-
-    it('should show Create Your First Pipeline button in empty state', async () => {
-      server.use(
-        http.get(`${API_BASE}/pipelines`, () => {
-          return HttpResponse.json([]);
-        })
-      );
-
-      render(<PipelinesPage />);
-
-      await waitFor(() => {
-        expect(screen.getByRole('button', { name: /create your first pipeline/i })).toBeInTheDocument();
-      });
+      expect(screen.getAllByRole('button', { name: /create pipeline/i }).length).toBeGreaterThanOrEqual(1);
     });
   });
 

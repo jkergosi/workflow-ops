@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
@@ -6,6 +6,7 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { apiClient } from '@/lib/api-client';
+import { getDefaultEnvironmentId, sortEnvironments } from '@/lib/environment-utils';
 import { toast } from 'sonner';
 import {
   ShieldCheck, CheckCircle2, XCircle, AlertTriangle, Loader2, RefreshCw
@@ -19,7 +20,7 @@ interface MappingHealthCheckProps {
 
 export function MappingHealthCheck({ onFixMapping }: MappingHealthCheckProps) {
   const queryClient = useQueryClient();
-  const [selectedEnvId, setSelectedEnvId] = useState<string>('all');
+  const [selectedEnvId, setSelectedEnvId] = useState<string>('');
 
   const { data: envsData } = useQuery({
     queryKey: ['environments'],
@@ -27,6 +28,13 @@ export function MappingHealthCheck({ onFixMapping }: MappingHealthCheckProps) {
   });
 
   const environments: Environment[] = envsData?.data || [];
+  const envOptions = sortEnvironments(environments.filter((e) => e.isActive));
+
+  useEffect(() => {
+    if (selectedEnvId) return;
+    const defaultId = getDefaultEnvironmentId(envOptions);
+    if (defaultId) setSelectedEnvId(defaultId);
+  }, [envOptions, selectedEnvId]);
 
   const validateMutation = useMutation({
     mutationFn: () =>
@@ -97,7 +105,7 @@ export function MappingHealthCheck({ onFixMapping }: MappingHealthCheckProps) {
               </SelectTrigger>
               <SelectContent>
                 <SelectItem value="all">All Environments</SelectItem>
-                {environments.map((env) => (
+                {envOptions.map((env) => (
                   <SelectItem key={env.id} value={env.id}>
                     {env.name}
                   </SelectItem>

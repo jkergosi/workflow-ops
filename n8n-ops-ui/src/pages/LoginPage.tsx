@@ -1,7 +1,8 @@
 import { useEffect } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useAuth } from '@/lib/auth';
 import { useFeatures } from '@/lib/features';
+import { getLastRoute } from '@/lib/lastRoute';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Loader2, Workflow } from 'lucide-react';
@@ -43,21 +44,42 @@ export function LoginPage() {
   const { isAuthenticated, isLoading, needsOnboarding, login } = useAuth();
   const { planName } = useFeatures();
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
 
   // Redirect if already authenticated
+  // Navigation order: 1. onboarding 2. explicit redirect 3. lastRoute 4. plan default
   useEffect(() => {
     console.log('[LoginPage] useEffect check:', { isLoading, isAuthenticated, needsOnboarding });
     if (!isLoading && isAuthenticated) {
+      // 1. If needs onboarding → /onboarding
       if (needsOnboarding) {
         console.log('[LoginPage] Redirecting to onboarding');
         navigate('/onboarding', { replace: true });
-      } else {
-        const defaultPage = getDefaultLandingPage(planName);
-        console.log('[LoginPage] Redirecting to plan-based default:', defaultPage);
-        navigate(defaultPage, { replace: true });
+        return;
       }
+
+      // 2. Check for explicit redirect target in URL
+      const redirectParam = searchParams.get('redirect');
+      if (redirectParam) {
+        console.log('[LoginPage] Redirecting to explicit target:', redirectParam);
+        navigate(redirectParam, { replace: true });
+        return;
+      }
+
+      // 3. Check for lastRoute
+      const lastRoute = getLastRoute();
+      if (lastRoute) {
+        console.log('[LoginPage] Redirecting to last route:', lastRoute);
+        navigate(lastRoute, { replace: true });
+        return;
+      }
+
+      // 4. Fallback to plan-based default
+      const defaultPage = getDefaultLandingPage(planName);
+      console.log('[LoginPage] Redirecting to plan-based default:', defaultPage);
+      navigate(defaultPage, { replace: true });
     }
-  }, [isAuthenticated, isLoading, needsOnboarding, planName, navigate]);
+  }, [isAuthenticated, isLoading, needsOnboarding, planName, navigate, searchParams]);
 
   const handleLogin = () => {
     login();

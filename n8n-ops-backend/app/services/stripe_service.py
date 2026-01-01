@@ -35,10 +35,17 @@ class StripeService:
         success_url: str,
         cancel_url: str,
         tenant_id: str,
-        billing_cycle: str = "monthly"
+        billing_cycle: str = "monthly",
+        metadata: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """Create a Stripe checkout session"""
         try:
+            extra_metadata = metadata or {}
+            merged_metadata: Dict[str, str] = {
+                "tenant_id": str(tenant_id),
+                "billing_cycle": str(billing_cycle),
+                **{str(k): str(v) for k, v in extra_metadata.items()},
+            }
             session = stripe.checkout.Session.create(
                 customer=customer_id,
                 payment_method_types=["card"],
@@ -49,13 +56,12 @@ class StripeService:
                 mode="subscription",
                 success_url=success_url,
                 cancel_url=cancel_url,
-                metadata={
-                    "tenant_id": tenant_id,
-                    "billing_cycle": billing_cycle
-                }
+                metadata=merged_metadata,
+                subscription_data={"metadata": merged_metadata},
             )
             return {
                 "session_id": session.id,
+                "id": session.id,
                 "url": session.url
             }
         except stripe.error.StripeError as e:
@@ -82,10 +88,32 @@ class StripeService:
         """Get subscription details"""
         try:
             subscription = stripe.Subscription.retrieve(subscription_id)
+            items = []
+            try:
+                for item in (subscription.get("items", {}).get("data", []) or []):
+                    price = item.get("price") or {}
+                    items.append(
+                        {
+                            "id": item.get("id"),
+                            "price": {"id": price.get("id")},
+                            "quantity": item.get("quantity"),
+                        }
+                    )
+            except Exception:
+                items = []
+
+            metadata = {}
+            try:
+                metadata = dict(subscription.metadata or {})
+            except Exception:
+                metadata = {}
+
             return {
                 "id": subscription.id,
                 "customer": subscription.customer,
                 "status": subscription.status,
+                "metadata": metadata,
+                "items": {"data": items},
                 "current_period_start": subscription.current_period_start,
                 "current_period_end": subscription.current_period_end,
                 "cancel_at_period_end": subscription.cancel_at_period_end,
@@ -118,6 +146,20 @@ class StripeService:
             }
         except stripe.error.StripeError as e:
             raise Exception(f"Failed to cancel subscription: {str(e)}")
+
+    async def update_subscription_item_quantity(self, subscription_item_id: str, quantity: int) -> Dict[str, Any]:
+        """Update a Stripe subscription item quantity (used for agency per-client item)."""
+        try:
+            item = stripe.SubscriptionItem.modify(
+                subscription_item_id,
+                quantity=int(quantity),
+            )
+            return {
+                "id": item.id,
+                "quantity": item.quantity,
+            }
+        except stripe.error.StripeError as e:
+            raise Exception(f"Failed to update subscription item quantity: {str(e)}")
 
     async def reactivate_subscription(self, subscription_id: str) -> Dict[str, Any]:
         """Reactivate a canceled subscription"""

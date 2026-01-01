@@ -104,8 +104,8 @@ const navigationSections: NavSection[] = [
     title: 'Operations',
     items: [
       { id: 'activity', name: 'Activity', href: '/activity', icon: History, lifecycleStage: LifecycleStage.OBSERVABILITY },
-      { id: 'deployments', name: 'Deployments', href: '/deployments', icon: Rocket, requiredPlan: 'pro', feature: 'workflow_ci_cd', lifecycleStage: LifecycleStage.DEPLOYMENT },
-      { id: 'snapshots', name: 'Snapshots', href: '/snapshots', icon: Camera, feature: 'snapshots_enabled', lifecycleStage: LifecycleStage.SNAPSHOT },
+      { id: 'deployments', name: 'Deployments', href: '/deployments', icon: Rocket, requiredPlan: 'pro', feature: 'workflow_ci_cd', lifecycleStage: LifecycleStage.PROMOTION, hideForPlans: ['free'] },
+      { id: 'snapshots', name: 'Snapshots', href: '/snapshots', icon: Camera, feature: 'snapshots_enabled', lifecycleStage: LifecycleStage.SNAPSHOT, hideForPlans: ['free'] },
     ],
   },
   {
@@ -118,8 +118,8 @@ const navigationSections: NavSection[] = [
   {
     title: 'Observability',
     items: [
-      { id: 'observability', name: 'Observability', href: '/observability', icon: Activity, feature: 'observability_basic' },
-      { id: 'alerts', name: 'Alerts', href: '/alerts', icon: Bell, requiredPlan: 'pro', feature: 'observability_alerts' },
+      { id: 'observability', name: 'Observability', href: '/observability', icon: Activity, feature: 'observability_basic', lifecycleStage: LifecycleStage.OBSERVABILITY },
+      { id: 'alerts', name: 'Alerts', href: '/alerts', icon: Bell, requiredPlan: 'pro', feature: 'observability_alerts', lifecycleStage: LifecycleStage.OBSERVABILITY },
     ],
   },
   {
@@ -141,7 +141,7 @@ const navigationSections: NavSection[] = [
       { id: 'tenantOverrides', name: 'Tenant Overrides', href: '/admin/entitlements/overrides', icon: Shield, requiredPlan: 'enterprise' },
       { id: 'entitlementsAudit', name: 'Entitlements Audit', href: '/admin/entitlements/audit', icon: History, requiredPlan: 'enterprise' },
       { id: 'auditLogs', name: 'Audit Logs', href: '/admin/audit-logs', icon: FileText, requiredPlan: 'pro', feature: 'audit_logs_enabled', lifecycleStage: LifecycleStage.OBSERVABILITY },
-      { id: 'driftPolicies', name: 'Drift Policies', href: '/admin/drift-policies', icon: AlertTriangle, requiredPlan: 'enterprise', feature: 'drift_policies', lifecycleStage: LifecycleStage.DRIFT_HANDLING, hideForPlans: ['free', 'pro', 'agency'] },
+      { id: 'driftPolicies', name: 'Drift Policies', href: '/admin/drift-policies', icon: AlertTriangle, requiredPlan: 'enterprise', feature: 'drift_policies', lifecycleStage: LifecycleStage.DRIFT, hideForPlans: ['free', 'pro', 'agency'] },
       { id: 'security', name: 'Security', href: '/admin/security', icon: Shield, requiredPlan: 'enterprise', feature: 'sso_saml' },
       { id: 'systemSettings', name: 'System Settings', href: '/admin/settings', icon: Settings },
       { id: 'supportConfig', name: 'Support Config', href: '/admin/support-config', icon: HelpCircle },
@@ -196,6 +196,31 @@ export function AppLayout() {
     return item.requiresDriftMode.includes(driftMode);
   }, [planName]);
 
+  // Check if item's lifecycle stage is allowed for current plan
+  const isLifecycleStageAllowed = useCallback((item: NavItem): boolean => {
+    if (!item.lifecycleStage || !planName) return true;
+    const planLower = planName.toLowerCase();
+    
+    const stage = item.lifecycleStage;
+    
+    // Define allowed stages per plan
+    const allowedStages: Record<string, LifecycleStage[]> = {
+      free: [
+        LifecycleStage.OBSERVABILITY, // Basic observability is free
+      ],
+      pro: [
+        LifecycleStage.OBSERVABILITY,
+        LifecycleStage.SNAPSHOT,
+        LifecycleStage.PROMOTION, // Deployments/promotions
+      ],
+      agency: Object.values(LifecycleStage), // All stages
+      enterprise: Object.values(LifecycleStage), // All stages
+    };
+    
+    const stages = allowedStages[planLower] || allowedStages.free;
+    return stages.includes(stage);
+  }, [planName]);
+
   // Get display name with terminology suppression based on plan
   const getDisplayName = useCallback((item: NavItem): string => {
     if (!planName) return item.name;
@@ -234,7 +259,8 @@ export function AppLayout() {
         if (isMenuItemVisible(item.id, userRole) && 
             isFeatureAvailable(item) && 
             !isItemHiddenForPlan(item) &&
-            isDriftModeAllowed(item)) {
+            isDriftModeAllowed(item) &&
+            isLifecycleStageAllowed(item)) {
           const displayName = getDisplayName(item) || item.name;
           if (displayName) { // Only add if display name is not suppressed
             items.push({ title: displayName, href: item.href, icon: item.icon });
@@ -243,7 +269,7 @@ export function AppLayout() {
       });
     });
     return items;
-  }, [getUserRole, isFeatureAvailable]);
+  }, [getUserRole, isFeatureAvailable, isItemHiddenForPlan, isDriftModeAllowed, isLifecycleStageAllowed, getDisplayName]);
 
   const toggleSection = (sectionTitle: string) => {
     setExpandedSections((prev) => ({
@@ -318,6 +344,8 @@ export function AppLayout() {
                   if (!isMenuItemVisible(item.id, getUserRole())) return false;
                   if (isItemHiddenForPlan(item)) return false;
                   if (!isDriftModeAllowed(item)) return false;
+                  if (!isLifecycleStageAllowed(item)) return false;
+                  if (!isFeatureAvailable(item)) return false;
                   return true;
                 });
                 return visibleItems.length > 0;
@@ -353,6 +381,10 @@ export function AppLayout() {
                           if (isItemHiddenForPlan(item)) return false;
                           // Drift mode requirement
                           if (!isDriftModeAllowed(item)) return false;
+                          // Lifecycle stage requirement
+                          if (!isLifecycleStageAllowed(item)) return false;
+                          // Feature availability
+                          if (!isFeatureAvailable(item)) return false;
                           return true;
                         })
                         .map((item) => {

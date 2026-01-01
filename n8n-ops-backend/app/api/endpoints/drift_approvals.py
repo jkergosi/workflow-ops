@@ -4,8 +4,8 @@ from fastapi import APIRouter, HTTPException, status, Depends, Query
 from typing import List, Optional
 
 from app.services.auth_service import get_current_user
-from app.services.feature_service import feature_service
 from app.services.database import db_service
+from app.core.entitlements_gate import require_entitlement
 from app.schemas.drift_policy import (
     DriftApprovalCreate,
     DriftApprovalDecision,
@@ -23,21 +23,10 @@ async def list_approvals(
     limit: int = Query(50, ge=1, le=100),
     offset: int = Query(0, ge=0),
     user_info: dict = Depends(get_current_user),
+    _: dict = Depends(require_entitlement("drift_policies")),
 ):
     """List drift approval requests for the tenant."""
     tenant_id = user_info["tenant"]["id"]
-
-    # Check feature access for drift policies (includes approvals)
-    can_use, message = await feature_service.can_use_feature(tenant_id, "drift_policies")
-    if not can_use:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail={
-                "error": "feature_not_available",
-                "feature": "drift_policies",
-                "message": message,
-            },
-        )
 
     try:
         query = db_service.client.table("drift_approvals").select(
@@ -66,21 +55,10 @@ async def list_approvals(
 @router.get("/pending", response_model=List[DriftApprovalResponse])
 async def list_pending_approvals(
     user_info: dict = Depends(get_current_user),
+    _: dict = Depends(require_entitlement("drift_policies")),
 ):
     """List all pending approval requests for the tenant."""
     tenant_id = user_info["tenant"]["id"]
-
-    # Check feature access
-    can_use, message = await feature_service.can_use_feature(tenant_id, "drift_policies")
-    if not can_use:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail={
-                "error": "feature_not_available",
-                "feature": "drift_policies",
-                "message": message,
-            },
-        )
 
     try:
         response = db_service.client.table("drift_approvals").select(
@@ -102,22 +80,11 @@ async def list_pending_approvals(
 async def request_approval(
     payload: DriftApprovalCreate,
     user_info: dict = Depends(get_current_user),
+    _: dict = Depends(require_entitlement("drift_policies")),
 ):
     """Request approval for an action on a drift incident."""
     tenant_id = user_info["tenant"]["id"]
     user_id = user_info["user"]["id"]
-
-    # Check feature access
-    can_use, message = await feature_service.can_use_feature(tenant_id, "drift_policies")
-    if not can_use:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail={
-                "error": "feature_not_available",
-                "feature": "drift_policies",
-                "message": message,
-            },
-        )
 
     try:
         # Verify incident exists
@@ -184,21 +151,10 @@ async def request_approval(
 async def get_approval(
     approval_id: str,
     user_info: dict = Depends(get_current_user),
+    _: dict = Depends(require_entitlement("drift_policies")),
 ):
     """Get a single approval request."""
     tenant_id = user_info["tenant"]["id"]
-
-    # Check feature access
-    can_use, message = await feature_service.can_use_feature(tenant_id, "drift_policies")
-    if not can_use:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail={
-                "error": "feature_not_available",
-                "feature": "drift_policies",
-                "message": message,
-            },
-        )
 
     try:
         response = db_service.client.table("drift_approvals").select(
@@ -227,22 +183,11 @@ async def decide_approval(
     approval_id: str,
     payload: DriftApprovalDecision,
     user_info: dict = Depends(get_current_user),
+    _: dict = Depends(require_entitlement("drift_policies")),
 ):
     """Approve or reject an approval request."""
     tenant_id = user_info["tenant"]["id"]
     user_id = user_info["user"]["id"]
-
-    # Check feature access
-    can_use, message = await feature_service.can_use_feature(tenant_id, "drift_policies")
-    if not can_use:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail={
-                "error": "feature_not_available",
-                "feature": "drift_policies",
-                "message": message,
-            },
-        )
 
     # Validate decision value
     if payload.decision not in [ApprovalStatus.approved, ApprovalStatus.rejected]:
@@ -323,22 +268,11 @@ async def decide_approval(
 async def cancel_approval(
     approval_id: str,
     user_info: dict = Depends(get_current_user),
+    _: dict = Depends(require_entitlement("drift_policies")),
 ):
     """Cancel a pending approval request (by requester only)."""
     tenant_id = user_info["tenant"]["id"]
     user_id = user_info["user"]["id"]
-
-    # Check feature access
-    can_use, message = await feature_service.can_use_feature(tenant_id, "drift_policies")
-    if not can_use:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail={
-                "error": "feature_not_available",
-                "feature": "drift_policies",
-                "message": message,
-            },
-        )
 
     try:
         # Get existing approval
