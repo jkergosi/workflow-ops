@@ -57,7 +57,14 @@ export function ProfilePage() {
       window.location.reload();
     },
     onError: (error: any) => {
-      const message = error.response?.data?.detail || 'Failed to update profile';
+      let message = 'Failed to update profile';
+      const detail = error.response?.data?.detail;
+      if (typeof detail === 'string') {
+        message = detail;
+      } else if (Array.isArray(detail) && detail.length > 0) {
+        // Handle Pydantic validation errors
+        message = detail.map((e: any) => e.msg || e.message || JSON.stringify(e)).join(', ');
+      }
       toast.error(message);
     },
   });

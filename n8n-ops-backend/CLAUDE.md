@@ -40,6 +40,39 @@ python -m uvicorn app.main:app --reload --host 0.0.0.0 --port <BACKEND_PORT>
 
 Check port in `../.env.local` (default: 4000 for main worktree).
 
+### Stop Server
+
+```powershell
+# Kill backend port
+..\scripts\kill-ports.ps1 -Port 4000
+```
+
+## Hot-Reload vs Manual Restart
+
+**Start server once, let hot-reload handle changes.**
+
+### ✅ Hot-Reload Handles (No Restart Needed)
+- Changes to `.py` files
+- Route modifications
+- Schema updates
+- Most code changes
+
+### ⚠️ Manual Restart Required
+- Installing new Python packages
+- Changes to `requirements.txt`
+- Changes to `.env` files
+- Major dependency updates
+
+**Note:** Database migrations run automatically on start via `start_with_migrations.py`.
+
+### Troubleshooting
+
+**Hot-reload not working:**
+- Check terminal for uvicorn reload messages
+- Verify `--reload` flag is present (included in `start_with_migrations.py`)
+- Check for Python syntax errors (reload won't work with syntax errors)
+- If still broken: kill port and restart
+
 ## API Endpoints
 
 All endpoints prefixed with `/api/v1`.

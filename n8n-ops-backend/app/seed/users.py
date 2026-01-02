@@ -80,34 +80,40 @@ async def seed_auth_users(
             email = user_data["email"]
 
             try:
-                # Check if user already exists
+                # Check if user already exists by fetching all and filtering
                 response = await client.get(
                     admin_url,
                     headers=headers,
-                    params={"email": email},
                 )
 
+                existing_auth_user = None
                 if response.status_code == 200:
-                    users = response.json().get("users", [])
-                    if users:
-                        auth_user_id = users[0].get("id")
-                        results["users_skipped"] += 1
-                        results["users"].append({
-                            "email": email,
-                            "status": "exists",
-                            "id": auth_user_id,
-                        })
+                    all_users = response.json().get("users", [])
+                    # Find exact email match
+                    for u in all_users:
+                        if u.get("email") == email:
+                            existing_auth_user = u
+                            break
 
-                        # Ensure the link exists in app's users table
-                        if db_client and auth_user_id:
-                            try:
-                                db_client.table("users").update({
-                                    "supabase_auth_id": auth_user_id
-                                }).eq("id", user_data["id"]).execute()
-                                print(f"    Ensured supabase_auth_id link for: {email}")
-                            except Exception as link_error:
-                                print(f"    Failed to link supabase_auth_id for {email}: {link_error}")
-                        continue
+                if existing_auth_user:
+                    auth_user_id = existing_auth_user.get("id")
+                    results["users_skipped"] += 1
+                    results["users"].append({
+                        "email": email,
+                        "status": "exists",
+                        "id": auth_user_id,
+                    })
+
+                    # Ensure the link exists in app's users table
+                    if db_client and auth_user_id:
+                        try:
+                            db_client.table("users").update({
+                                "supabase_auth_id": auth_user_id
+                            }).eq("id", user_data["id"]).execute()
+                            print(f"    Ensured supabase_auth_id link for: {email}")
+                        except Exception as link_error:
+                            print(f"    Failed to link supabase_auth_id for {email}: {link_error}")
+                    continue
 
                 # Create user via Admin API
                 create_data = {

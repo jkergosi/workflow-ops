@@ -72,7 +72,7 @@ TEST_USERS = [
         "email": "alice@acme-test.local",
         "name": "Alice Admin",
         "role": "admin",
-        "is_active": True,
+        "status": "active",
         "supabase_auth_id": None,  # Will be linked when user signs up
     },
     {
@@ -81,7 +81,7 @@ TEST_USERS = [
         "email": "dev@acme-test.local",
         "name": "Alex Developer",
         "role": "developer",
-        "is_active": True,
+        "status": "active",
         "supabase_auth_id": None,  # Will be linked when user signs up
     },
     {
@@ -90,7 +90,7 @@ TEST_USERS = [
         "email": "viewer@acme-test.local",
         "name": "Victor Viewer",
         "role": "viewer",
-        "is_active": True,
+        "status": "active",
         "supabase_auth_id": None,  # Will be linked when user signs up
     },
     # Startup Inc users
@@ -100,7 +100,7 @@ TEST_USERS = [
         "email": "bob@startup-test.local",
         "name": "Bob Builder",
         "role": "admin",
-        "is_active": True,
+        "status": "active",
         "supabase_auth_id": None,  # Will be linked when user signs up
     },
     # Enterprise Co users
@@ -110,7 +110,7 @@ TEST_USERS = [
         "email": "carol@enterprise-test.local",
         "name": "Carol CTO",
         "role": "admin",
-        "is_active": True,
+        "status": "active",
         "supabase_auth_id": None,  # Will be linked when user signs up
     },
     {
@@ -119,7 +119,7 @@ TEST_USERS = [
         "email": "dev1@enterprise-test.local",
         "name": "Dan Developer",
         "role": "developer",
-        "is_active": True,
+        "status": "active",
         "supabase_auth_id": None,  # Will be linked when user signs up
     },
     {
@@ -128,7 +128,7 @@ TEST_USERS = [
         "email": "dev2@enterprise-test.local",
         "name": "Diana Developer",
         "role": "developer",
-        "is_active": True,
+        "status": "active",
         "supabase_auth_id": None,  # Will be linked when user signs up
     },
     # Agency Partners users
@@ -138,7 +138,7 @@ TEST_USERS = [
         "email": "david@agency-test.local",
         "name": "David Director",
         "role": "admin",
-        "is_active": True,
+        "status": "active",
         "supabase_auth_id": None,  # Will be linked when user signs up
     },
     # Trial user
@@ -148,7 +148,7 @@ TEST_USERS = [
         "email": "eve@test.local",
         "name": "Eve Explorer",
         "role": "admin",
-        "is_active": True,
+        "status": "active",
         "supabase_auth_id": None,  # Will be linked when user signs up
     },
 ]

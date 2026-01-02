@@ -301,17 +301,9 @@ class ApiClient {
     return { data: response.data };
   }
 
-  // Legacy onboarding endpoint (for backward compatibility)
-  async completeOnboarding(organizationName?: string): Promise<{ data: UserResponse }> {
-    const response = await this.client.post('/auth/onboarding', {
-      organization_name: organizationName,
-    });
-    return { data: response.data.user };
-  }
-
   // Environment endpoints
   async getEnvironments(): Promise<{ data: Environment[] }> {
-    const response = await this.client.get<any[]>('/environments');
+    const response = await this.client.get<any[]>('/environments/');
     // Transform snake_case to camelCase
     const data = response.data.map((env: any) => ({
       ...env,
@@ -1372,7 +1364,7 @@ class ApiClient {
     if (params?.page) queryParams.page = params.page;
     if (params?.pageSize) queryParams.page_size = params.pageSize;
     
-    const response = await this.client.get('/deployments', { params: queryParams });
+    const response = await this.client.get('/deployments/', { params: queryParams });
     // Transform snake_case to camelCase
     const deployments = (response.data.deployments || []).map((d: any) => ({
       id: d.id,
@@ -1978,7 +1970,7 @@ class ApiClient {
     page?: number;
     page_size?: number;
   }): Promise<{ data: { tenants: Tenant[]; total: number; page: number; page_size: number } }> {
-    const response = await this.client.get('/tenants', { params });
+    const response = await this.client.get('/tenants/', { params });
     return { data: response.data };
   }
 
@@ -2188,6 +2180,56 @@ class ApiClient {
   }
 
   // Billing endpoints
+  async getBillingOverview(): Promise<{
+    data: {
+      plan: { key: string; name: string; is_custom: boolean };
+      subscription: {
+        status: string;
+        interval: string;
+        current_period_end: string | null;
+        cancel_at_period_end: boolean;
+        next_amount_cents: number | null;
+        currency: string;
+      };
+      usage: {
+        environments_used: number;
+        team_members_used: number;
+      };
+      entitlements: {
+        environments_limit: string | number;
+        team_members_limit: string | number;
+        promotions_monthly_limit: string | number | null;
+        snapshots_monthly_limit: string | number | null;
+      };
+      payment_method: {
+        brand: string;
+        last4: string;
+        exp_month: number;
+        exp_year: number;
+      } | null;
+      invoices: Array<{
+        id: string;
+        number?: string;
+        amount_paid: number;
+        amount_paid_cents?: number;
+        currency: string;
+        status: string;
+        created: number;
+        invoice_pdf?: string;
+        hosted_invoice_url?: string;
+      }>;
+      links: {
+        stripe_portal_url: string;
+        change_plan_url: string;
+        usage_limits_url: string;
+        entitlements_audit_url: string;
+      };
+    };
+  }> {
+    const response = await this.client.get('/billing/overview');
+    return { data: response.data };
+  }
+
   async getSubscription(): Promise<{ data: Subscription }> {
     const response = await this.client.get<Subscription>('/billing/subscription');
     return { data: response.data };
@@ -2204,13 +2246,25 @@ class ApiClient {
     return { data: response.data };
   }
 
-  async createCheckoutSession(planId: string): Promise<{ data: CheckoutSession }> {
-    const response = await this.client.post<CheckoutSession>('/billing/checkout', { plan_id: planId });
+  async createCheckoutSession(data: {
+    price_id: string;
+    billing_cycle: string;
+    success_url: string;
+    cancel_url: string;
+  }): Promise<{ data: CheckoutSession }> {
+    const response = await this.client.post<CheckoutSession>('/billing/checkout', {
+      price_id: data.price_id,
+      billing_cycle: data.billing_cycle,
+      success_url: data.success_url,
+      cancel_url: data.cancel_url,
+    });
     return { data: response.data };
   }
 
   async createPortalSession(returnUrl: string): Promise<{ data: PortalSession }> {
-    const response = await this.client.post<PortalSession>('/billing/portal', { return_url: returnUrl });
+    const response = await this.client.post<PortalSession>('/billing/portal', null, {
+      params: { return_url: returnUrl },
+    });
     return { data: response.data };
   }
 
@@ -3080,7 +3134,7 @@ class ApiClient {
 
   // Provider Subscription endpoints
   async getProvidersWithPlans(): Promise<{ data: any[] }> {
-    const response = await this.client.get('/providers');
+    const response = await this.client.get('/providers/');
     return { data: response.data };
   }
 

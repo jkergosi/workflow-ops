@@ -103,6 +103,7 @@ async def run_seed(args):
         results["auth"] = await seed_auth_users(
             supabase_url=settings.SUPABASE_URL,
             service_role_key=settings.SUPABASE_SERVICE_KEY,
+            db_client=client,
             clean=args.clean,
         )
         print(f"    Created: {results['auth']['users_created']}")

@@ -12,14 +12,53 @@ cat .env.local
 ### 2. Start Backend
 ```bash
 cd n8n-ops-backend
-python -m uvicorn app.main:app --reload --port <BACKEND_PORT>
+python scripts/start_with_migrations.py
 ```
 
 ### 3. Start Frontend
 ```bash
 cd n8n-ops-ui
-npm run dev -- --port <FRONTEND_PORT>
+npm run dev
 ```
+
+### Stop Servers
+```powershell
+# Kill both ports 3000 and 4000
+.\scripts\kill-ports.ps1
+
+# Kill specific port
+.\scripts\kill-ports.ps1 -Port 3000
+```
+
+## Hot-Reload vs Manual Restart
+
+**Start servers once, let hot-reload handle changes.**
+
+### ✅ Hot-Reload Handles (No Restart Needed)
+
+| Frontend (Vite) | Backend (uvicorn --reload) |
+|-----------------|---------------------------|
+| `.tsx`, `.ts`, `.css` changes | `.py` file changes |
+| Component updates | Route modifications |
+| State management changes | Schema updates |
+
+### ⚠️ Manual Restart Required
+
+| Frontend | Backend |
+|----------|---------|
+| New npm packages | New Python packages |
+| `vite.config.ts` changes | `requirements.txt` changes |
+| `.env` file changes | `.env` file changes |
+| `package.json` script changes | Database migrations (auto on start) |
+
+### Troubleshooting
+
+**Port already in use:** Run `.\scripts\kill-ports.ps1`
+
+**Hot-reload not working:**
+- Frontend: Hard refresh (Ctrl+Shift+R), check browser console
+- Backend: Check terminal for reload messages, verify no syntax errors
+- If still broken: `.\scripts\kill-ports.ps1` then restart
 
 ## Port Configuration
 
@@ -147,15 +186,15 @@ n8n-ops/
 ## Common Commands
 
 ```bash
-# Backend
+# Backend (with port enforcement & migrations)
 cd n8n-ops-backend
 pip install -r requirements.txt
-python -m uvicorn app.main:app --reload --port 4000
+python scripts/start_with_migrations.py
 
-# Frontend
+# Frontend (with port enforcement)
 cd n8n-ops-ui
 npm install
-npm run dev -- --port 3000
+npm run dev
 npm run build
 npm run lint
 

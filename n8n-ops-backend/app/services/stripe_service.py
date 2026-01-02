@@ -206,7 +206,9 @@ class StripeService:
             )
             return [{
                 "id": invoice.id,
+                "number": getattr(invoice, "number", invoice.id),
                 "amount_paid": invoice.amount_paid / 100,
+                "amount_paid_cents": invoice.amount_paid,
                 "currency": invoice.currency,
                 "status": invoice.status,
                 "created": invoice.created,
@@ -215,6 +217,27 @@ class StripeService:
             } for invoice in invoices.data]
         except stripe.error.StripeError as e:
             raise Exception(f"Failed to list invoices: {str(e)}")
+
+    async def get_default_payment_method(self, customer_id: str) -> Optional[Dict[str, Any]]:
+        """Get default payment method for a customer"""
+        try:
+            customer = stripe.Customer.retrieve(customer_id)
+            if not customer.invoice_settings or not customer.invoice_settings.default_payment_method:
+                return None
+            
+            payment_method_id = customer.invoice_settings.default_payment_method
+            if isinstance(payment_method_id, str):
+                pm = stripe.PaymentMethod.retrieve(payment_method_id)
+                if pm.type == "card" and pm.card:
+                    return {
+                        "brand": pm.card.brand,
+                        "last4": pm.card.last4,
+                        "exp_month": pm.card.exp_month,
+                        "exp_year": pm.card.exp_year
+                    }
+            return None
+        except stripe.error.StripeError:
+            return None
 
     def construct_webhook_event(
         self,

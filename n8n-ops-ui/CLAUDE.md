@@ -5,10 +5,45 @@ React frontend for N8N Ops platform.
 ## Running
 
 ```bash
-npm run dev -- --port <FRONTEND_PORT>
+npm run dev
 ```
 
 Check port in `../.env.local` (default: 3000 for main worktree).
+
+### Stop Server
+
+```powershell
+# Kill frontend port
+..\scripts\kill-ports.ps1 -Port 3000
+
+# Or from this directory
+npm run kill
+```
+
+## Hot-Reload vs Manual Restart
+
+**Start server once, let hot-reload handle changes.**
+
+### ✅ Hot-Reload Handles (No Restart Needed)
+- Changes to `.tsx`, `.ts`, `.css` files
+- Component updates
+- State management changes
+- Most code changes
+
+### ⚠️ Manual Restart Required
+- Installing new npm packages
+- Changes to `vite.config.ts`
+- Changes to `package.json` scripts
+- Changes to `.env` files
+- Major dependency updates
+
+### Troubleshooting
+
+**Hot-reload not working:**
+- Check browser console for errors
+- Hard refresh (Ctrl+Shift+R)
+- Check if Vite is watching files (look for file change messages in terminal)
+- If still broken: kill port and restart
 
 ## Pages
 

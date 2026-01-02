@@ -70,7 +70,9 @@ class PaymentHistoryResponse(BaseModel):
 
 class InvoiceResponse(BaseModel):
     id: str
+    number: Optional[str] = None
     amount_paid: float
+    amount_paid_cents: Optional[int] = None
     currency: str
     status: str
     created: int
@@ -84,3 +86,20 @@ class UpcomingInvoiceResponse(BaseModel):
     period_start: int
     period_end: int
     next_payment_attempt: Optional[int] = None
+
+
+class PaymentMethodResponse(BaseModel):
+    brand: Optional[str] = None
+    last4: Optional[str] = None
+    exp_month: Optional[int] = None
+    exp_year: Optional[int] = None
+
+
+class BillingOverviewResponse(BaseModel):
+    plan: Dict[str, Any]
+    subscription: Dict[str, Any]
+    usage: Dict[str, Any]
+    entitlements: Dict[str, Any]
+    payment_method: Optional[PaymentMethodResponse] = None
+    invoices: List[InvoiceResponse]
+    links: Dict[str, str]

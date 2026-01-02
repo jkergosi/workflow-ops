@@ -50,7 +50,8 @@ class SupabaseAuthService:
             }
 
         # Check if user exists by email (for existing users without supabase_auth_id)
-        existing_by_email = db_service.client.table("users").select("*, tenants(*)").eq(
+        # Use case-insensitive matching
+        existing_by_email = db_service.client.table("users").select("*, tenants(*)").ilike(
             "email", email
         ).execute()
 
@@ -291,7 +292,8 @@ async def get_current_user_optional(
         return {
             "user": None,
             "tenant": None,
-            "is_new": True
+            "is_new": False,
+            "no_credentials": True
         }
 
     token = credentials.credentials

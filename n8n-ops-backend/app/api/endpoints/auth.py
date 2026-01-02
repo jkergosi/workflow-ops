@@ -78,7 +78,7 @@ class OnboardingCompleteRequest(BaseModel):
 class UserUpdateRequest(BaseModel):
     """Request body for updating user profile."""
     name: Optional[str] = None
-    email: Optional[EmailStr] = None
+    email: Optional[str] = None  # Use str instead of EmailStr to allow .local TLDs for dev
     role: Optional[str] = None
 
 
@@ -129,12 +129,21 @@ async def get_current_user_info(user_info: dict = Depends(get_current_user)):
 @router.get("/status")
 async def get_auth_status(user_info: dict = Depends(get_current_user_optional)):
     """Check authentication status and whether onboarding is needed."""
+    # Check if no credentials were provided
+    if user_info.get("no_credentials"):
+        return {
+            "authenticated": False,
+            "onboarding_required": False,
+            "user": None,
+            "tenant": None
+        }
+
     is_new = user_info.get("is_new", False)
     user = user_info.get("user")
     tenant = user_info.get("tenant")
 
     if is_new and user is None:
-        # User needs to complete onboarding
+        # User has valid Supabase token but needs to complete onboarding
         return {
             "authenticated": True,
             "onboarding_required": True,
@@ -725,11 +734,33 @@ async def get_tenant_users(user_info: dict = Depends(get_current_user)):
         )
 
     try:
-        response = db_service.client.table("users").select(
-            "id, email, name, role, is_active, can_be_impersonated"
-        ).eq("tenant_id", tenant["id"]).eq("is_active", True).execute()
+        # Try to select can_be_impersonated, but fall back if column doesn't exist
+        try:
+            response = db_service.client.table("users").select(
+                "id, email, name, role, is_active, can_be_impersonated"
+            ).eq("tenant_id", tenant["id"]).eq("is_active", True).execute()
+        except Exception as col_error:
+            # Fallback if can_be_impersonated column doesn't exist
+            # Check if it's a column error or something else
+            error_str = str(col_error).lower()
+            if "column" in error_str or "does not exist" in error_str or "can_be_impersonated" in error_str:
+                response = db_service.client.table("users").select(
+                    "id, email, name, role, is_active"
+                ).eq("tenant_id", tenant["id"]).eq("is_active", True).execute()
+                # Add default can_be_impersonated for backward compatibility
+                for user in response.data:
+                    user["can_be_impersonated"] = True
+            else:
+                # Re-raise if it's a different error
+                raise
+        
         return {"users": response.data or []}
     except Exception as e:
+        import traceback
+        import logging
+        logger = logging.getLogger(__name__)
+        error_details = traceback.format_exc()
+        logger.error(f"Get tenant users error: {error_details}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to fetch users: {str(e)}"

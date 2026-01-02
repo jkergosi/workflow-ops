@@ -72,14 +72,23 @@ function Stop-Backend {
 }
 
 function Start-Backend {
-    if (Is-BackendRunning) {
+    $workDir = Get-RepoBackendRoot
+    $repoRoot = Split-Path -Parent $workDir
+    $enforceScript = Join-Path $repoRoot "scripts" "enforce-ports.ps1"
+    
+    if (Test-Path $enforceScript) {
+        Write-Host "Enforcing port ownership for backend (port $BACKEND_PORT)..." -ForegroundColor Cyan
+        & powershell.exe -ExecutionPolicy Bypass -File $enforceScript -Port $BACKEND_PORT
+        if ($LASTEXITCODE -ne 0) {
+            Write-Host "❌ Port enforcement failed. Cannot start backend." -ForegroundColor Red
+            return
+        }
+    } elseif (Is-BackendRunning) {
         Write-Host "Backend already running on port $BACKEND_PORT. Start skipped." -ForegroundColor Yellow
         return
     }
 
     Write-Host "Starting backend on port $BACKEND_PORT (new window)..." -ForegroundColor Cyan
-
-    $workDir = Get-RepoBackendRoot
 
     Write-Host "API:     http://localhost:$BACKEND_PORT" -ForegroundColor Green
     Write-Host "Swagger: http://localhost:$BACKEND_PORT/api/v1/docs" -ForegroundColor Green

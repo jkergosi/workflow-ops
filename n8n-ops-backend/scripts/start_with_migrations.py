@@ -4,6 +4,11 @@ Start script that runs database migrations before starting the application.
 This ensures the database schema is up-to-date before the FastAPI app starts.
 If migrations fail, the application will not start.
 
+Also enforces deterministic port ownership per reqs/ports.md:
+- Checks if port is available
+- Force-kills any process using the port
+- Fails fast if port remains occupied
+
 Usage:
     python scripts/start_with_migrations.py
     python scripts/start_with_migrations.py --port 4000
@@ -14,6 +19,7 @@ import sys
 import os
 import argparse
 from pathlib import Path
+import platform
 
 
 def run_migrations():
@@ -55,6 +61,53 @@ def run_migrations():
         return False
     finally:
         os.chdir(original_dir)
+
+
+def enforce_port_ownership(port):
+    """
+    Enforce port ownership per reqs/ports.md.
+    Checks if port is available, kills blocking processes, and fails if port remains occupied.
+    """
+    if platform.system() != "Windows":
+        print(f"⚠️  Port enforcement skipped (not Windows). Port {port} may be in use.")
+        return
+    
+    repo_root = Path(__file__).parent.parent.parent
+    enforce_script = repo_root / "scripts" / "enforce-ports.ps1"
+    
+    if not enforce_script.exists():
+        print(f"⚠️  Port enforcement script not found at {enforce_script}")
+        print(f"   Skipping port check. Port {port} may be in use.")
+        return
+    
+    print("=" * 60)
+    print(f"Enforcing port ownership for port {port}...")
+    print("=" * 60)
+    
+    try:
+        result = subprocess.run(
+            ["powershell.exe", "-ExecutionPolicy", "Bypass", "-File", str(enforce_script), "-Port", str(port)],
+            capture_output=True,
+            text=True,
+            cwd=str(repo_root)
+        )
+        
+        if result.returncode != 0:
+            print("❌ Port enforcement failed!")
+            print("\nSTDOUT:")
+            print(result.stdout)
+            print("\nSTDERR:")
+            print(result.stderr)
+            sys.exit(1)
+        
+        print(result.stdout)
+        print("✅ Port ownership enforced")
+        print("=" * 60)
+        
+    except Exception as e:
+        print(f"❌ Error running port enforcement: {str(e)}")
+        print(f"   Port {port} may be in use. Continuing anyway...")
+        sys.exit(1)
 
 
 def start_application(host="0.0.0.0", port=4000, reload=True):
@@ -111,6 +164,9 @@ def main():
     )
     
     args = parser.parse_args()
+    
+    # Enforce port ownership before starting (per reqs/ports.md)
+    enforce_port_ownership(args.port)
     
     # Run migrations unless skipped
     if not args.skip_migrations:

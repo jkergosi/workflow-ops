@@ -10,13 +10,16 @@ from app.schemas.billing import (
     PortalSessionResponse,
     PaymentHistoryResponse,
     InvoiceResponse,
-    UpcomingInvoiceResponse
+    UpcomingInvoiceResponse,
+    BillingOverviewResponse,
+    PaymentMethodResponse
 )
 from app.services.database import db_service
 from app.services.stripe_service import stripe_service
 from app.services.tenant_plan_service import set_tenant_plan
 from app.services.auth_service import get_current_user
 from app.services.agency_billing_service import upsert_subscription_items
+from app.services.entitlements_service import entitlements_service
 
 router = APIRouter()
 
@@ -88,18 +91,50 @@ async def get_current_subscription(user_info: dict = Depends(get_current_user)):
     """Get current subscription for tenant"""
     try:
         tenant_id = user_info["tenant"]["id"]
-        # Get subscription with plan details
+
+        # Get subscription with plan details (using maybe_single to avoid exception if not found)
         response = db_service.client.table("subscriptions").select(
             "*, plan:plan_id(*)"
-        ).eq("tenant_id", tenant_id).single().execute()
+        ).eq("tenant_id", tenant_id).maybe_single().execute()
 
-        if not response.data:
+        if response.data:
+            return response.data
+
+        # No subscription record - fall back to tenant's subscription_tier
+        subscription_tier = user_info["tenant"].get("subscription_tier", "free")
+
+        # Look up the plan by name
+        plan_response = db_service.client.table("subscription_plans").select("*").eq(
+            "name", subscription_tier
+        ).maybe_single().execute()
+
+        if not plan_response.data:
+            # Fall back to free plan if tier not found
+            plan_response = db_service.client.table("subscription_plans").select("*").eq(
+                "name", "free"
+            ).maybe_single().execute()
+
+        if not plan_response.data:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
-                detail="No subscription found"
+                detail="No subscription plan found"
             )
 
-        return response.data
+        # Return a synthetic subscription based on tenant tier
+        return {
+            "id": f"{tenant_id}_tier",
+            "tenant_id": tenant_id,
+            "plan": plan_response.data,
+            "stripe_customer_id": None,
+            "stripe_subscription_id": None,
+            "status": "active",
+            "billing_cycle": "monthly",
+            "current_period_start": None,
+            "current_period_end": None,
+            "cancel_at_period_end": False,
+            "canceled_at": None,
+            "trial_end": None
+        }
     except HTTPException:
         raise
     except Exception as e:
@@ -163,16 +198,16 @@ async def create_checkout_session(checkout: CheckoutSessionCreate, user_info: di
 
 @router.post("/portal", response_model=PortalSessionResponse)
 async def create_portal_session(return_url: str, user_info: dict = Depends(get_current_user)):
-    """Create a Stripe customer portal session"""
+    """Create a Stripe customer portal session (on-demand, short-lived)"""
     try:
         tenant_id = user_info["tenant"]["id"]
         # Get subscription with customer ID
-        response = db_service.client.table("subscriptions").select("stripe_customer_id").eq("tenant_id", tenant_id).single().execute()
+        response = db_service.client.table("subscriptions").select("stripe_customer_id").eq("tenant_id", tenant_id).maybe_single().execute()
 
         if not response.data or not response.data.get("stripe_customer_id"):
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
-                detail="No active subscription found"
+                detail="No active subscription found. Please create a subscription first."
             )
 
         customer_id = response.data["stripe_customer_id"]
@@ -345,6 +380,190 @@ async def get_payment_history(limit: int = 10, user_info: dict = Depends(get_cur
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to fetch payment history: {str(e)}"
+        )
+
+
+@router.get("/overview", response_model=BillingOverviewResponse)
+async def get_billing_overview(user_info: dict = Depends(get_current_user)):
+    """Get complete billing overview for the billing page"""
+    try:
+        tenant = user_info.get("tenant")
+        if not tenant:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Tenant information not found"
+            )
+        tenant_id = tenant.get("id")
+        if not tenant_id:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Tenant ID not found"
+            )
+        
+        # Get subscription
+        sub_response = db_service.client.table("subscriptions").select(
+            "*, plan:plan_id(*)"
+        ).eq("tenant_id", tenant_id).maybe_single().execute()
+        
+        subscription_data = sub_response.data
+        if not subscription_data:
+            # Fall back to tenant tier
+            subscription_tier = user_info["tenant"].get("subscription_tier", "free")
+            plan_response = db_service.client.table("subscription_plans").select("*").eq(
+                "name", subscription_tier
+            ).maybe_single().execute()
+            
+            if not plan_response.data:
+                plan_response = db_service.client.table("subscription_plans").select("*").eq(
+                    "name", "free"
+                ).maybe_single().execute()
+            
+            plan = plan_response.data if plan_response.data else {}
+            subscription_data = {
+                "id": f"{tenant_id}_tier",
+                "tenant_id": tenant_id,
+                "plan": plan,
+                "status": "active",
+                "billing_cycle": "monthly",
+                "current_period_end": None,
+                "cancel_at_period_end": False,
+                "stripe_customer_id": None,
+                "stripe_subscription_id": None
+            }
+        
+        plan_data = subscription_data.get("plan", {})
+        plan_name = plan_data.get("name", "free")
+        plan_display = plan_data.get("display_name", plan_name.capitalize())
+        
+        # Get usage
+        env_count = db_service.client.table("environments").select("id", count="exact").eq("tenant_id", tenant_id).execute()
+        team_count = db_service.client.table("users").select("id", count="exact").eq("tenant_id", tenant_id).execute()
+        
+        # Get entitlements
+        try:
+            entitlements = await entitlements_service.get_tenant_entitlements(tenant_id)
+            features = entitlements.get("features", {})
+        except Exception:
+            features = plan_data.get("features", {})
+        
+        # Determine if plan is custom (before normalizing entitlements)
+        plan_is_custom = plan_name not in ["free", "pro", "agency", "enterprise"]
+        
+        # Format entitlements with proper values - normalize to prevent undefined
+        def normalize_entitlement(value, is_custom: bool = False):
+            """Normalize entitlement values: null/undefined -> Custom or —, -1 -> Unlimited"""
+            if value is None or value == "undefined":
+                # If plan is custom and value is missing, it's likely a custom limit
+                if is_custom:
+                    return "Custom"
+                # Otherwise, it's not configured
+                return "—"
+            if isinstance(value, str):
+                value_lower = value.lower()
+                if value_lower in ["unlimited", "inf", "-1", "null", "undefined"]:
+                    return "Unlimited"
+                # Try to parse as number
+                try:
+                    num_val = float(value)
+                    if num_val == -1 or num_val >= 9999:
+                        return "Unlimited"
+                    return int(num_val) if num_val.is_integer() else num_val
+                except (ValueError, TypeError):
+                    return value
+            if isinstance(value, (int, float)):
+                if value == -1 or value >= 9999:
+                    return "Unlimited"
+                return int(value) if isinstance(value, float) and value.is_integer() else value
+            return value
+        
+        # Get invoices and payment method
+        invoices = []
+        payment_method = None
+        
+        if subscription_data.get("stripe_customer_id"):
+            customer_id = subscription_data["stripe_customer_id"]
+            try:
+                invoices = await stripe_service.list_invoices(customer_id, 10)
+                payment_method = await stripe_service.get_default_payment_method(customer_id)
+            except Exception:
+                pass
+        
+        # Get upcoming invoice amount
+        next_amount_cents = None
+        if subscription_data.get("stripe_subscription_id") and subscription_data.get("status") in ["active", "trialing"]:
+            try:
+                upcoming = await stripe_service.get_upcoming_invoice(subscription_data["stripe_customer_id"])
+                if upcoming:
+                    next_amount_cents = int(upcoming["amount_due"] * 100)
+            except Exception:
+                pass
+        
+        # Format subscription response
+        subscription_status = subscription_data.get("status", "active")
+        billing_cycle = subscription_data.get("billing_cycle", "monthly")
+        current_period_end = subscription_data.get("current_period_end")
+        cancel_at_period_end = subscription_data.get("cancel_at_period_end", False)
+        
+        # Format current_period_end - handle both datetime objects and strings
+        formatted_period_end = None
+        if current_period_end:
+            if isinstance(current_period_end, str):
+                formatted_period_end = current_period_end
+            elif hasattr(current_period_end, 'isoformat'):
+                formatted_period_end = current_period_end.isoformat()
+            else:
+                formatted_period_end = str(current_period_end)
+        
+        return {
+            "plan": {
+                "key": plan_name,
+                "name": plan_display,
+                "is_custom": plan_is_custom
+            },
+            "subscription": {
+                "status": subscription_status,
+                "interval": "month" if billing_cycle == "monthly" else "year",
+                "current_period_end": formatted_period_end,
+                "cancel_at_period_end": cancel_at_period_end,
+                "next_amount_cents": next_amount_cents,
+                "currency": "USD"
+            },
+            "usage": {
+                "environments_used": env_count.count or 0,
+                "team_members_used": team_count.count or 0
+            },
+            "entitlements": {
+                "environments_limit": normalize_entitlement(features.get("max_environments") or plan_data.get("max_environments"), plan_is_custom),
+                "team_members_limit": normalize_entitlement(features.get("max_team_members") or plan_data.get("max_team_members"), plan_is_custom),
+                "promotions_monthly_limit": normalize_entitlement(features.get("max_promotions_per_month"), plan_is_custom),
+                "snapshots_monthly_limit": normalize_entitlement(features.get("max_snapshots_per_month") or "Unlimited" if features.get("snapshots_enabled") else None, plan_is_custom),
+            },
+            "payment_method": payment_method,
+            "invoices": invoices,
+            "links": {
+                "stripe_portal_url": "",
+                "change_plan_url": "/billing/change-plan",
+                "usage_limits_url": "/admin/usage",
+                "entitlements_audit_url": "/admin/entitlements-audit"
+            }
+        }
+        
+    except HTTPException:
+        raise
+    except KeyError as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Missing required data: {str(e)}"
+        )
+    except Exception as e:
+        import traceback
+        import logging
+        logger = logging.getLogger(__name__)
+        error_details = traceback.format_exc()
+        logger.error(f"Billing overview error: {error_details}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to fetch billing overview: {str(e)}"
         )
 
 

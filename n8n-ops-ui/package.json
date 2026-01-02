@@ -4,7 +4,8 @@
   "version": "0.0.0",
   "type": "module",
   "scripts": {
-    "dev": "vite",
+    "dev": "node scripts/pre-dev.js && vite",
+    "kill": "powershell.exe -ExecutionPolicy Bypass -File ../scripts/kill-ports.ps1 -Port 3000",
     "build": "tsc -b && vite build",
     "lint": "eslint .",
     "preview": "vite preview",
