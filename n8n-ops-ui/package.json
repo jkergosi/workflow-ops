@@ -8,9 +8,9 @@
     "build": "tsc -b && vite build",
     "lint": "eslint .",
     "preview": "vite preview",
-    "test": "vitest run",
+    "test": "node --max-old-space-size=8192 node_modules/vitest/vitest.mjs run",
     "test:watch": "vitest",
-    "test:coverage": "vitest run --coverage"
+    "test:coverage": "node --max-old-space-size=8192 node_modules/vitest/vitest.mjs run --coverage"
   },
   "dependencies": {
     "@auth0/auth0-react": "^2.10.0",
