@@ -9,6 +9,7 @@ from app.schemas.workflow_policy import (
 )
 from app.services.database import db_service
 from app.services.auth_service import get_current_user
+from app.services.feature_service import feature_service
 
 router = APIRouter()
 
@@ -44,9 +45,11 @@ async def get_workflow_action_policy(
             detail="Environment not found"
         )
 
-    # Get tenant plan and user role
-    plan = tenant.get("subscription_tier", "free")
+    # Get tenant plan and user role - use provider-scoped entitlements as source of truth
     role = user.get("role", "user")
+    # Provider-scoped plan check with fallback to tenant.subscription_tier for backwards compatibility
+    provider_entitlements = await feature_service.get_effective_entitlements(tenant_id, "n8n")
+    plan = provider_entitlements.get("plan_name") or tenant.get("subscription_tier", "free")
 
     # Use environment_class from DB - NEVER infer at runtime
     env_class_str = env.get("environment_class", "dev")
@@ -104,9 +107,11 @@ async def get_workflow_specific_policy(
         sync_status = workflow.get("sync_status", "in_sync")
         has_drift = sync_status in ["local_changes", "conflict"]
 
-    # Get tenant plan and user role
-    plan = tenant.get("subscription_tier", "free")
+    # Get tenant plan and user role - use provider-scoped entitlements as source of truth
     role = user.get("role", "user")
+    # Provider-scoped plan check with fallback to tenant.subscription_tier for backwards compatibility
+    provider_entitlements = await feature_service.get_effective_entitlements(tenant_id, "n8n")
+    plan = provider_entitlements.get("plan_name") or tenant.get("subscription_tier", "free")
 
     # Use environment_class from DB
     env_class_str = env.get("environment_class", "dev")

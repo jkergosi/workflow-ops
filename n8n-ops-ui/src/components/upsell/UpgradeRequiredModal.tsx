@@ -29,7 +29,7 @@ export function UpgradeRequiredModal({
 
   const handleUpgrade = () => {
     onOpenChange(false);
-    navigate('/admin/billing');
+    navigate('/admin/providers');
   };
 
   const planDisplayName = requiredPlan === 'enterprise' ? 'Enterprise' : requiredPlan === 'agency' ? 'Agency' : 'Pro';

@@ -24,6 +24,9 @@ export interface OnboardingFormData {
   selectedPlan: string;
   billingCycle: 'monthly' | 'yearly';
   teamInvites: Array<{ email: string; role: string }>;
+  // Provider subscription fields (per spec: explicit provider selection)
+  selectedProviderId?: string;
+  selectedPlanId?: string;
 }
 
 const STEPS = [
@@ -115,12 +118,29 @@ export function OnboardingPage() {
         });
         setCurrentStep(2);
       } else if (currentStep === 2) {
-        // Plan selection step
+        // Plan selection step - now provider-scoped per spec
+        const providerId = (stepData as any)?.selectedProviderId || formData.selectedProviderId;
+        const planId = (stepData as any)?.selectedPlanId || formData.selectedPlanId;
+        const planName = stepData?.selectedPlan || formData.selectedPlan;
+        const billingCycleValue = stepData?.billingCycle || formData.billingCycle;
+
+        // Also update legacy tenant subscription tier for backward compatibility
         await apiClient.onboardingSelectPlan({
-          plan_name: stepData?.selectedPlan || formData.selectedPlan,
-          billing_cycle: stepData?.billingCycle || formData.billingCycle,
+          plan_name: planName,
+          billing_cycle: billingCycleValue,
         });
-        // All plans go through Step 3 (Setup)
+
+        // Create provider subscription per spec (explicit provisioning)
+        if (providerId) {
+          const isFree = planName === 'free';
+          if (isFree) {
+            // Subscribe to free plan directly
+            await apiClient.subscribeToFreePlan(providerId);
+          }
+          // For paid plans, subscription will be created via checkout in step 3
+        }
+
+        // All plans go through Step 3 (Setup/Payment)
         setCurrentStep(3);
       } else if (currentStep === 3) {
         // Setup step - for paid plans, PaymentStep handles Stripe redirect

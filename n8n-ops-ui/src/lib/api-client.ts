@@ -48,6 +48,8 @@ import type {
   CheckoutSession,
   PortalSession,
   TimeRange,
+  TenantProviderSubscription,
+  ProviderWithPlans,
   ObservabilityOverview,
   WorkflowPerformance,
   EnvironmentHealthData,
@@ -230,7 +232,7 @@ class ApiClient {
   // Platform Tenant Users & Roles Management
   async getPlatformTenantUsers(
     tenantId: string,
-    params?: { search?: string; role?: string; status?: string; page?: number; page_size?: number }
+    params?: { search?: string; role?: string; status?: string; sort_by?: string; sort_order?: string; page?: number; page_size?: number }
   ): Promise<{ data: { users: any[]; total: number; page: number; page_size: number } }> {
     const response = await this.client.get(`/tenants/${tenantId}/users`, { params });
     return { data: response.data };
@@ -2021,10 +2023,14 @@ class ApiClient {
   // Tenant endpoints (admin)
   async getTenants(params?: {
     search?: string;
-    plan?: string;
+    provider_key?: string;
+    plan_key?: string;
+    subscription_state?: string;
     status?: string;
     created_from?: string;
     created_to?: string;
+    sort_by?: string;
+    sort_order?: 'asc' | 'desc';
     page?: number;
     page_size?: number;
   }): Promise<{ data: { tenants: Tenant[]; total: number; page: number; page_size: number } }> {
@@ -2150,7 +2156,6 @@ class ApiClient {
   async createTenant(tenant: {
     name: string;
     email: string;
-    subscription_plan: string;
   }): Promise<{ data: Tenant }> {
     const response = await this.client.post<Tenant>('/tenants', tenant);
     return { data: response.data };
@@ -2164,6 +2169,49 @@ class ApiClient {
     primary_contact_name?: string;
   }): Promise<{ data: Tenant }> {
     const response = await this.client.patch<Tenant>(`/tenants/${id}`, updates);
+    return { data: response.data };
+  }
+
+  async createTenantProviderSubscription(
+    tenantId: string,
+    providerId: string,
+    planId: string,
+    billingCycle: 'monthly' | 'yearly' = 'monthly'
+  ): Promise<{ data: TenantProviderSubscription }> {
+    const response = await this.client.post<TenantProviderSubscription>(
+      `/tenants/${tenantId}/provider-subscriptions`,
+      {
+        provider_id: providerId,
+        plan_id: planId,
+        billing_cycle: billingCycle,
+      }
+    );
+    return { data: response.data };
+  }
+
+  async updateTenantProviderSubscription(
+    tenantId: string,
+    providerId: string,
+    updates: {
+      plan_id?: string;
+      cancel_at_period_end?: boolean;
+    }
+  ): Promise<{ data: TenantProviderSubscription }> {
+    const response = await this.client.patch<TenantProviderSubscription>(
+      `/tenants/${tenantId}/provider-subscriptions/${providerId}`,
+      updates
+    );
+    return { data: response.data };
+  }
+
+  async cancelTenantProviderSubscription(
+    tenantId: string,
+    providerId: string,
+    atPeriodEnd: boolean = true
+  ): Promise<{ data: { success: boolean; message: string } }> {
+    const response = await this.client.delete(
+      `/tenants/${tenantId}/provider-subscriptions/${providerId}?at_period_end=${atPeriodEnd}`
+    );
     return { data: response.data };
   }
 
@@ -2969,7 +3017,7 @@ class ApiClient {
 
   // Tenant Feature Overrides endpoints
   async getTenantOverrides(tenantId: string): Promise<{ data: { overrides: TenantFeatureOverride[]; total: number } }> {
-    const response = await this.client.get(`/tenants/${tenantId}/entitlements/overrides`);
+    const response = await this.client.get(`/tenants/${tenantId}/overrides`);
     return {
       data: {
         overrides: (response.data.overrides || []).map((o: any) => ({
@@ -2996,7 +3044,7 @@ class ApiClient {
     tenantId: string,
     data: { featureKey: string; value: Record<string, any>; reason?: string; expiresAt?: string }
   ): Promise<{ data: TenantFeatureOverride }> {
-    const response = await this.client.post(`/tenants/${tenantId}/entitlements/overrides`, {
+    const response = await this.client.post(`/tenants/${tenantId}/overrides`, {
       feature_key: data.featureKey,
       value: data.value,
       reason: data.reason,
@@ -3033,7 +3081,7 @@ class ApiClient {
     if (data.expiresAt !== undefined) payload.expires_at = data.expiresAt;
     if (data.isActive !== undefined) payload.is_active = data.isActive;
 
-    const response = await this.client.patch(`/tenants/${tenantId}/entitlements/overrides/${overrideId}`, payload);
+    const response = await this.client.patch(`/tenants/${tenantId}/overrides/${overrideId}`, payload);
     const o = response.data;
     return {
       data: {
@@ -3055,7 +3103,7 @@ class ApiClient {
   }
 
   async deleteTenantOverride(tenantId: string, overrideId: string): Promise<void> {
-    await this.client.delete(`/tenants/${tenantId}/entitlements/overrides/${overrideId}`);
+    await this.client.delete(`/tenants/${tenantId}/overrides/${overrideId}`);
   }
 
   // Audit Logs endpoints
@@ -3317,7 +3365,7 @@ class ApiClient {
 
   // Provider Subscription endpoints
   async getProvidersWithPlans(): Promise<{ data: any[] }> {
-    const response = await this.client.get('/providers/');
+    const response = await this.client.get('/providers');
     return { data: response.data };
   }
 
@@ -3367,6 +3415,22 @@ class ApiClient {
 
   async cancelProviderSubscription(providerId: string): Promise<{ data: { message: string } }> {
     const response = await this.client.delete(`/providers/${providerId}/subscription`);
+    return { data: response.data };
+  }
+
+  // Provider Entitlements - Single source of truth for feature gating
+  async getProviderEntitlements(providerKey: string = 'n8n'): Promise<{
+    data: {
+      plan_name: string | null;
+      provider_key: string;
+      features: Record<string, any>;
+      max_environments: number;
+      max_workflows: number;
+      has_subscription: boolean;
+      status: string | null;
+    };
+  }> {
+    const response = await this.client.get(`/providers/entitlements/${providerKey}`);
     return { data: response.data };
   }
 

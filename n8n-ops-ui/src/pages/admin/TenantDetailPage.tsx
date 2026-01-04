@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { useParams, useNavigate, Link } from 'react-router-dom';
+import { useParams, useNavigate, Link, useSearchParams } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -62,10 +62,30 @@ import {
   Plus,
   CheckCircle,
   XCircle,
+  Workflow,
+  MoreHorizontal,
+  ArrowUpCircle,
+  Loader2,
+  Sparkles,
+  Crown,
+  Zap,
+  Search,
+  UserCog,
+  MoreVertical,
+  ArrowUpDown,
+  ArrowUp,
+  ArrowDown,
 } from 'lucide-react';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu';
 import { apiClient } from '@/lib/api-client';
 import { toast } from 'sonner';
-import type { Tenant, TenantNote, TenantFeatureOverride, Provider } from '@/types';
+import type { Tenant, TenantNote, TenantFeatureOverride, Provider, TenantProviderSubscriptionSummary, ProviderWithPlans, ProviderPlan } from '@/types';
 
 const statusColors: Record<string, string> = {
   active: 'bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200',
@@ -93,12 +113,36 @@ export function TenantDetailPage() {
   const { tenantId } = useParams<{ tenantId: string }>();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
-  const [activeTab, setActiveTab] = useState('overview');
+  const [searchParams, setSearchParams] = useSearchParams();
+  const [activeTab, setActiveTab] = useState(() => searchParams.get('tab') || 'overview');
   const [editDialogOpen, setEditDialogOpen] = useState(false);
   const [suspendDialogOpen, setSuspendDialogOpen] = useState(false);
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const [noteContent, setNoteContent] = useState('');
   const [providerFilter, setProviderFilter] = useState<Provider | 'all'>('all');
+  
+  // Subscriptions tab state
+  const [addProviderDialogOpen, setAddProviderDialogOpen] = useState(false);
+  const [changePlanDialogOpen, setChangePlanDialogOpen] = useState(false);
+  const [cancelDialogOpen, setCancelDialogOpen] = useState(false);
+  const [selectedSubscription, setSelectedSubscription] = useState<TenantProviderSubscriptionSummary | null>(null);
+  const [selectedProvider, setSelectedProvider] = useState<ProviderWithPlans | null>(null);
+  const [selectedPlan, setSelectedPlan] = useState<ProviderPlan | null>(null);
+
+  // Users & Roles tab state
+  const [searchQuery, setSearchQuery] = useState('');
+  const [roleFilter, setRoleFilter] = useState<string>('all');
+  const [statusFilter, setStatusFilter] = useState<string>('all');
+  const [sortBy, setSortBy] = useState<string>('joined');
+  const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('desc');
+  const [usersPage, setUsersPage] = useState(1);
+  const [impersonateDialogOpen, setImpersonateDialogOpen] = useState(false);
+  const [suspendUserDialogOpen, setSuspendUserDialogOpen] = useState(false);
+  const [unsuspendUserDialogOpen, setUnsuspendUserDialogOpen] = useState(false);
+  const [roleChangeDialogOpen, setRoleChangeDialogOpen] = useState(false);
+  const [removeUserDialogOpen, setRemoveUserDialogOpen] = useState(false);
+  const [selectedUser, setSelectedUser] = useState<any>(null);
+  const [newRole, setNewRole] = useState<string>('');
 
   const [editForm, setEditForm] = useState({
     name: '',
@@ -134,10 +178,42 @@ export function TenantDetailPage() {
     enabled: !!tenantId && activeTab === 'features',
   });
 
+  // Fetch providers with plans for subscriptions tab
+  const { data: providersData } = useQuery({
+    queryKey: ['providers-with-plans'],
+    queryFn: () => apiClient.getProvidersWithPlans(),
+    enabled: !!tenantId && activeTab === 'subscriptions',
+  });
+
+  // Fetch tenant users for users tab
+  const { data: usersData, isLoading: usersLoading, refetch: refetchUsers } = useQuery({
+    queryKey: ['tenant-users', tenantId, searchQuery, roleFilter, statusFilter, sortBy, sortOrder, usersPage],
+    queryFn: () => apiClient.getPlatformTenantUsers(tenantId!, {
+      search: searchQuery || undefined,
+      role: roleFilter !== 'all' ? roleFilter : undefined,
+      status: statusFilter !== 'all' ? statusFilter : undefined,
+      sort_by: sortBy,
+      sort_order: sortOrder,
+      page: usersPage,
+      page_size: 50,
+    }),
+    enabled: !!tenantId && activeTab === 'users',
+  });
+
   const tenant = tenantData?.data;
   const usage = usageData?.data;
   const notes = notesData?.data?.notes || [];
   const overrides = overridesData?.data?.overrides || [];
+  const providers = providersData?.data || [];
+  const subscriptions = (tenant as any)?.providerSubscriptions || [];
+  const users = usersData?.data?.users || [];
+  const totalUsers = usersData?.data?.total || 0;
+  
+  // Find providers not yet subscribed
+  const subscribedProviderIds = subscriptions.map((s: TenantProviderSubscriptionSummary) => s.provider_id);
+  const availableProviders = providers.filter(
+    (p: ProviderWithPlans) => !subscribedProviderIds.includes(p.id) && p.is_active
+  );
 
   // Mutations
   const updateMutation = useMutation({
@@ -210,6 +286,114 @@ export function TenantDetailPage() {
     },
   });
 
+  // Subscriptions mutations
+  const createSubscriptionMutation = useMutation({
+    mutationFn: ({ providerId, planId, billingCycle }: { providerId: string; planId: string; billingCycle: 'monthly' | 'yearly' }) =>
+      apiClient.createTenantProviderSubscription(tenantId!, providerId, planId, billingCycle),
+    onSuccess: () => {
+      toast.success('Provider subscription created');
+      queryClient.invalidateQueries({ queryKey: ['tenant', tenantId] });
+      setAddProviderDialogOpen(false);
+      setSelectedProvider(null);
+      setSelectedPlan(null);
+    },
+    onError: (error: any) => {
+      toast.error(error.response?.data?.detail || 'Failed to create subscription');
+    },
+  });
+
+  const updateSubscriptionMutation = useMutation({
+    mutationFn: ({ providerId, updates }: { providerId: string; updates: { plan_id?: string; cancel_at_period_end?: boolean } }) =>
+      apiClient.updateTenantProviderSubscription(tenantId!, providerId, updates),
+    onSuccess: () => {
+      toast.success('Subscription updated');
+      queryClient.invalidateQueries({ queryKey: ['tenant', tenantId] });
+      setChangePlanDialogOpen(false);
+      setSelectedSubscription(null);
+      setSelectedPlan(null);
+    },
+    onError: (error: any) => {
+      toast.error(error.response?.data?.detail || 'Failed to update subscription');
+    },
+  });
+
+  const cancelSubscriptionMutation = useMutation({
+    mutationFn: ({ providerId, atPeriodEnd }: { providerId: string; atPeriodEnd: boolean }) =>
+      apiClient.cancelTenantProviderSubscription(tenantId!, providerId, atPeriodEnd),
+    onSuccess: () => {
+      toast.success('Subscription canceled');
+      queryClient.invalidateQueries({ queryKey: ['tenant', tenantId] });
+      setCancelDialogOpen(false);
+      setSelectedSubscription(null);
+    },
+    onError: (error: any) => {
+      toast.error(error.response?.data?.detail || 'Failed to cancel subscription');
+    },
+  });
+
+  // Users mutations
+  const impersonateUserMutation = useMutation({
+    mutationFn: (userId: string) => apiClient.impersonatePlatformTenantUser(tenantId!, userId),
+    onSuccess: () => {
+      toast.success('Impersonation started');
+      setImpersonateDialogOpen(false);
+      window.location.reload();
+    },
+    onError: (error: any) => {
+      toast.error(error.response?.data?.detail || 'Failed to start impersonation');
+    },
+  });
+
+  const suspendUserMutation = useMutation({
+    mutationFn: (userId: string) => apiClient.suspendPlatformTenantUser(tenantId!, userId),
+    onSuccess: () => {
+      toast.success('User suspended');
+      setSuspendUserDialogOpen(false);
+      refetchUsers();
+    },
+    onError: (error: any) => {
+      toast.error(error.response?.data?.detail || 'Failed to suspend user');
+    },
+  });
+
+  const unsuspendUserMutation = useMutation({
+    mutationFn: (userId: string) => apiClient.unsuspendPlatformTenantUser(tenantId!, userId),
+    onSuccess: () => {
+      toast.success('User unsuspended');
+      setUnsuspendUserDialogOpen(false);
+      refetchUsers();
+    },
+    onError: (error: any) => {
+      toast.error(error.response?.data?.detail || 'Failed to unsuspend user');
+    },
+  });
+
+  const changeUserRoleMutation = useMutation({
+    mutationFn: ({ userId, role }: { userId: string; role: string }) =>
+      apiClient.changePlatformTenantUserRole(tenantId!, userId, role),
+    onSuccess: () => {
+      toast.success('User role changed');
+      setRoleChangeDialogOpen(false);
+      refetchUsers();
+    },
+    onError: (error: any) => {
+      toast.error(error.response?.data?.detail || 'Failed to change user role');
+    },
+  });
+
+  const removeUserMutation = useMutation({
+    mutationFn: (userId: string) => apiClient.removePlatformTenantUser(tenantId!, userId),
+    onSuccess: () => {
+      toast.success('User removed from tenant');
+      setRemoveUserDialogOpen(false);
+      refetchUsers();
+      queryClient.invalidateQueries({ queryKey: ['tenant', tenantId] });
+    },
+    onError: (error: any) => {
+      toast.error(error.response?.data?.detail || 'Failed to remove user');
+    },
+  });
+
   const handleEditOpen = () => {
     if (tenant) {
       setEditForm({
@@ -229,7 +413,7 @@ export function TenantDetailPage() {
     } as any);
   };
 
-  const formatDate = (dateString?: string) => {
+  const formatDateTime = (dateString?: string) => {
     if (!dateString) return 'Never';
     return new Date(dateString).toLocaleDateString('en-US', {
       year: 'numeric',
@@ -243,6 +427,110 @@ export function TenantDetailPage() {
   const copyToClipboard = (text: string) => {
     navigator.clipboard.writeText(text);
     toast.success('Copied to clipboard');
+  };
+
+  // Handle tab change with URL param
+  const handleTabChange = (value: string) => {
+    setActiveTab(value);
+    if (value === 'subscriptions') {
+      setSearchParams({ tab: 'subscriptions' });
+    } else {
+      setSearchParams({});
+    }
+  };
+
+  // Subscriptions helper functions
+  const formatDate = (dateString?: string) => {
+    if (!dateString) return 'N/A';
+    return new Date(dateString).toLocaleDateString('en-US', {
+      year: 'numeric',
+      month: 'short',
+      day: 'numeric',
+    });
+  };
+
+  const getStatusBadge = (status: string, cancelAtPeriodEnd?: boolean) => {
+    if (cancelAtPeriodEnd) {
+      return <Badge variant="destructive">Canceling</Badge>;
+    }
+    switch (status) {
+      case 'active':
+        return <Badge variant="default" className="bg-green-600">Active</Badge>;
+      case 'trialing':
+        return <Badge variant="secondary">Trial</Badge>;
+      case 'past_due':
+        return <Badge variant="destructive">Past Due</Badge>;
+      case 'canceled':
+        return <Badge variant="outline">Canceled</Badge>;
+      default:
+        return <Badge variant="outline">{status}</Badge>;
+    }
+  };
+
+  const getPlanIcon = (planName: string) => {
+    switch (planName) {
+      case 'enterprise':
+        return <Crown className="h-4 w-4 text-amber-500" />;
+      case 'pro':
+        return <Sparkles className="h-4 w-4 text-primary" />;
+      default:
+        return <Zap className="h-4 w-4 text-muted-foreground" />;
+    }
+  };
+
+  const handleAddProvider = () => {
+    if (selectedProvider && selectedPlan) {
+      createSubscriptionMutation.mutate({
+        providerId: selectedProvider.id,
+        planId: selectedPlan.id,
+        billingCycle: 'monthly',
+      });
+    }
+  };
+
+  const handleChangePlan = () => {
+    if (selectedSubscription && selectedPlan) {
+      updateSubscriptionMutation.mutate({
+        providerId: selectedSubscription.provider_id,
+        updates: { plan_id: selectedPlan.id },
+      });
+    }
+  };
+
+  const handleCancelSubscription = () => {
+    if (selectedSubscription) {
+      cancelSubscriptionMutation.mutate({
+        providerId: selectedSubscription.provider_id,
+        atPeriodEnd: true,
+      });
+    }
+  };
+
+  // Users helper functions
+  const getRoleBadgeColor = (role: string) => {
+    switch (role) {
+      case 'admin':
+        return 'bg-purple-100 text-purple-800 dark:bg-purple-900 dark:text-purple-200';
+      case 'developer':
+        return 'bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200';
+      case 'viewer':
+        return 'bg-gray-100 text-gray-800 dark:bg-gray-700 dark:text-gray-200';
+      default:
+        return 'bg-gray-100 text-gray-800';
+    }
+  };
+
+  const getStatusBadgeColor = (status: string) => {
+    switch (status) {
+      case 'active':
+        return 'bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200';
+      case 'inactive':
+        return 'bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-200';
+      case 'pending':
+        return 'bg-yellow-100 text-yellow-800 dark:bg-yellow-900 dark:text-yellow-200';
+      default:
+        return 'bg-gray-100 text-gray-800';
+    }
   };
 
   const getUsageColor = (percentage: number) => {
@@ -271,7 +559,9 @@ export function TenantDetailPage() {
     );
   }
 
-  const planName = (tenant.subscriptionPlan || (tenant as any).subscription_plan || (tenant as any).subscription_tier || 'free') as string;
+  // Get plan name from provider subscriptions (new system) or fall back to deprecated fields
+  const primarySubscription = subscriptions.find((s: TenantProviderSubscriptionSummary) => s.status === 'active');
+  const planName = primarySubscription?.plan?.name || (tenant.subscriptionPlan || (tenant as any).subscription_plan || (tenant as any).subscription_tier || 'free') as string;
   const statusName = (tenant.status || (tenant as any).status || 'active') as string;
 
   return (
@@ -311,7 +601,7 @@ export function TenantDetailPage() {
       </div>
 
       {/* Tabs */}
-      <Tabs value={activeTab} onValueChange={setActiveTab}>
+      <Tabs value={activeTab} onValueChange={handleTabChange}>
         <TabsList>
           <TabsTrigger value="overview">
             <Building2 className="h-4 w-4 mr-2" />
@@ -328,6 +618,10 @@ export function TenantDetailPage() {
           <TabsTrigger value="billing">
             <CreditCard className="h-4 w-4 mr-2" />
             Billing
+          </TabsTrigger>
+          <TabsTrigger value="subscriptions">
+            <Workflow className="h-4 w-4 mr-2" />
+            Subscriptions
           </TabsTrigger>
           <TabsTrigger value="usage">
             <BarChart3 className="h-4 w-4 mr-2" />
@@ -367,11 +661,11 @@ export function TenantDetailPage() {
                 </div>
                 <div>
                   <Label className="text-muted-foreground">Created</Label>
-                  <p className="font-medium">{formatDate(tenant.createdAt)}</p>
+                  <p className="font-medium">{formatDateTime(tenant.createdAt)}</p>
                 </div>
                 <div>
                   <Label className="text-muted-foreground">Last Active</Label>
-                  <p className="font-medium">{formatDate(tenant.lastActiveAt)}</p>
+                  <p className="font-medium">{formatDateTime(tenant.lastActiveAt)}</p>
                 </div>
               </CardContent>
             </Card>
@@ -440,7 +734,7 @@ export function TenantDetailPage() {
                   <div className="mt-4 p-3 bg-destructive/10 rounded-lg flex items-center gap-2">
                     <AlertTriangle className="h-5 w-5 text-destructive" />
                     <span className="text-destructive">
-                      Scheduled for deletion on {formatDate(tenant.scheduledDeletionAt)}
+                      Scheduled for deletion on {formatDateTime(tenant.scheduledDeletionAt)}
                     </span>
                   </div>
                 )}
@@ -450,18 +744,170 @@ export function TenantDetailPage() {
         </TabsContent>
 
         {/* Users & Roles Tab */}
-        <TabsContent value="users">
+        <TabsContent value="users" className="space-y-6">
           <Card>
             <CardHeader>
               <CardTitle>Users & Roles</CardTitle>
-              <CardDescription>Manage users within this tenant</CardDescription>
+              <CardDescription>
+                Manage users and their roles for this tenant. All actions are audited.
+              </CardDescription>
             </CardHeader>
             <CardContent>
-              <p className="text-muted-foreground text-center py-8">
-                User management will be available in the full implementation.
-                <br />
-                Currently showing {tenant.userCount} users in this tenant.
-              </p>
+              {/* Search and Filters */}
+              <div className="flex gap-4 mb-6">
+                <div className="flex-1">
+                  <div className="relative">
+                    <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+                    <Input
+                      placeholder="Search by name or email..."
+                      value={searchQuery}
+                      onChange={(e) => {
+                        setSearchQuery(e.target.value);
+                        setUsersPage(1);
+                      }}
+                      className="pl-10"
+                    />
+                  </div>
+                </div>
+                <Select value={roleFilter} onValueChange={(value) => { setRoleFilter(value); setUsersPage(1); }}>
+                  <SelectTrigger className="w-[150px]">
+                    <SelectValue placeholder="All Roles" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all">All Roles</SelectItem>
+                    <SelectItem value="admin">Admin</SelectItem>
+                    <SelectItem value="developer">Developer</SelectItem>
+                    <SelectItem value="viewer">Viewer</SelectItem>
+                  </SelectContent>
+                </Select>
+                <Select value={statusFilter} onValueChange={(value) => { setStatusFilter(value); setUsersPage(1); }}>
+                  <SelectTrigger className="w-[150px]">
+                    <SelectValue placeholder="All Statuses" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all">All Statuses</SelectItem>
+                    <SelectItem value="active">Active</SelectItem>
+                    <SelectItem value="inactive">Inactive</SelectItem>
+                    <SelectItem value="pending">Pending</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+
+              {/* Table */}
+              {usersLoading ? (
+                <div className="flex items-center justify-center h-64">
+                  <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
+                </div>
+              ) : users.length === 0 ? (
+                <div className="text-center py-12">
+                  <p className="text-muted-foreground">No users found for this tenant.</p>
+                </div>
+              ) : (
+                <div className="rounded-md border">
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead>User</TableHead>
+                        <TableHead>Role</TableHead>
+                        <TableHead>Status</TableHead>
+                        <TableHead>Joined</TableHead>
+                        <TableHead>Last Activity</TableHead>
+                        <TableHead className="text-right">Actions</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {users.map((user: any) => (
+                        <TableRow key={user.user_id}>
+                          <TableCell>
+                            <div>
+                              <div className="font-medium">{user.name || user.email.split('@')[0]}</div>
+                              <div className="text-sm text-muted-foreground">{user.email}</div>
+                              {user.is_platform_admin && (
+                                <Badge variant="outline" className="mt-1">Platform Admin</Badge>
+                              )}
+                            </div>
+                          </TableCell>
+                          <TableCell>
+                            <Badge className={getRoleBadgeColor(user.role_in_tenant)}>
+                              {user.role_in_tenant}
+                            </Badge>
+                          </TableCell>
+                          <TableCell>
+                            <Badge className={getStatusBadgeColor(user.status_in_tenant)}>
+                              {user.status_in_tenant}
+                            </Badge>
+                          </TableCell>
+                          <TableCell>{formatDateTime(user.joined_at)}</TableCell>
+                          <TableCell>{formatDateTime(user.last_activity_at)}</TableCell>
+                          <TableCell className="text-right">
+                            <DropdownMenu>
+                              <DropdownMenuTrigger asChild>
+                                <Button variant="ghost" size="sm">
+                                  <MoreVertical className="h-4 w-4" />
+                                </Button>
+                              </DropdownMenuTrigger>
+                              <DropdownMenuContent align="end">
+                                <DropdownMenuItem
+                                  onClick={() => {
+                                    setSelectedUser(user);
+                                    setImpersonateDialogOpen(true);
+                                  }}
+                                >
+                                  <UserCog className="h-4 w-4 mr-2" />
+                                  Impersonate
+                                </DropdownMenuItem>
+                                <DropdownMenuItem
+                                  onClick={() => {
+                                    setSelectedUser(user);
+                                    setNewRole(user.role_in_tenant);
+                                    setRoleChangeDialogOpen(true);
+                                  }}
+                                >
+                                  <Edit className="h-4 w-4 mr-2" />
+                                  Change Role
+                                </DropdownMenuItem>
+                                <DropdownMenuSeparator />
+                                {user.status_in_tenant === 'active' ? (
+                                  <DropdownMenuItem
+                                    className="text-destructive"
+                                    onClick={() => {
+                                      setSelectedUser(user);
+                                      setSuspendUserDialogOpen(true);
+                                    }}
+                                  >
+                                    <Ban className="h-4 w-4 mr-2" />
+                                    Suspend
+                                  </DropdownMenuItem>
+                                ) : user.status_in_tenant === 'inactive' ? (
+                                  <DropdownMenuItem
+                                    onClick={() => {
+                                      setSelectedUser(user);
+                                      setUnsuspendUserDialogOpen(true);
+                                    }}
+                                  >
+                                    <CheckCircle className="h-4 w-4 mr-2" />
+                                    Unsuspend
+                                  </DropdownMenuItem>
+                                ) : null}
+                                <DropdownMenuItem
+                                  className="text-destructive"
+                                  onClick={() => {
+                                    setSelectedUser(user);
+                                    setRemoveUserDialogOpen(true);
+                                  }}
+                                >
+                                  <Trash2 className="h-4 w-4 mr-2" />
+                                  Remove
+                                </DropdownMenuItem>
+                              </DropdownMenuContent>
+                            </DropdownMenu>
+                          </TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                </div>
+              )}
             </CardContent>
           </Card>
         </TabsContent>
@@ -470,17 +916,44 @@ export function TenantDetailPage() {
         <TabsContent value="features" className="space-y-6">
           <Card>
             <CardHeader>
-              <CardTitle>Current Plan</CardTitle>
+              <CardTitle>Provider Subscriptions</CardTitle>
+              <CardDescription>
+                Active subscriptions for this tenant
+              </CardDescription>
             </CardHeader>
             <CardContent>
-              <div className="flex items-center gap-4">
-                <Badge className={`${planColors[planName] || planColors.free} text-lg px-4 py-2`}>
-                  {String(planName).toUpperCase()}
-                </Badge>
-                <Button variant="outline" asChild>
-                  <Link to="/admin/plans">Change Plan</Link>
-                </Button>
-              </div>
+              {subscriptions.length === 0 ? (
+                <div className="text-center py-4">
+                  <p className="text-muted-foreground">No provider subscriptions</p>
+                  <Button variant="outline" className="mt-2" onClick={() => setActiveTab('subscriptions')}>
+                    Add Provider Subscription
+                  </Button>
+                </div>
+              ) : (
+                <div className="space-y-4">
+                  {subscriptions.map((sub: TenantProviderSubscriptionSummary) => (
+                    <div key={sub.id} className="flex items-center justify-between p-4 border rounded-lg">
+                      <div className="flex items-center gap-4">
+                        <Workflow className="h-6 w-6 text-orange-500" />
+                        <div>
+                          <p className="font-medium">{sub.provider?.display_name || sub.provider?.name}</p>
+                          <div className="flex items-center gap-2 mt-1">
+                            <Badge className={`${planColors[sub.plan?.name || 'free'] || planColors.free}`}>
+                              {sub.plan?.display_name || sub.plan?.name || 'Free'}
+                            </Badge>
+                            <Badge variant={sub.status === 'active' ? 'default' : 'secondary'} className={sub.status === 'active' ? 'bg-green-600' : ''}>
+                              {sub.status}
+                            </Badge>
+                          </div>
+                        </div>
+                      </div>
+                      <Button variant="outline" size="sm" onClick={() => setActiveTab('subscriptions')}>
+                        Manage
+                      </Button>
+                    </div>
+                  ))}
+                </div>
+              )}
             </CardContent>
           </Card>
 
@@ -550,18 +1023,48 @@ export function TenantDetailPage() {
           <Card>
             <CardHeader>
               <CardTitle>Billing Information</CardTitle>
-              <CardDescription>Subscription and payment details</CardDescription>
+              <CardDescription>Provider subscriptions and payment details</CardDescription>
             </CardHeader>
             <CardContent>
               <div className="space-y-4">
-                <div>
-                  <Label className="text-muted-foreground">Current Plan</Label>
-                  <p className="font-medium capitalize">{tenant.subscriptionPlan}</p>
-                </div>
+                {subscriptions.length > 0 ? (
+                  <>
+                    <div>
+                      <Label className="text-muted-foreground">Active Subscriptions</Label>
+                      <div className="space-y-2 mt-2">
+                        {subscriptions.map((sub: TenantProviderSubscriptionSummary) => (
+                          <div key={sub.id} className="flex items-center justify-between p-3 bg-muted/50 rounded-lg">
+                            <div className="flex items-center gap-3">
+                              <Workflow className="h-5 w-5 text-orange-500" />
+                              <div>
+                                <p className="font-medium">{sub.provider?.display_name || sub.provider?.name}</p>
+                                <p className="text-sm text-muted-foreground capitalize">{sub.plan?.display_name || sub.plan?.name || 'Free'}</p>
+                              </div>
+                            </div>
+                            <Badge variant={sub.status === 'active' ? 'default' : 'secondary'} className={sub.status === 'active' ? 'bg-green-600' : ''}>
+                              {sub.status}
+                            </Badge>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                    <Button variant="outline" onClick={() => setActiveTab('subscriptions')}>
+                      <CreditCard className="h-4 w-4 mr-2" />
+                      Manage Subscriptions
+                    </Button>
+                  </>
+                ) : (
+                  <div className="text-center py-4">
+                    <p className="text-muted-foreground">No provider subscriptions</p>
+                    <Button variant="outline" className="mt-2" onClick={() => setActiveTab('subscriptions')}>
+                      Add Provider Subscription
+                    </Button>
+                  </div>
+                )}
                 {tenant.stripeCustomerId && (
-                  <div>
+                  <div className="pt-4 border-t">
                     <Label className="text-muted-foreground">Stripe Customer ID</Label>
-                    <div className="flex items-center gap-2">
+                    <div className="flex items-center gap-2 mt-1">
                       <code className="text-sm bg-muted px-2 py-1 rounded">{tenant.stripeCustomerId}</code>
                       <Button
                         variant="ghost"
@@ -573,10 +1076,130 @@ export function TenantDetailPage() {
                     </div>
                   </div>
                 )}
-                <p className="text-muted-foreground text-center py-4">
-                  Full billing management will be available in the complete implementation.
-                </p>
               </div>
+            </CardContent>
+          </Card>
+        </TabsContent>
+
+        {/* Subscriptions Tab */}
+        <TabsContent value="subscriptions" className="space-y-6">
+          <Card>
+            <CardHeader>
+              <div className="flex items-center justify-between">
+                <div>
+                  <CardTitle className="flex items-center gap-2">
+                    <Workflow className="h-5 w-5" />
+                    Provider Subscriptions
+                  </CardTitle>
+                  <CardDescription>
+                    Manage provider subscriptions for this tenant
+                  </CardDescription>
+                </div>
+                {availableProviders.length > 0 && (
+                  <Button onClick={() => setAddProviderDialogOpen(true)}>
+                    <Plus className="h-4 w-4 mr-2" />
+                    Add Provider
+                  </Button>
+                )}
+              </div>
+            </CardHeader>
+            <CardContent>
+              {subscriptions.length === 0 ? (
+                <div className="text-center py-8 text-muted-foreground">
+                  <Workflow className="h-12 w-12 mx-auto mb-4 opacity-50" />
+                  <p className="font-medium">No provider subscriptions</p>
+                  <p className="text-sm">Add a provider to start managing workflows</p>
+                  {availableProviders.length > 0 && (
+                    <Button className="mt-4" onClick={() => setAddProviderDialogOpen(true)}>
+                      <Plus className="h-4 w-4 mr-2" />
+                      Add Provider
+                    </Button>
+                  )}
+                </div>
+              ) : (
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>Provider</TableHead>
+                      <TableHead>Plan</TableHead>
+                      <TableHead>Status</TableHead>
+                      <TableHead>Stripe Subscription</TableHead>
+                      <TableHead className="text-right">Actions</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {subscriptions.map((sub: TenantProviderSubscriptionSummary) => (
+                      <TableRow key={sub.id}>
+                        <TableCell>
+                          <div className="flex items-center gap-2">
+                            <Workflow className="h-5 w-5 text-orange-500" />
+                            <span className="font-medium">{sub.provider?.display_name || sub.provider?.name || 'Unknown'}</span>
+                          </div>
+                        </TableCell>
+                        <TableCell>
+                          <div className="flex items-center gap-2">
+                            {getPlanIcon(sub.plan?.name || 'free')}
+                            <span>{sub.plan?.display_name || 'Free'}</span>
+                          </div>
+                        </TableCell>
+                        <TableCell>
+                          {getStatusBadge(sub.status)}
+                        </TableCell>
+                        <TableCell>
+                          {sub.stripe_subscription_id ? (
+                            <div className="flex items-center gap-2">
+                              <code className="text-xs bg-muted px-2 py-1 rounded">{sub.stripe_subscription_id.substring(0, 20)}...</code>
+                              <Button
+                                variant="ghost"
+                                size="icon"
+                                className="h-6 w-6"
+                                onClick={() => window.open(`https://dashboard.stripe.com/subscriptions/${sub.stripe_subscription_id}`, '_blank')}
+                              >
+                                <ExternalLink className="h-3 w-3" />
+                              </Button>
+                            </div>
+                          ) : (
+                            <span className="text-muted-foreground text-sm">N/A</span>
+                          )}
+                        </TableCell>
+                        <TableCell className="text-right">
+                          <DropdownMenu>
+                            <DropdownMenuTrigger asChild>
+                              <Button variant="ghost" size="sm">
+                                <MoreHorizontal className="h-4 w-4" />
+                              </Button>
+                            </DropdownMenuTrigger>
+                            <DropdownMenuContent align="end">
+                              <DropdownMenuItem
+                                onClick={() => {
+                                  setSelectedSubscription(sub);
+                                  setChangePlanDialogOpen(true);
+                                }}
+                              >
+                                <ArrowUpCircle className="h-4 w-4 mr-2" />
+                                Change Plan
+                              </DropdownMenuItem>
+                              <DropdownMenuSeparator />
+                              {sub.status === 'active' && (
+                                <DropdownMenuItem
+                                  className="text-destructive"
+                                  onClick={() => {
+                                    setSelectedSubscription(sub);
+                                    setCancelDialogOpen(true);
+                                  }}
+                                >
+                                  <XCircle className="h-4 w-4 mr-2" />
+                                  Cancel Subscription
+                                </DropdownMenuItem>
+                              )}
+                            </DropdownMenuContent>
+                          </DropdownMenu>
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              )}
             </CardContent>
           </Card>
         </TabsContent>
@@ -703,7 +1326,7 @@ export function TenantDetailPage() {
                     <div key={note.id} className="border rounded-lg p-4">
                       <div className="flex justify-between items-start mb-2">
                         <div className="text-sm text-muted-foreground">
-                          {note.authorEmail || 'System'} • {formatDate(note.createdAt)}
+                          {note.authorEmail || 'System'} • {formatDateTime(note.createdAt)}
                         </div>
                         <Button
                           variant="ghost"
@@ -827,6 +1450,287 @@ export function TenantDetailPage() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {/* Add Provider Dialog */}
+      <Dialog open={addProviderDialogOpen} onOpenChange={setAddProviderDialogOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Add Provider Subscription</DialogTitle>
+            <DialogDescription>
+              Subscribe this tenant to a provider and plan
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4">
+            <div>
+              <Label htmlFor="provider">Provider</Label>
+              <Select
+                value={selectedProvider?.id || ''}
+                onValueChange={(value) => {
+                  const provider = providers.find((p: ProviderWithPlans) => p.id === value);
+                  setSelectedProvider(provider || null);
+                  setSelectedPlan(null);
+                }}
+              >
+                <SelectTrigger id="provider">
+                  <SelectValue placeholder="Select a provider" />
+                </SelectTrigger>
+                <SelectContent>
+                  {availableProviders.map((provider: ProviderWithPlans) => (
+                    <SelectItem key={provider.id} value={provider.id}>
+                      {provider.display_name || provider.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            {selectedProvider && (
+              <div>
+                <Label htmlFor="plan">Plan</Label>
+                <Select
+                  value={selectedPlan?.id || ''}
+                  onValueChange={(value) => {
+                    const plan = selectedProvider.plans.find((p: ProviderPlan) => p.id === value);
+                    setSelectedPlan(plan || null);
+                  }}
+                >
+                  <SelectTrigger id="plan">
+                    <SelectValue placeholder="Select a plan" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {selectedProvider.plans
+                      .filter((p: ProviderPlan) => p.is_active)
+                      .map((plan: ProviderPlan) => (
+                        <SelectItem key={plan.id} value={plan.id}>
+                          {plan.display_name} {plan.price_monthly > 0 && `($${plan.price_monthly}/mo)`}
+                        </SelectItem>
+                      ))}
+                  </SelectContent>
+                </Select>
+              </div>
+            )}
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => {
+              setAddProviderDialogOpen(false);
+              setSelectedProvider(null);
+              setSelectedPlan(null);
+            }}>
+              Cancel
+            </Button>
+            <Button
+              onClick={handleAddProvider}
+              disabled={!selectedProvider || !selectedPlan || createSubscriptionMutation.isPending}
+            >
+              {createSubscriptionMutation.isPending ? 'Creating...' : 'Add Subscription'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Change Plan Dialog */}
+      <Dialog open={changePlanDialogOpen} onOpenChange={setChangePlanDialogOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Change Plan</DialogTitle>
+            <DialogDescription>
+              Change the plan for {selectedSubscription?.provider?.display_name || 'this provider'}
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4">
+            {selectedSubscription && (
+              <div>
+                <Label htmlFor="new-plan">New Plan</Label>
+                <Select
+                  value={selectedPlan?.id || ''}
+                  onValueChange={(value) => {
+                    const provider = providers.find((p: ProviderWithPlans) => p.id === selectedSubscription.provider_id);
+                    if (provider) {
+                      const plan = provider.plans.find((p: ProviderPlan) => p.id === value);
+                      setSelectedPlan(plan || null);
+                    }
+                  }}
+                >
+                  <SelectTrigger id="new-plan">
+                    <SelectValue placeholder="Select a plan" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {(() => {
+                      const provider = providers.find((p: ProviderWithPlans) => p.id === selectedSubscription.provider_id);
+                      return provider?.plans
+                        .filter((p: ProviderPlan) => p.is_active)
+                        .map((plan: ProviderPlan) => (
+                          <SelectItem key={plan.id} value={plan.id}>
+                            {plan.display_name} {plan.price_monthly > 0 && `($${plan.price_monthly}/mo)`}
+                          </SelectItem>
+                        ));
+                    })()}
+                  </SelectContent>
+                </Select>
+              </div>
+            )}
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => {
+              setChangePlanDialogOpen(false);
+              setSelectedSubscription(null);
+              setSelectedPlan(null);
+            }}>
+              Cancel
+            </Button>
+            <Button
+              onClick={handleChangePlan}
+              disabled={!selectedPlan || updateSubscriptionMutation.isPending}
+            >
+              {updateSubscriptionMutation.isPending ? 'Updating...' : 'Change Plan'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Cancel Subscription Dialog */}
+      <AlertDialog open={cancelDialogOpen} onOpenChange={setCancelDialogOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Cancel Subscription?</AlertDialogTitle>
+            <AlertDialogDescription>
+              This will cancel the subscription for {selectedSubscription?.provider?.display_name || 'this provider'}.
+              The subscription will remain active until the end of the current billing period.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Keep Subscription</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={handleCancelSubscription}
+              className="bg-destructive text-destructive-foreground"
+              disabled={cancelSubscriptionMutation.isPending}
+            >
+              {cancelSubscriptionMutation.isPending ? 'Canceling...' : 'Cancel Subscription'}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      {/* Impersonate User Dialog */}
+      <AlertDialog open={impersonateDialogOpen} onOpenChange={setImpersonateDialogOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Impersonate User?</AlertDialogTitle>
+            <AlertDialogDescription>
+              You will be logged in as {selectedUser?.name || selectedUser?.email}. This action is logged for audit purposes.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => selectedUser && impersonateUserMutation.mutate(selectedUser.user_id)}
+              disabled={impersonateUserMutation.isPending}
+            >
+              {impersonateUserMutation.isPending ? 'Starting...' : 'Impersonate'}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      {/* Suspend User Dialog */}
+      <AlertDialog open={suspendUserDialogOpen} onOpenChange={setSuspendUserDialogOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Suspend User?</AlertDialogTitle>
+            <AlertDialogDescription>
+              This will suspend {selectedUser?.name || selectedUser?.email} from accessing this tenant.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => selectedUser && suspendUserMutation.mutate(selectedUser.user_id)}
+              className="bg-destructive text-destructive-foreground"
+              disabled={suspendUserMutation.isPending}
+            >
+              {suspendUserMutation.isPending ? 'Suspending...' : 'Suspend'}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      {/* Unsuspend User Dialog */}
+      <AlertDialog open={unsuspendUserDialogOpen} onOpenChange={setUnsuspendUserDialogOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Unsuspend User?</AlertDialogTitle>
+            <AlertDialogDescription>
+              This will restore access for {selectedUser?.name || selectedUser?.email} to this tenant.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => selectedUser && unsuspendUserMutation.mutate(selectedUser.user_id)}
+              disabled={unsuspendUserMutation.isPending}
+            >
+              {unsuspendUserMutation.isPending ? 'Unsuspending...' : 'Unsuspend'}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      {/* Change Role Dialog */}
+      <Dialog open={roleChangeDialogOpen} onOpenChange={setRoleChangeDialogOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Change User Role</DialogTitle>
+            <DialogDescription>
+              Change the role for {selectedUser?.name || selectedUser?.email}
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4">
+            <div>
+              <Label htmlFor="role">Role</Label>
+              <Select value={newRole} onValueChange={setNewRole}>
+                <SelectTrigger id="role">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="admin">Admin</SelectItem>
+                  <SelectItem value="developer">Developer</SelectItem>
+                  <SelectItem value="viewer">Viewer</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setRoleChangeDialogOpen(false)}>Cancel</Button>
+            <Button
+              onClick={() => selectedUser && changeUserRoleMutation.mutate({ userId: selectedUser.user_id, role: newRole })}
+              disabled={!newRole || changeUserRoleMutation.isPending}
+            >
+              {changeUserRoleMutation.isPending ? 'Changing...' : 'Change Role'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Remove User Dialog */}
+      <AlertDialog open={removeUserDialogOpen} onOpenChange={setRemoveUserDialogOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Remove User from Tenant?</AlertDialogTitle>
+            <AlertDialogDescription>
+              This will remove {selectedUser?.name || selectedUser?.email} from this tenant. This action cannot be undone.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => selectedUser && removeUserMutation.mutate(selectedUser.user_id)}
+              className="bg-destructive text-destructive-foreground"
+              disabled={removeUserMutation.isPending}
+            >
+              {removeUserMutation.isPending ? 'Removing...' : 'Remove User'}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }

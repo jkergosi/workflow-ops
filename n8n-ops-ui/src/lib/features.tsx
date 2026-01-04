@@ -2,6 +2,10 @@
 // TODO: Fix TypeScript errors in this file
 import { createContext, useContext, useState, useEffect, type ReactNode } from 'react';
 import { useAuth } from '@/lib/auth';
+import { apiClient } from '@/lib/api-client';
+
+// Default provider for MVP - all feature checks default to n8n
+const DEFAULT_PROVIDER = 'n8n';
 
 // Plan feature definitions - Phase 2 Full Feature Catalog
 export interface PlanFeatures {
@@ -425,17 +429,34 @@ interface UsageData {
   workflows: Record<string, ResourceUsage>; // by environment ID
 }
 
+// Provider entitlements from backend (source of truth)
+interface ProviderEntitlements {
+  plan_name: string | null;
+  provider_key: string;
+  features: Record<string, any>;
+  max_environments: number;
+  max_workflows: number;
+  has_subscription: boolean;
+  status: string | null;
+}
+
 interface FeaturesContextValue {
   planName: string;
   features: PlanFeatures;
   usage: UsageData | null;
   isLoading: boolean;
+  // Legacy feature checks (backwards compatible)
   canUseFeature: (feature: keyof PlanFeatures | string) => boolean;
   hasEntitlement: (entitlementName: string) => boolean;
   getEntitlementLimit: (entitlementName: string) => number | null;
   isAtLimit: (resource: 'environments' | 'team_members') => boolean;
   getRequiredPlan: (feature: keyof PlanFeatures | string) => 'free' | 'pro' | 'agency' | 'enterprise' | null;
   refreshUsage: () => Promise<void>;
+  // Provider-aware feature checks (new - single source of truth)
+  hasFeature: (featureKey: string, providerKey?: string) => boolean;
+  getProviderEntitlements: (providerKey?: string) => ProviderEntitlements | null;
+  hasProviderSubscription: (providerKey?: string) => boolean;
+  providerEntitlements: ProviderEntitlements | null;
 }
 
 const FeaturesContext = createContext<FeaturesContextValue | null>(null);
@@ -451,6 +472,10 @@ export function FeaturesProvider({ children }: FeaturesProviderProps) {
   const [features, setFeatures] = useState<PlanFeatures>(PLAN_FEATURES.free);
   const [usage, setUsage] = useState<UsageData | null>(null);
   const [isLoading, setIsLoading] = useState(true);
+
+  // Provider-scoped entitlements - source of truth from backend
+  const [providerEntitlements, setProviderEntitlements] = useState<ProviderEntitlements | null>(null);
+  const [entitlementsCache, setEntitlementsCache] = useState<Record<string, ProviderEntitlements>>({});
 
   // Load plan and features based on user's subscription and entitlements
   useEffect(() => {
@@ -626,17 +651,112 @@ export function FeaturesProvider({ children }: FeaturesProviderProps) {
     if (!isTest) console.log('Refreshing usage data...');
   };
 
+  // ============================================================================
+  // Provider-Scoped Entitlements (New - Single Source of Truth)
+  // ============================================================================
+
+  // Fetch provider entitlements from backend
+  useEffect(() => {
+    const loadProviderEntitlements = async () => {
+      if (!user || needsOnboarding) {
+        setProviderEntitlements(null);
+        return;
+      }
+
+      try {
+        const response = await apiClient.getProviderEntitlements(DEFAULT_PROVIDER);
+        if (response.data) {
+          setProviderEntitlements(response.data);
+          setEntitlementsCache(prev => ({
+            ...prev,
+            [DEFAULT_PROVIDER]: response.data,
+          }));
+          if (!isTest) console.log('[Features] Loaded provider entitlements:', response.data);
+        }
+      } catch (error) {
+        if (!isTest) console.warn('[Features] Failed to load provider entitlements:', error);
+        // Keep using legacy entitlements on error
+      }
+    };
+
+    loadProviderEntitlements();
+  }, [user, needsOnboarding]);
+
+  /**
+   * Check if a feature is enabled for a provider.
+   * This is the NEW preferred method for feature gating.
+   *
+   * @param featureKey - Feature to check (e.g., "github_backup", "promotions")
+   * @param providerKey - Provider name (default: "n8n" for MVP)
+   * @returns True if feature is enabled
+   */
+  const hasFeature = (featureKey: string, providerKey: string = DEFAULT_PROVIDER): boolean => {
+    // Get entitlements for the provider
+    const ent = providerKey === DEFAULT_PROVIDER
+      ? providerEntitlements
+      : entitlementsCache[providerKey];
+
+    if (!ent || !ent.has_subscription) {
+      // No subscription - fall back to legacy check for backwards compatibility
+      return canUseFeature(featureKey as keyof PlanFeatures);
+    }
+
+    // Check provider-specific features
+    const featureValue = ent.features[featureKey];
+    if (typeof featureValue === 'boolean') {
+      return featureValue;
+    }
+    if (typeof featureValue === 'number') {
+      return featureValue > 0;
+    }
+
+    // Feature not found in provider plan - fall back to legacy
+    return canUseFeature(featureKey as keyof PlanFeatures);
+  };
+
+  /**
+   * Get provider entitlements.
+   *
+   * @param providerKey - Provider name (default: "n8n")
+   * @returns Provider entitlements or null
+   */
+  const getProviderEntitlements = (providerKey: string = DEFAULT_PROVIDER): ProviderEntitlements | null => {
+    if (providerKey === DEFAULT_PROVIDER) {
+      return providerEntitlements;
+    }
+    return entitlementsCache[providerKey] || null;
+  };
+
+  /**
+   * Check if tenant has a subscription to a provider.
+   *
+   * @param providerKey - Provider name (default: "n8n")
+   * @returns True if tenant has selected/subscribed to this provider
+   */
+  const hasProviderSubscription = (providerKey: string = DEFAULT_PROVIDER): boolean => {
+    const ent = providerKey === DEFAULT_PROVIDER
+      ? providerEntitlements
+      : entitlementsCache[providerKey];
+    return ent?.has_subscription ?? false;
+  };
+
   const value: FeaturesContextValue = {
     planName,
     features,
     usage,
     isLoading,
+    // Legacy methods (backwards compatible)
     canUseFeature,
     hasEntitlement,
     getEntitlementLimit,
     isAtLimit,
     getRequiredPlan,
     refreshUsage,
+    // Provider-aware methods (new - single source of truth)
+    hasFeature,
+    getProviderEntitlements,
+    hasProviderSubscription,
+    providerEntitlements,
   };
 
   return (

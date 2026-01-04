@@ -46,6 +46,7 @@ import {
   EntitlementsAuditPage,
   CredentialHealthPage,
   AdminDashboardPage,
+  TenantProvidersPage,
 } from '@/pages/admin';
 import {
   SupportHomePage,
@@ -120,9 +121,18 @@ function ProtectedRoute({ children }: { children: React.ReactNode }) {
 // Role Protected Route Component - checks role permissions and redirects to dashboard if unauthorized
 function RoleProtectedRoute({ children }: { children: React.ReactNode }) {
   const { user } = useAuth();
-  const { planName } = useFeatures();
   const location = useLocation();
   const navigate = useNavigate();
+
+  // Get planName from FeaturesProvider - use default if not available (shouldn't happen but safety check)
+  let planName = 'free';
+  try {
+    const features = useFeatures();
+    planName = features.planName;
+  } catch (error) {
+    // FeaturesProvider not available - this shouldn't happen but handle gracefully
+    console.warn('[RoleProtectedRoute] FeaturesProvider not available, using default plan');
+  }
 
   const effectiveRole = user
     ? ((user as any)?.isPlatformAdmin ? 'platform_admin' : mapBackendRoleToFrontendRole(user.role))
@@ -315,8 +325,8 @@ function App() {
                 {/* Org Admin */}
                 <Route path="/admin" element={<RoleProtectedRoute><AdminDashboardPage /></RoleProtectedRoute>} />
                 <Route path="/admin/members" element={<RoleProtectedRoute><TeamPage /></RoleProtectedRoute>} />
-                <Route path="/admin/plans" element={<RoleProtectedRoute><Navigate to="/admin/billing" replace /></RoleProtectedRoute>} />
-                <Route path="/admin/billing" element={<RoleProtectedRoute><BillingPage /></RoleProtectedRoute>} />
+                <Route path="/admin/plans" element={<RoleProtectedRoute><Navigate to="/admin/providers" replace /></RoleProtectedRoute>} />
+                <Route path="/admin/billing" element={<RoleProtectedRoute><Navigate to="/admin/providers" replace /></RoleProtectedRoute>} />
                 <Route 
                   path="/admin/usage" 
                   element={
@@ -356,6 +366,7 @@ function App() {
                   } 
                 />
                 <Route path="/admin/settings" element={<RoleProtectedRoute><TenantSettingsPage /></RoleProtectedRoute>} />
+                <Route path="/admin/providers" element={<RoleProtectedRoute><TenantProvidersPage /></RoleProtectedRoute>} />
 
                 {/* Platform (Platform Admin Only) */}
                 <Route path="/platform" element={<RoleProtectedRoute><PlatformDashboardPage /></RoleProtectedRoute>} />
@@ -375,7 +386,7 @@ function App() {
 
                 {/* Legacy redirects */}
                 <Route path="/team" element={<Navigate to="/admin/members" replace />} />
-                <Route path="/billing" element={<Navigate to="/admin/billing" replace />} />
+                <Route path="/billing" element={<Navigate to="/admin/providers" replace />} />
                 <Route path="/admin/tenants" element={<Navigate to="/platform/tenants" replace />} />
                 <Route path="/admin/tenants/:tenantId" element={<RoleProtectedRoute><LegacyPlatformTenantRedirect /></RoleProtectedRoute>} />
                 <Route path="/admin/entitlements/overrides" element={<Navigate to="/platform/tenant-overrides" replace />} />

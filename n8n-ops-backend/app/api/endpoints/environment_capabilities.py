@@ -12,6 +12,7 @@ from app.services.environment_action_guard import (
     environment_action_guard,
     EnvironmentAction
 )
+from app.services.feature_service import feature_service
 from app.schemas.environment import EnvironmentClass
 
 
@@ -67,9 +68,11 @@ async def get_environment_capabilities(
     except ValueError:
         env_class = EnvironmentClass.DEV
     
-    # Get user role and plan
+    # Get user role and plan - use provider-scoped entitlements as source of truth
     user_role = user.get("role", "user")
-    plan = tenant.get("subscription_tier", "free")
+    # Provider-scoped plan check with fallback to tenant.subscription_tier for backwards compatibility
+    provider_entitlements = await feature_service.get_effective_entitlements(tenant_id, "n8n")
+    plan = provider_entitlements.get("plan_name") or tenant.get("subscription_tier", "free")
     
     # Get org policy flags (from environment metadata or defaults)
     org_policy_flags = env.get("policy_flags", {}) or {}

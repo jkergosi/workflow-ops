@@ -29,7 +29,7 @@ export function DashboardUpsellCard() {
             <span>Extended execution history</span>
           </li>
         </ul>
-        <Button onClick={() => navigate('/admin/billing')} className="w-full gap-2">
+        <Button onClick={() => navigate('/admin/providers')} className="w-full gap-2">
           Upgrade to Pro
           <ArrowRight className="h-4 w-4" />
         </Button>

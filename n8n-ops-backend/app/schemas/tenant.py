@@ -29,15 +29,28 @@ class TenantStatus(str, Enum):
 class TenantCreate(BaseModel):
     name: str = Field(..., min_length=1, max_length=255)
     email: EmailStr
-    subscription_plan: SubscriptionPlan = SubscriptionPlan.free
+    # subscription_plan removed - tenants now use provider-scoped subscriptions
 
 
 class TenantUpdate(BaseModel):
     name: Optional[str] = Field(None, min_length=1, max_length=255)
     email: Optional[EmailStr] = None
-    subscription_plan: Optional[SubscriptionPlan] = None
+    # subscription_plan removed - tenants now use provider-scoped subscriptions
     status: Optional[TenantStatus] = None
     primary_contact_name: Optional[str] = None
+
+
+class TenantProviderSubscriptionSummary(BaseModel):
+    """Summary of provider subscription for tenant list."""
+    id: str
+    provider_id: str
+    plan_id: str
+    status: str
+    stripe_subscription_id: Optional[str] = None
+    provider: dict  # {id, name, display_name}
+    plan: dict  # {id, name, display_name}
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
 
 
 class TenantResponse(BaseModel):
@@ -50,7 +63,6 @@ class TenantResponse(BaseModel):
     id: str
     name: str
     email: str
-    subscription_plan: SubscriptionPlan
     status: TenantStatus
     workflow_count: int = 0
     environment_count: int = 0
@@ -61,6 +73,8 @@ class TenantResponse(BaseModel):
     stripe_customer_id: Optional[str] = None
     created_at: datetime
     updated_at: datetime
+    provider_subscriptions: List[TenantProviderSubscriptionSummary] = []
+    provider_count: int = 0
 
 
 class TenantListResponse(BaseModel):
@@ -82,7 +96,9 @@ class TenantStats(BaseModel):
     pending: int
     trial: int = 0
     cancelled: int = 0
-    by_plan: dict
+    with_providers: int = 0
+    no_providers: int = 0
+    by_plan: dict = {}  # Deprecated, kept for backward compatibility
 
 
 class TenantNoteCreate(BaseModel):

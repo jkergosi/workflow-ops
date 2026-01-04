@@ -76,6 +76,26 @@ export interface TenantProviderSubscription {
   updated_at?: string;
 }
 
+export interface TenantProviderSubscriptionSummary {
+  id: string;
+  provider_id: string;
+  plan_id: string;
+  status: string;
+  stripe_subscription_id?: string;
+  provider: {
+    id: string;
+    name: string;
+    display_name: string;
+  };
+  plan: {
+    id: string;
+    name: string;
+    display_name: string;
+  };
+  created_at?: string;
+  updated_at?: string;
+}
+
 export interface ProviderCheckoutRequest {
   provider_id: string;
   plan_id: string;
@@ -598,6 +618,9 @@ export interface Tenant {
   // Legacy field for backward compatibility
   subscriptionTier?: 'free' | 'pro' | 'enterprise';
   permissions?: string[];
+  // Provider subscriptions
+  provider_subscriptions?: TenantProviderSubscriptionSummary[];
+  provider_count?: number;
 }
 
 export interface TenantNote {

@@ -16,9 +16,11 @@ from app.schemas.provider import (
     AdminProviderUpdate,
     AdminProviderPlanUpdate,
     AdminProviderPlanCreate,
+    ProviderEntitlementsResponse,
 )
 from app.services.database import db_service
 from app.services.stripe_service import stripe_service
+from app.services.feature_service import feature_service
 from app.api.endpoints.auth import get_current_user
 
 router = APIRouter()
@@ -124,6 +126,74 @@ async def get_active_subscriptions(user_info: dict = Depends(get_current_user)):
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to fetch active subscriptions: {str(e)}"
+        )
+
+
+@router.get("/entitlements/{provider_key}", response_model=ProviderEntitlementsResponse)
+async def get_provider_entitlements(
+    provider_key: str,
+    user_info: dict = Depends(get_current_user)
+):
+    """
+    Get effective entitlements for a provider subscription.
+
+    This is the SINGLE SOURCE OF TRUTH for feature gating.
+    Returns entitlements derived from tenant_provider_subscriptions -> provider_plans.features.
+
+    Args:
+        provider_key: Provider name (e.g., "n8n", "make")
+
+    Returns:
+        Entitlements including plan_name, features dict, limits, and subscription status.
+    """
+    try:
+        tenant = user_info.get("tenant", {})
+        tenant_id = tenant.get("id")
+
+        if not tenant_id:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Tenant not found"
+            )
+
+        entitlements = await feature_service.get_effective_entitlements(tenant_id, provider_key)
+        return entitlements
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to fetch entitlements: {str(e)}"
+        )
+
+
+@router.get("/entitlements", response_model=ProviderEntitlementsResponse)
+async def get_default_provider_entitlements(user_info: dict = Depends(get_current_user)):
+    """
+    Get entitlements for the default provider (n8n).
+
+    Convenience endpoint - equivalent to GET /entitlements/n8n
+    """
+    try:
+        tenant = user_info.get("tenant", {})
+        tenant_id = tenant.get("id")
+
+        if not tenant_id:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Tenant not found"
+            )
+
+        entitlements = await feature_service.get_effective_entitlements(tenant_id, "n8n")
+        return entitlements
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to fetch entitlements: {str(e)}"
         )
 
 

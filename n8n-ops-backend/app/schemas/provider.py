@@ -166,3 +166,22 @@ class AdminProviderPlanCreate(BaseModel):
     max_environments: int = 1
     max_workflows: int = 10
     sort_order: int = 0
+
+
+class ProviderEntitlementsResponse(BaseModel):
+    """
+    Provider-scoped entitlements response.
+
+    This is the single source of truth for feature gating.
+    Derived from tenant_provider_subscriptions -> provider_plans.features.
+    """
+    plan_name: Optional[str] = None
+    provider_key: str
+    features: Dict[str, Any] = {}
+    max_environments: int = 0
+    max_workflows: int = 0
+    has_subscription: bool = False
+    status: Optional[str] = None
+
+    class Config:
+        from_attributes = True

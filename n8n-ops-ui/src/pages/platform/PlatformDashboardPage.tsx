@@ -79,21 +79,25 @@ function HealthTile({
 
   const content = (
     <Card className={cn(href && 'hover:shadow-md transition-shadow cursor-pointer')}>
-      <CardContent className="p-4">
-        <div className="flex items-start justify-between">
-          <div className={cn('p-2 rounded-lg', statusColors[status])}>
-            <Icon className="h-5 w-5" />
+      <CardHeader className="pb-3">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <div className={cn('p-2 rounded-lg', statusColors[status])}>
+              <Icon className="h-4 w-4" />
+            </div>
+            <CardTitle className="text-base flex items-center gap-2">
+              {title}
+              {isMocked ? <MockBadge /> : null}
+            </CardTitle>
           </div>
           <div className={cn('h-2 w-2 rounded-full', statusDot[status])} />
         </div>
-        <div className="mt-3">
+      </CardHeader>
+      <CardContent className="pt-0">
+        <div>
           <p className="text-2xl font-bold">{value}</p>
-          {subValue && <p className="text-xs text-muted-foreground">{subValue}</p>}
+          {subValue && <p className="text-xs text-muted-foreground mt-1">{subValue}</p>}
         </div>
-        <p className="text-sm text-muted-foreground mt-1 flex items-center">
-          <span>{title}</span>
-          {isMocked ? <MockBadge /> : null}
-        </p>
       </CardContent>
     </Card>
   );
@@ -122,10 +126,13 @@ function MetricCard({
 }) {
   const content = (
     <Card className={cn(href && 'hover:shadow-md transition-shadow cursor-pointer')}>
-      <CardContent className="p-4">
+      <CardHeader className="pb-3">
         <div className="flex items-center justify-between">
-          <div className="p-2 rounded-lg bg-primary/10">
-            <Icon className="h-4 w-4 text-primary" />
+          <div className="flex items-center gap-2">
+            <div className="p-2 rounded-lg bg-primary/10">
+              <Icon className="h-4 w-4 text-primary" />
+            </div>
+            <CardTitle className="text-base">{title}</CardTitle>
           </div>
           {trend && (
             <TrendingUp
@@ -138,11 +145,12 @@ function MetricCard({
             />
           )}
         </div>
-        <div className="mt-3">
+      </CardHeader>
+      <CardContent className="pt-0">
+        <div>
           <p className="text-2xl font-bold">{value}</p>
-          {subValue && <p className="text-xs text-muted-foreground">{subValue}</p>}
+          {subValue && <p className="text-xs text-muted-foreground mt-1">{subValue}</p>}
         </div>
-        <p className="text-sm text-muted-foreground mt-1">{title}</p>
       </CardContent>
     </Card>
   );
@@ -303,7 +311,6 @@ export function PlatformDashboardPage() {
 
       {/* Platform Health Tiles */}
       <div>
-        <h2 className="text-lg font-semibold mb-3">Platform Health</h2>
         <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
           <HealthTile
             title="API Health"
@@ -341,7 +348,6 @@ export function PlatformDashboardPage() {
 
       {/* Tenant Health Overview */}
       <div>
-        <h2 className="text-lg font-semibold mb-3">Tenant Health</h2>
         <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
           <MetricCard
             title="Active Tenants"
@@ -438,7 +444,10 @@ export function PlatformDashboardPage() {
 
             <div>
               <p className="text-sm font-medium mb-2">Plan Distribution</p>
-              <PlanDistributionBar distribution={data?.revenue?.plan_distribution || { free: 0, pro: 0, agency: 0, enterprise: 0 }} />
+              <div className="flex items-center gap-2 mb-2">
+                <PlanDistributionBar distribution={data?.revenue?.plan_distribution || { free: 0, pro: 0, agency: 0, enterprise: 0 }} />
+                <MockBadge title="Plan distribution uses deprecated subscription_tier field. Should be calculated from provider subscriptions." />
+              </div>
             </div>
 
             {(data?.revenue?.entitlement_exceptions || 0) > 0 && (
@@ -633,52 +642,6 @@ export function PlatformDashboardPage() {
         </Card>
       </div>
 
-      {/* Shortcuts */}
-      <Card>
-        <CardHeader className="pb-3">
-          <CardTitle className="text-lg">Platform Shortcuts</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <div className="flex flex-wrap gap-2">
-            <Button variant="outline" size="sm" asChild>
-              <Link to="/platform/tenants">
-                <Building2 className="h-4 w-4 mr-2" />
-                Tenants
-              </Link>
-            </Button>
-            <Button variant="outline" size="sm" asChild>
-              <Link to="/platform/support">
-                <HelpCircle className="h-4 w-4 mr-2" />
-                Support Console
-              </Link>
-            </Button>
-            <Button variant="outline" size="sm" asChild>
-              <Link to="/platform/tenant-overrides">
-                <Settings className="h-4 w-4 mr-2" />
-                Tenant Overrides
-              </Link>
-            </Button>
-            <Button variant="outline" size="sm" asChild>
-              <Link to="/platform/entitlements-audit">
-                <History className="h-4 w-4 mr-2" />
-                Entitlements Audit
-              </Link>
-            </Button>
-            <Button variant="outline" size="sm" asChild>
-              <Link to="/platform/admins">
-                <Shield className="h-4 w-4 mr-2" />
-                Platform Admins
-              </Link>
-            </Button>
-            <Button variant="outline" size="sm" asChild>
-              <Link to="/platform/settings">
-                <Settings className="h-4 w-4 mr-2" />
-                Platform Settings
-              </Link>
-            </Button>
-          </div>
-        </CardContent>
-      </Card>
     </div>
   );
 }

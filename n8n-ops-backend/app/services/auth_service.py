@@ -412,7 +412,70 @@ async def get_current_user_optional(
             }
 
         # Get or create app user
-        return await supabase_auth_service.get_or_create_user(supabase_user_id, email)
+        user_info = await supabase_auth_service.get_or_create_user(supabase_user_id, email)
+        
+        user = user_info.get("user")
+        tenant = user_info.get("tenant")
+        
+        if not user:
+            return user_info
+
+        # If the caller is a Platform Admin with an active impersonation session, return impersonated context.
+        # Migration: 9ed964cd8ba3 - create_platform_impersonation_sessions
+        # See: alembic/versions/9ed964cd8ba3_create_platform_impersonation_sessions.py
+        is_platform_admin = False
+        try:
+            pa_resp = db_service.client.table("platform_admins").select("user_id").eq("user_id", user["id"]).maybe_single().execute()
+            is_platform_admin = bool(pa_resp.data)
+        except Exception:
+            is_platform_admin = False
+
+        if is_platform_admin:
+            sess_resp = (
+                db_service.client.table("platform_impersonation_sessions")
+                .select("id, impersonated_user_id, ended_at")
+                .eq("actor_user_id", user["id"])
+                .is_("ended_at", "null")
+                .order("created_at", desc=True)
+                .limit(1)
+                .execute()
+            )
+            sessions = sess_resp.data or []
+            if sessions:
+                sess = sessions[0]
+                target_user_id = sess.get("impersonated_user_id")
+                target_resp = db_service.client.table("users").select("*, tenants(*)").eq("id", target_user_id).execute()
+                if target_resp.data and len(target_resp.data) > 0:
+                    target_user = target_resp.data[0]
+                    target_tenant = target_user.get("tenants")
+                    if not target_tenant and target_user.get("tenant_id"):
+                        target_tenant_resp = db_service.client.table("tenants").select("*").eq("id", target_user["tenant_id"]).execute()
+                        if target_tenant_resp.data and len(target_tenant_resp.data) > 0:
+                            target_tenant = target_tenant_resp.data[0]
+
+                    return {
+                        "user": {
+                            "id": target_user["id"],
+                            "email": target_user["email"],
+                            "name": target_user.get("name"),
+                            "role": target_user.get("role", "viewer"),
+                        },
+                        "tenant": {
+                            "id": target_tenant["id"],
+                            "name": target_tenant.get("name"),
+                            "subscription_tier": target_tenant.get("subscription_tier", "free"),
+                        } if target_tenant else None,
+                        "impersonating": True,
+                        "impersonation_session_id": sess.get("id"),
+                        "actor_user": {
+                            "id": user["id"],
+                            "email": user["email"],
+                            "name": user.get("name"),
+                        },
+                        "is_new": user_info.get("is_new", False),
+                    }
+
+        return user_info
 
     except HTTPException as e:
         # Invalid/expired tokens should behave like "no credentials" so the UI stays on /login.

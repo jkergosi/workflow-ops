@@ -215,7 +215,7 @@ export function AdminUpgradeRequiredPage() {
         </div>
       </div>
 
-      <Button onClick={() => navigate('/admin/billing')} size="lg">
+      <Button onClick={() => navigate('/admin/providers')} size="lg">
         <Sparkles className="h-4 w-4 mr-2" />
         Upgrade to Pro
       </Button>
@@ -417,9 +417,9 @@ export function AdminDashboardPage() {
               </Link>
             </Button>
             <Button variant="outline" size="sm" asChild>
-              <Link to="/admin/billing">
+              <Link to="/admin/providers">
                 <CreditCard className="h-4 w-4 mr-2" />
-                Billing
+                Billing & Plans
               </Link>
             </Button>
             <Button variant="outline" size="sm" asChild>

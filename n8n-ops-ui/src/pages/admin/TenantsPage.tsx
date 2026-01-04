@@ -51,6 +51,9 @@ import {
   Play,
   Calendar as _Calendar,
   Download,
+  ArrowUpDown,
+  ArrowUp,
+  ArrowDown,
 } from 'lucide-react';
 import {
   DropdownMenu,
@@ -63,6 +66,19 @@ import { apiClient } from '@/lib/api-client';
 import { toast } from 'sonner';
 import { exportToCSV } from '@/lib/export-utils';
 import type { Tenant } from '@/types';
+import { ProvidersChips } from '@/components/tenants/ProvidersChips';
+import { UserCog } from 'lucide-react';
+
+// Helper to extract error message from API response (handles Pydantic validation errors)
+const getErrorMessage = (error: any, fallback: string): string => {
+  const detail = error.response?.data?.detail;
+  if (typeof detail === 'string') {
+    return detail;
+  } else if (Array.isArray(detail) && detail.length > 0) {
+    return detail.map((e: any) => e.msg || e.message || JSON.stringify(e)).join(', ');
+  }
+  return fallback;
+};
 
 export function TenantsPage() {
   useEffect(() => {
@@ -78,10 +94,16 @@ export function TenantsPage() {
   // Filters state
   const [searchInput, setSearchInput] = useState('');
   const [searchTerm, setSearchTerm] = useState('');
+  const [providerFilter, setProviderFilter] = useState<string>('all');
   const [planFilter, setPlanFilter] = useState<string>('all');
+  const [subscriptionStateFilter, setSubscriptionStateFilter] = useState<string>('all');
   const [statusFilter, setStatusFilter] = useState<string>('all');
   const [page, setPage] = useState(1);
   const [pageSize] = useState(10);
+
+  // Sorting state
+  const [sortBy, setSortBy] = useState<string>('created_at');
+  const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('desc');
 
   useEffect(() => {
     const handle = setTimeout(() => {
@@ -100,18 +122,28 @@ export function TenantsPage() {
   const [tenantForm, setTenantForm] = useState({
     name: '',
     email: '',
-    subscriptionPlan: 'free' as 'free' | 'pro' | 'agency' | 'enterprise',
   });
+
+  // Fetch providers for filter dropdown
+  const { data: providersData } = useQuery({
+    queryKey: ['admin-providers-all'],
+    queryFn: () => apiClient.adminGetAllProviders(),
+  });
+  const providers = providersData?.data || [];
 
   // Fetch tenants with filters
   const { data: tenantsData, isLoading, refetch } = useQuery({
-    queryKey: ['tenants', page, pageSize, searchTerm, planFilter, statusFilter],
+    queryKey: ['tenants', page, pageSize, searchTerm, providerFilter, planFilter, subscriptionStateFilter, statusFilter, sortBy, sortOrder],
     queryFn: () => apiClient.getTenants({
       page,
       page_size: pageSize,
       search: searchTerm || undefined,
-      plan: planFilter !== 'all' ? planFilter : undefined,
+      provider_key: providerFilter !== 'all' ? providerFilter : undefined,
+      plan_key: planFilter !== 'all' ? planFilter : undefined,
+      subscription_state: subscriptionStateFilter !== 'all' ? subscriptionStateFilter : undefined,
       status: statusFilter !== 'all' ? statusFilter : undefined,
+      sort_by: sortBy,
+      sort_order: sortOrder,
     }),
     keepPreviousData: true,
   });
@@ -126,7 +158,7 @@ export function TenantsPage() {
   const tenants: Tenant[] = Array.isArray(tenantsArray) ? tenantsArray : [];
   const totalCount = tenantsData?.data?.total || tenants.length;
   const totalPages = (tenantsData?.data && "total_pages" in tenantsData.data ? tenantsData.data.total_pages : undefined) || Math.ceil(totalCount / pageSize);
-  const stats = statsData?.data || { total: 0, active: 0, suspended: 0, pending: 0, by_plan: { free: 0, pro: 0, enterprise: 0 } };
+  const stats = statsData?.data || { total: 0, active: 0, suspended: 0, pending: 0, with_providers: 0, no_providers: 0 };
 
   // Create mutation
   const createMutation = useMutation({
@@ -140,8 +172,7 @@ export function TenantsPage() {
       resetForm();
     },
     onError: (error: any) => {
-      const message = error.response?.data?.detail || 'Failed to create tenant';
-      toast.error(message);
+      toast.error(getErrorMessage(error, 'Failed to create tenant'));
     },
   });
 
@@ -157,8 +188,7 @@ export function TenantsPage() {
       setSelectedTenant(null);
     },
     onError: (error: any) => {
-      const message = error.response?.data?.detail || 'Failed to update tenant';
-      toast.error(message);
+      toast.error(getErrorMessage(error, 'Failed to update tenant'));
     },
   });
 
@@ -173,8 +203,7 @@ export function TenantsPage() {
       setSelectedTenant(null);
     },
     onError: (error: any) => {
-      const message = error.response?.data?.detail || 'Failed to delete tenant';
-      toast.error(message);
+      toast.error(getErrorMessage(error, 'Failed to delete tenant'));
     },
   });
 
@@ -190,8 +219,7 @@ export function TenantsPage() {
       setSelectedTenant(null);
     },
     onError: (error: any) => {
-      const message = error.response?.data?.detail || 'Failed to suspend tenant';
-      toast.error(message);
+      toast.error(getErrorMessage(error, 'Failed to suspend tenant'));
     },
   });
 
@@ -204,37 +232,51 @@ export function TenantsPage() {
       queryClient.invalidateQueries({ queryKey: ['tenant-stats'] });
     },
     onError: (error: any) => {
-      const message = error.response?.data?.detail || 'Failed to reactivate tenant';
-      toast.error(message);
+      toast.error(getErrorMessage(error, 'Failed to reactivate tenant'));
     },
   });
 
   const resetForm = () => {
-    setTenantForm({ name: '', email: '', subscriptionPlan: 'free' });
+    setTenantForm({ name: '', email: '' });
   };
 
   const clearFilters = () => {
     setSearchInput('');
     setSearchTerm('');
+    setProviderFilter('all');
     setPlanFilter('all');
+    setSubscriptionStateFilter('all');
     setStatusFilter('all');
     setPage(1);
   };
 
-  const hasActiveFilters = searchInput || planFilter !== 'all' || statusFilter !== 'all';
-
-  const getPlanBadgeVariant = (plan: string) => {
-    switch (plan) {
-      case 'enterprise':
-        return 'default';
-      case 'agency':
-        return 'default';
-      case 'pro':
-        return 'secondary';
-      default:
-        return 'outline';
+  const handleSort = (column: string) => {
+    if (sortBy === column) {
+      setSortOrder(sortOrder === 'asc' ? 'desc' : 'asc');
+    } else {
+      setSortBy(column);
+      setSortOrder('desc');
     }
+    setPage(1);
   };
+
+  const SortableHeader = ({ column, children }: { column: string; children: React.ReactNode }) => (
+    <TableHead
+      className="cursor-pointer hover:bg-muted/50 select-none"
+      onClick={() => handleSort(column)}
+    >
+      <div className="flex items-center gap-1">
+        {children}
+        {sortBy === column ? (
+          sortOrder === 'asc' ? <ArrowUp className="h-4 w-4" /> : <ArrowDown className="h-4 w-4" />
+        ) : (
+          <ArrowUpDown className="h-4 w-4 opacity-30" />
+        )}
+      </div>
+    </TableHead>
+  );
+
+  const hasActiveFilters = searchInput || providerFilter !== 'all' || planFilter !== 'all' || subscriptionStateFilter !== 'all' || statusFilter !== 'all';
 
   const getStatusBadgeVariant = (status: string) => {
     switch (status) {
@@ -251,11 +293,45 @@ export function TenantsPage() {
     }
   };
 
+  // Calculate billing state from provider subscriptions
+  const getBillingState = (tenant: any): string => {
+    const subscriptions = (tenant as any).providerSubscriptions || [];
+    if (subscriptions.length === 0) {
+      return 'Free-only';
+    }
+    
+    // Check for past_due status (takes precedence)
+    const hasPastDue = subscriptions.some((s: any) => s.status === 'past_due');
+    if (hasPastDue) {
+      return 'Past due';
+    }
+    
+    // Check if any subscription is on a paid plan (has stripe_subscription_id or plan name indicates paid)
+    const hasPaid = subscriptions.some((s: any) => {
+      const planName = s.plan?.name?.toLowerCase() || '';
+      return s.stripe_subscription_id || (planName !== 'free' && planName !== 'trial');
+    });
+    
+    return hasPaid ? 'Has paid' : 'Free-only';
+  };
+
+  const getBillingStateBadgeVariant = (state: string) => {
+    switch (state) {
+      case 'Past due':
+        return 'destructive';
+      case 'Has paid':
+        return 'default';
+      case 'Free-only':
+        return 'secondary';
+      default:
+        return 'outline';
+    }
+  };
+
   const handleCreate = () => {
     createMutation.mutate({
       name: tenantForm.name,
       email: tenantForm.email,
-      subscription_plan: tenantForm.subscriptionPlan,
     });
   };
 
@@ -264,7 +340,6 @@ export function TenantsPage() {
     setTenantForm({
       name: tenant.name,
       email: tenant.email || '',
-      subscriptionPlan: (tenant.subscriptionPlan || 'free') as any,
     });
     setEditDialogOpen(true);
   };
@@ -276,7 +351,6 @@ export function TenantsPage() {
       updates: {
         name: tenantForm.name,
         email: tenantForm.email,
-        subscription_plan: tenantForm.subscriptionPlan,
       },
     });
   };
@@ -315,12 +389,44 @@ export function TenantsPage() {
       return;
     }
 
+    // Transform tenants for export with provider data
+    const exportData = tenants.map((tenant: any) => {
+      const subscriptions = (tenant as any).providerSubscriptions || [];
+      const providerNames = subscriptions.map((s: any) => s.provider?.name || '').filter(Boolean);
+      const providerPlans = subscriptions.map((s: any) => 
+        `${s.provider?.name || 'unknown'}:${s.plan?.name || 'unknown'}`
+      ).join('; ');
+      const subscriptionStates = subscriptions.map((s: any) => 
+        `${s.provider?.name || 'unknown'}:${s.status || 'unknown'}`
+      ).join('; ');
+
+      return {
+        id: tenant.id,
+        name: tenant.name,
+        email: tenant.email,
+        status: tenant.status || 'active',
+        provider_count: tenant.provider_count || 0,
+        providers: providerNames.join(','),
+        provider_plans: providerPlans,
+        billing_state: getBillingState(tenant),
+        subscription_states: subscriptionStates,
+        workflowCount: tenant.workflowCount || 0,
+        environmentCount: tenant.environmentCount || 0,
+        userCount: tenant.userCount || 0,
+        createdAt: tenant.createdAt ? new Date(tenant.createdAt).toISOString() : '',
+      };
+    });
+
     const columns = [
       { key: 'id' as const, header: 'Tenant ID' },
       { key: 'name' as const, header: 'Tenant Name' },
       { key: 'email' as const, header: 'Owner Email' },
-      { key: 'subscriptionPlan' as const, header: 'Plan' },
       { key: 'status' as const, header: 'Status' },
+      { key: 'provider_count' as const, header: 'Provider Count' },
+      { key: 'providers' as const, header: 'Providers' },
+      { key: 'provider_plans' as const, header: 'Provider Plans' },
+      { key: 'billing_state' as const, header: 'Billing State' },
+      { key: 'subscription_states' as const, header: 'Subscription States' },
       { key: 'workflowCount' as const, header: 'Workflows' },
       { key: 'environmentCount' as const, header: 'Environments' },
       { key: 'userCount' as const, header: 'Users' },
@@ -329,11 +435,13 @@ export function TenantsPage() {
 
     // Build filename with filter info
     let filename = 'tenants';
+    if (providerFilter !== 'all') filename += `_${providerFilter}`;
     if (planFilter !== 'all') filename += `_${planFilter}`;
+    if (subscriptionStateFilter !== 'all') filename += `_${subscriptionStateFilter}`;
     if (statusFilter !== 'all') filename += `_${statusFilter}`;
     if (searchInput) filename += '_filtered';
 
-    exportToCSV(tenants, columns, filename);
+    exportToCSV(exportData, columns, filename);
     toast.success(`Exported ${(Array.isArray(tenants) ? tenants.length : 0)} tenants to CSV`);
   };
 
@@ -389,10 +497,10 @@ export function TenantsPage() {
         <Card>
           <CardContent className="pt-6">
             <div className="flex items-center gap-3">
-              <Badge variant="default" className="h-8 px-3">ENT</Badge>
+              <Workflow className="h-8 w-8 text-muted-foreground" />
               <div>
-                <p className="text-2xl font-bold">{((stats as any).by_plan || stats.byPlan || { free: 0, pro: 0, enterprise: 0 })?.enterprise || 0}</p>
-                <p className="text-sm text-muted-foreground">Enterprise</p>
+                <p className="text-2xl font-bold">{(stats as any).with_providers || 0}</p>
+                <p className="text-sm text-muted-foreground">With Providers</p>
               </div>
             </div>
           </CardContent>
@@ -400,10 +508,12 @@ export function TenantsPage() {
         <Card>
           <CardContent className="pt-6">
             <div className="flex items-center gap-3">
-              <Badge variant="secondary" className="h-8 px-3">PRO</Badge>
+              <div className="h-8 w-8 rounded-full bg-muted flex items-center justify-center">
+                <X className="h-4 w-4 text-muted-foreground" />
+              </div>
               <div>
-                <p className="text-2xl font-bold">{((stats as any).by_plan || stats.byPlan || { free: 0, pro: 0, enterprise: 0 })?.pro || 0}</p>
-                <p className="text-sm text-muted-foreground">Pro</p>
+                <p className="text-2xl font-bold">{(stats as any).no_providers || 0}</p>
+                <p className="text-sm text-muted-foreground">No Providers</p>
               </div>
             </div>
           </CardContent>
@@ -440,16 +550,44 @@ export function TenantsPage() {
                 className="pl-9"
               />
             </div>
-            <Select value={planFilter} onValueChange={(v) => { setPlanFilter(v); setPage(1); }}>
+            <Select value={providerFilter} onValueChange={(v) => { setProviderFilter(v); setPlanFilter('all'); setPage(1); }}>
               <SelectTrigger className="w-[150px]">
-                <SelectValue placeholder="Plan" />
+                <SelectValue placeholder="Provider" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">All Providers</SelectItem>
+                {providers.map((p: any) => (
+                  <SelectItem key={p.id} value={p.name}>
+                    {p.display_name || p.name}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <Select 
+              value={planFilter} 
+              onValueChange={(v) => { setPlanFilter(v); setPage(1); }}
+              disabled={providerFilter === 'all'}
+            >
+              <SelectTrigger className="w-[150px]">
+                <SelectValue placeholder={providerFilter === 'all' ? 'Select a provider' : 'Plan'} />
               </SelectTrigger>
               <SelectContent>
                 <SelectItem value="all">All Plans</SelectItem>
                 <SelectItem value="free">Free</SelectItem>
                 <SelectItem value="pro">Pro</SelectItem>
                 <SelectItem value="agency">Agency</SelectItem>
-                <SelectItem value="enterprise">Enterprise</SelectItem>
+              </SelectContent>
+            </Select>
+            <Select value={subscriptionStateFilter} onValueChange={(v) => { setSubscriptionStateFilter(v); setPage(1); }}>
+              <SelectTrigger className="w-[150px]">
+                <SelectValue placeholder="Subscription State" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">All States</SelectItem>
+                <SelectItem value="none">None</SelectItem>
+                <SelectItem value="active">Active</SelectItem>
+                <SelectItem value="past_due">Past Due</SelectItem>
+                <SelectItem value="canceled">Canceled</SelectItem>
               </SelectContent>
             </Select>
             <Select value={statusFilter} onValueChange={(v) => { setStatusFilter(v); setPage(1); }}>
@@ -487,30 +625,75 @@ export function TenantsPage() {
           {isLoading ? (
             <div className="text-center py-8">Loading tenants...</div>
           ) : tenants.length === 0 ? (
-            <div className="text-center py-8 text-muted-foreground">
-              {hasActiveFilters ? 'No tenants match your filters' : 'No tenants found. Create your first tenant to get started.'}
+            <div className="text-center py-12">
+              <Building2 className="h-12 w-12 text-muted-foreground mx-auto mb-4" />
+              <h3 className="text-lg font-semibold mb-2">
+                {hasActiveFilters ? 'No tenants match your filters' : 'No tenants yet'}
+              </h3>
+              <p className="text-sm text-muted-foreground mb-4">
+                {hasActiveFilters 
+                  ? 'Try adjusting your filters to see more results.' 
+                  : 'Create your first tenant to start managing subscriptions and providers.'}
+              </p>
+              {!hasActiveFilters && (
+                <Button onClick={() => setCreateDialogOpen(true)}>
+                  <Plus className="h-4 w-4 mr-2" />
+                  Add Tenant
+                </Button>
+              )}
             </div>
           ) : (
             <>
               <Table>
                 <TableHeader>
                   <TableRow>
-                    <TableHead>Tenant</TableHead>
-                    <TableHead>Plan</TableHead>
-                    <TableHead>Status</TableHead>
-                    <TableHead className="text-center">
-                      <Workflow className="h-4 w-4 inline mr-1" />
-                      Workflows
+                    <SortableHeader column="name">Tenant</SortableHeader>
+                    <SortableHeader column="status">Status</SortableHeader>
+                    <TableHead>Providers</TableHead>
+                    <TableHead>Billing State</TableHead>
+                    <TableHead
+                      className="text-center cursor-pointer hover:bg-muted/50 select-none"
+                      onClick={() => handleSort('workflow_count')}
+                    >
+                      <div className="flex items-center justify-center gap-1">
+                        <Workflow className="h-4 w-4" />
+                        Workflows
+                        {sortBy === 'workflow_count' ? (
+                          sortOrder === 'asc' ? <ArrowUp className="h-4 w-4" /> : <ArrowDown className="h-4 w-4" />
+                        ) : (
+                          <ArrowUpDown className="h-4 w-4 opacity-30" />
+                        )}
+                      </div>
                     </TableHead>
-                    <TableHead className="text-center">
-                      <Server className="h-4 w-4 inline mr-1" />
-                      Environments
+                    <TableHead
+                      className="text-center cursor-pointer hover:bg-muted/50 select-none"
+                      onClick={() => handleSort('environment_count')}
+                    >
+                      <div className="flex items-center justify-center gap-1">
+                        <Server className="h-4 w-4" />
+                        Environments
+                        {sortBy === 'environment_count' ? (
+                          sortOrder === 'asc' ? <ArrowUp className="h-4 w-4" /> : <ArrowDown className="h-4 w-4" />
+                        ) : (
+                          <ArrowUpDown className="h-4 w-4 opacity-30" />
+                        )}
+                      </div>
                     </TableHead>
-                    <TableHead className="text-center">
-                      <Users className="h-4 w-4 inline mr-1" />
-                      Users
+                    <TableHead
+                      className="text-center cursor-pointer hover:bg-muted/50 select-none"
+                      onClick={() => handleSort('user_count')}
+                    >
+                      <div className="flex items-center justify-center gap-1">
+                        <Users className="h-4 w-4" />
+                        Users
+                        {sortBy === 'user_count' ? (
+                          sortOrder === 'asc' ? <ArrowUp className="h-4 w-4" /> : <ArrowDown className="h-4 w-4" />
+                        ) : (
+                          <ArrowUpDown className="h-4 w-4 opacity-30" />
+                        )}
+                      </div>
                     </TableHead>
-                    <TableHead>Created</TableHead>
+                    <SortableHeader column="created_at">Created</SortableHeader>
                     <TableHead></TableHead>
                   </TableRow>
                 </TableHeader>
@@ -531,13 +714,16 @@ export function TenantsPage() {
                         </div>
                       </TableCell>
                       <TableCell onClick={(e) => e.stopPropagation()}>
-                        <Badge variant={getPlanBadgeVariant(tenant.subscriptionPlan || 'free')} className="capitalize">
-                          {tenant.subscriptionPlan || 'free'}
+                        <Badge variant={getStatusBadgeVariant(tenant.status || 'active')} className="capitalize">
+                          {tenant.status || 'active'}
                         </Badge>
                       </TableCell>
                       <TableCell onClick={(e) => e.stopPropagation()}>
-                        <Badge variant={getStatusBadgeVariant(tenant.status || 'active')} className="capitalize">
-                          {tenant.status || 'active'}
+                        <ProvidersChips subscriptions={(tenant as any).providerSubscriptions || []} />
+                      </TableCell>
+                      <TableCell onClick={(e) => e.stopPropagation()}>
+                        <Badge variant={getBillingStateBadgeVariant(getBillingState(tenant))}>
+                          {getBillingState(tenant)}
                         </Badge>
                       </TableCell>
                       <TableCell className="text-center">{tenant.workflowCount || 0}</TableCell>
@@ -556,8 +742,19 @@ export function TenantsPage() {
                           <DropdownMenuContent align="end">
                             <DropdownMenuItem onClick={() => navigate(`/admin/tenants/${tenant.id}`)}>
                               <ExternalLink className="h-4 w-4 mr-2" />
-                              View Details
+                              View Tenant
                             </DropdownMenuItem>
+                            <DropdownMenuItem onClick={() => navigate(`/admin/tenants/${tenant.id}?tab=subscriptions`)}>
+                              <Workflow className="h-4 w-4 mr-2" />
+                              Manage Subscriptions
+                            </DropdownMenuItem>
+                            <DropdownMenuItem onClick={() => {
+                              navigate(`/platform/tenants/${tenant.id}/users`);
+                            }}>
+                              <UserCog className="h-4 w-4 mr-2" />
+                              Impersonate
+                            </DropdownMenuItem>
+                            <DropdownMenuSeparator />
                             <DropdownMenuItem onClick={() => handleEdit(tenant)}>
                               <Edit className="h-4 w-4 mr-2" />
                               Edit
@@ -650,23 +847,6 @@ export function TenantsPage() {
                 onChange={(e) => setTenantForm({ ...tenantForm, email: e.target.value })}
               />
             </div>
-            <div className="space-y-2">
-              <Label htmlFor="plan">Subscription Plan</Label>
-              <Select
-                value={tenantForm.subscriptionPlan}
-                onValueChange={(v) => setTenantForm({ ...tenantForm, subscriptionPlan: v as any })}
-              >
-                <SelectTrigger>
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="free">Free</SelectItem>
-                  <SelectItem value="pro">Pro</SelectItem>
-                  <SelectItem value="agency">Agency</SelectItem>
-                  <SelectItem value="enterprise">Enterprise</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setCreateDialogOpen(false)}>
@@ -703,23 +883,6 @@ export function TenantsPage() {
                 value={tenantForm.email}
                 onChange={(e) => setTenantForm({ ...tenantForm, email: e.target.value })}
               />
-            </div>
-            <div className="space-y-2">
-              <Label htmlFor="edit-plan">Subscription Plan</Label>
-              <Select
-                value={tenantForm.subscriptionPlan}
-                onValueChange={(v) => setTenantForm({ ...tenantForm, subscriptionPlan: v as any })}
-              >
-                <SelectTrigger>
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="free">Free</SelectItem>
-                  <SelectItem value="pro">Pro</SelectItem>
-                  <SelectItem value="agency">Agency</SelectItem>
-                  <SelectItem value="enterprise">Enterprise</SelectItem>
-                </SelectContent>
-              </Select>
             </div>
           </div>
           <DialogFooter>

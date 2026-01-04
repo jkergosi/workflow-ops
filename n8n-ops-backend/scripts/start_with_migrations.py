@@ -41,23 +41,23 @@ def run_migrations():
         )
         
         if result.returncode != 0:
-            print("❌ Migration failed!")
+            print("[ERROR] Migration failed!")
             print("\nSTDOUT:")
             print(result.stdout)
             print("\nSTDERR:")
             print(result.stderr)
             return False
-        
-        print("✅ Migrations completed successfully")
+
+        print("[OK] Migrations completed successfully")
         print("=" * 60)
         return True
         
     except FileNotFoundError:
-        print("❌ Error: 'alembic' command not found.")
+        print("[ERROR] 'alembic' command not found.")
         print("   Make sure Alembic is installed: pip install alembic")
         return False
     except Exception as e:
-        print(f"❌ Error running migrations: {str(e)}")
+        print(f"[ERROR] Error running migrations: {str(e)}")
         return False
     finally:
         os.chdir(original_dir)
@@ -69,14 +69,14 @@ def enforce_port_ownership(port):
     Checks if port is available, kills blocking processes, and fails if port remains occupied.
     """
     if platform.system() != "Windows":
-        print(f"⚠️  Port enforcement skipped (not Windows). Port {port} may be in use.")
+        print(f"[WARN] Port enforcement skipped (not Windows). Port {port} may be in use.")
         return
-    
+
     repo_root = Path(__file__).parent.parent.parent
     enforce_script = repo_root / "scripts" / "enforce-ports.ps1"
-    
+
     if not enforce_script.exists():
-        print(f"⚠️  Port enforcement script not found at {enforce_script}")
+        print(f"[WARN] Port enforcement script not found at {enforce_script}")
         print(f"   Skipping port check. Port {port} may be in use.")
         return
     
@@ -93,19 +93,19 @@ def enforce_port_ownership(port):
         )
         
         if result.returncode != 0:
-            print("❌ Port enforcement failed!")
+            print("[ERROR] Port enforcement failed!")
             print("\nSTDOUT:")
             print(result.stdout)
             print("\nSTDERR:")
             print(result.stderr)
             sys.exit(1)
-        
+
         print(result.stdout)
-        print("✅ Port ownership enforced")
+        print("[OK] Port ownership enforced")
         print("=" * 60)
-        
+
     except Exception as e:
-        print(f"❌ Error running port enforcement: {str(e)}")
+        print(f"[ERROR] Error running port enforcement: {str(e)}")
         print(f"   Port {port} may be in use. Continuing anyway...")
         sys.exit(1)
 
@@ -171,11 +171,11 @@ def main():
     # Run migrations unless skipped
     if not args.skip_migrations:
         if not run_migrations():
-            print("\n❌ Failed to run migrations. Application will not start.")
+            print("\n[ERROR] Failed to run migrations. Application will not start.")
             print("   To skip migrations (not recommended), use --skip-migrations")
             sys.exit(1)
     else:
-        print("⚠️  Skipping migrations (--skip-migrations flag used)")
+        print("[WARN] Skipping migrations (--skip-migrations flag used)")
     
     # Start the application
     start_application(

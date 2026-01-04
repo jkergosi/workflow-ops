@@ -28,7 +28,13 @@ from app.schemas.entitlements import (
 from app.services.database import db_service
 from app.services.audit_service import audit_service
 from app.services.entitlements_service import entitlements_service
+from app.services.stripe_service import stripe_service
 from app.core.platform_admin import require_platform_admin
+from app.schemas.provider import (
+    TenantProviderSubscriptionResponse,
+    TenantProviderSubscriptionSimple,
+    ProviderSubscriptionUpdate,
+)
 
 router = APIRouter()
 
@@ -36,10 +42,14 @@ router = APIRouter()
 @router.get("/", response_model=TenantListResponse)
 async def get_tenants(
     search: Optional[str] = Query(None, description="Search by name or email"),
-    plan: Optional[str] = Query(None, description="Filter by plan"),
+    provider_key: Optional[str] = Query(None, description="Filter by provider key (n8n, make, etc.)"),
+    plan_key: Optional[str] = Query(None, description="Filter by provider plan key (free, pro, agency)"),
+    subscription_state: Optional[str] = Query(None, description="Filter by subscription state (none, active, past_due, canceled)"),
     tenant_status: Optional[str] = Query(None, alias="status", description="Filter by status"),
     created_from: Optional[datetime] = Query(None, description="Filter by created date from"),
     created_to: Optional[datetime] = Query(None, description="Filter by created date to"),
+    sort_by: Optional[str] = Query("created_at", description="Sort by: name, email, status, workflow_count, environment_count, user_count, created_at"),
+    sort_order: Optional[str] = Query("desc", description="Sort order: asc or desc"),
     page: int = Query(1, ge=1),
     page_size: int = Query(25, ge=1, le=100),
     _: dict = Depends(require_platform_admin()),
@@ -54,8 +64,6 @@ async def get_tenants(
         # Apply filters
         if search:
             query = query.or_(f"name.ilike.%{search}%,email.ilike.%{search}%")
-        if plan:
-            query = query.eq("subscription_tier", plan)
         if tenant_status:
             query = query.eq("status", tenant_status)
         if created_from:
@@ -63,25 +71,121 @@ async def get_tenants(
         if created_to:
             query = query.lte("created_at", created_to.isoformat())
 
+        # Apply sorting
+        valid_sort_columns = ["name", "email", "status", "workflow_count", "environment_count", "user_count", "created_at"]
+        sort_column = sort_by if sort_by in valid_sort_columns else "created_at"
+        is_desc = sort_order.lower() == "desc" if sort_order else True
+
         # Apply pagination
         offset = (page - 1) * page_size
-        query = query.order("created_at", desc=True).range(offset, offset + page_size - 1)
+        query = query.order(sort_column, desc=is_desc).range(offset, offset + page_size - 1)
 
         response = query.execute()
         tenants = response.data or []
         total = response.count or 0
 
+        # Get all provider subscriptions for these tenants
+        tenant_ids = [t["id"] for t in tenants]
+        subscriptions_map = {}
+        if tenant_ids:
+            subs_response = db_service.client.table("tenant_provider_subscriptions").select(
+                "id, tenant_id, provider_id, plan_id, status, stripe_subscription_id, created_at, updated_at"
+            ).in_("tenant_id", tenant_ids).execute()
+            
+            # Get unique provider and plan IDs
+            provider_ids = set()
+            plan_ids = set()
+            for sub in subs_response.data or []:
+                if sub.get("provider_id"):
+                    provider_ids.add(sub["provider_id"])
+                if sub.get("plan_id"):
+                    plan_ids.add(sub["plan_id"])
+            
+            # Fetch providers and plans
+            providers_map = {}
+            if provider_ids:
+                providers_resp = db_service.client.table("providers").select("id, name, display_name").in_("id", list(provider_ids)).execute()
+                for p in providers_resp.data or []:
+                    providers_map[p["id"]] = p
+            
+            plans_map = {}
+            if plan_ids:
+                plans_resp = db_service.client.table("provider_plans").select("id, name, display_name").in_("id", list(plan_ids)).execute()
+                for p in plans_resp.data or []:
+                    plans_map[p["id"]] = p
+            
+            # Build subscriptions map
+            for sub in subs_response.data or []:
+                tenant_id = sub["tenant_id"]
+                if tenant_id not in subscriptions_map:
+                    subscriptions_map[tenant_id] = []
+                
+                provider = providers_map.get(sub["provider_id"], {})
+                plan = plans_map.get(sub["plan_id"], {})
+                
+                subscriptions_map[tenant_id].append({
+                    "id": sub["id"],
+                    "provider_id": sub["provider_id"],
+                    "plan_id": sub["plan_id"],
+                    "status": sub["status"],
+                    "stripe_subscription_id": sub.get("stripe_subscription_id"),
+                    "provider": {
+                        "id": sub["provider_id"],
+                        "name": provider.get("name"),
+                        "display_name": provider.get("display_name"),
+                    },
+                    "plan": {
+                        "id": sub["plan_id"],
+                        "name": plan.get("name"),
+                        "display_name": plan.get("display_name"),
+                    },
+                    "created_at": sub.get("created_at"),
+                    "updated_at": sub.get("updated_at"),
+                })
+
         enriched_tenants = []
         for tenant in tenants:
+            tenant_id = tenant["id"]
+            provider_subs = subscriptions_map.get(tenant_id, [])
+            
+            # Apply provider/plan/state filters
+            if provider_key or plan_key or subscription_state:
+                filtered_subs = provider_subs
+                
+                if provider_key:
+                    filtered_subs = [s for s in filtered_subs if s["provider"].get("name") == provider_key]
+                
+                if plan_key:
+                    filtered_subs = [s for s in filtered_subs if s["plan"].get("name") == plan_key]
+                
+                if subscription_state:
+                    if subscription_state == "none":
+                        # Only include tenants with no subscriptions
+                        if len(provider_subs) > 0:
+                            continue
+                    else:
+                        # Filter by subscription status
+                        filtered_subs = [s for s in filtered_subs if s["status"] == subscription_state]
+                        if len(filtered_subs) == 0 and subscription_state != "none":
+                            continue
+                
+                # If filtering by provider/plan/state and no matches, skip this tenant
+                if (provider_key or plan_key or (subscription_state and subscription_state != "none")) and len(filtered_subs) == 0:
+                    continue
+
             enriched_tenants.append({
                 **tenant,
-                # Map subscription_tier to subscription_plan for API response
-                "subscription_plan": tenant.get("subscription_tier") or tenant.get("subscription_plan", "free"),
                 "workflow_count": tenant.get("workflow_count") or 0,
                 "environment_count": tenant.get("environment_count") or 0,
                 "user_count": tenant.get("user_count") or 0,
                 "status": tenant.get("status", "active"),
+                "provider_subscriptions": provider_subs,
+                "provider_count": len(provider_subs),
             })
+
+        # Recalculate total if filters were applied
+        if provider_key or plan_key or subscription_state:
+            total = len(enriched_tenants)
 
         return TenantListResponse(
             tenants=enriched_tenants,
@@ -101,30 +205,46 @@ async def get_tenants(
 async def get_tenant_stats(_: dict = Depends(require_platform_admin())):
     """Get tenant statistics"""
     try:
-        # Get all tenants for stats (subscription_tier is the actual db column)
-        # Note: status column may not exist in db, so we just get id and subscription_tier
-        response = db_service.client.table("tenants").select("id, subscription_tier").execute()
+        # Get all tenants
+        response = db_service.client.table("tenants").select("id, status").execute()
         tenants = response.data or []
+        tenant_ids = [t["id"] for t in tenants]
 
         total = len(tenants)
-        # Since status column doesn't exist, all tenants are considered active
-        active = total
-        suspended = 0
-        pending = 0
+        
+        # Count by status
+        active = sum(1 for t in tenants if t.get("status") == "active" or not t.get("status"))
+        suspended = sum(1 for t in tenants if t.get("status") == "suspended")
+        pending = sum(1 for t in tenants if t.get("status") == "pending")
+        trial = sum(1 for t in tenants if t.get("status") == "trial")
+        cancelled = sum(1 for t in tenants if t.get("status") == "cancelled")
 
-        # Use subscription_tier from db
-        by_plan = {
-            "free": sum(1 for t in tenants if t.get("subscription_tier") == "free"),
-            "pro": sum(1 for t in tenants if t.get("subscription_tier") == "pro"),
-            "enterprise": sum(1 for t in tenants if t.get("subscription_tier") == "enterprise"),
-        }
+        # Count tenants with/without provider subscriptions
+        with_providers = 0
+        no_providers = 0
+        
+        if tenant_ids:
+            # Get unique tenant_ids that have subscriptions
+            subs_response = db_service.client.table("tenant_provider_subscriptions").select(
+                "tenant_id"
+            ).in_("tenant_id", tenant_ids).execute()
+            
+            tenants_with_subs = set(s["tenant_id"] for s in subs_response.data or [])
+            with_providers = len(tenants_with_subs)
+            no_providers = total - with_providers
+        else:
+            no_providers = total
 
         return {
             "total": total,
             "active": active,
             "suspended": suspended,
             "pending": pending,
-            "by_plan": by_plan
+            "trial": trial,
+            "cancelled": cancelled,
+            "with_providers": with_providers,
+            "no_providers": no_providers,
+            "by_plan": {}  # Deprecated, kept for backward compatibility
         }
 
     except Exception as e:
@@ -163,13 +283,59 @@ async def get_tenant(tenant_id: str, _: dict = Depends(require_platform_admin())
             "id", count="exact"
         ).eq("tenant_id", tenant_id).execute()
 
+        # Get provider subscriptions
+        subs_response = db_service.client.table("tenant_provider_subscriptions").select(
+            "id, provider_id, plan_id, status, stripe_subscription_id, created_at, updated_at"
+        ).eq("tenant_id", tenant_id).execute()
+        
+        provider_subs = []
+        if subs_response.data:
+            provider_ids = set(s["provider_id"] for s in subs_response.data if s.get("provider_id"))
+            plan_ids = set(s["plan_id"] for s in subs_response.data if s.get("plan_id"))
+            
+            providers_map = {}
+            if provider_ids:
+                providers_resp = db_service.client.table("providers").select("id, name, display_name").in_("id", list(provider_ids)).execute()
+                for p in providers_resp.data or []:
+                    providers_map[p["id"]] = p
+            
+            plans_map = {}
+            if plan_ids:
+                plans_resp = db_service.client.table("provider_plans").select("id, name, display_name").in_("id", list(plan_ids)).execute()
+                for p in plans_resp.data or []:
+                    plans_map[p["id"]] = p
+            
+            for sub in subs_response.data:
+                provider = providers_map.get(sub["provider_id"], {})
+                plan = plans_map.get(sub["plan_id"], {})
+                
+                provider_subs.append({
+                    "id": sub["id"],
+                    "provider_id": sub["provider_id"],
+                    "plan_id": sub["plan_id"],
+                    "status": sub["status"],
+                    "stripe_subscription_id": sub.get("stripe_subscription_id"),
+                    "provider": {
+                        "id": sub["provider_id"],
+                        "name": provider.get("name"),
+                        "display_name": provider.get("display_name"),
+                    },
+                    "plan": {
+                        "id": sub["plan_id"],
+                        "name": plan.get("name"),
+                        "display_name": plan.get("display_name"),
+                    },
+                    "created_at": sub.get("created_at"),
+                    "updated_at": sub.get("updated_at"),
+                })
+
         return {
             **tenant,
-            # Map subscription_tier to subscription_plan for API response
-            "subscription_plan": tenant.get("subscription_tier") or tenant.get("subscription_plan", "free"),
             "workflow_count": workflow_response.count or 0,
             "environment_count": env_response.count or 0,
             "user_count": user_response.count or 0,
+            "provider_subscriptions": provider_subs,
+            "provider_count": len(provider_subs),
             "status": tenant.get("status", "active"),
         }
 
@@ -197,11 +363,10 @@ async def create_tenant(tenant: TenantCreate, user_info: dict = Depends(require_
                 detail="A tenant with this email already exists"
             )
 
-        # Create tenant (use subscription_tier for db column)
+        # Create tenant
         tenant_data = {
             "name": tenant.name,
             "email": tenant.email,
-            "subscription_tier": tenant.subscription_plan.value,
             "status": "active"
         }
 
@@ -216,11 +381,11 @@ async def create_tenant(tenant: TenantCreate, user_info: dict = Depends(require_
         created_tenant = response.data[0]
         return {
             **created_tenant,
-            # Map subscription_tier to subscription_plan for API response
-            "subscription_plan": created_tenant.get("subscription_tier", "free"),
             "workflow_count": 0,
             "environment_count": 0,
             "user_count": 0,
+            "provider_subscriptions": [],
+            "provider_count": 0,
         }
 
     except HTTPException:
@@ -247,14 +412,12 @@ async def update_tenant(tenant_id: str, tenant: TenantUpdate, user_info: dict = 
                 detail="Tenant not found"
             )
 
-        # Build update data (use subscription_tier for db column)
+        # Build update data
         update_data = {}
         if tenant.name is not None:
             update_data["name"] = tenant.name
         if tenant.email is not None:
             update_data["email"] = tenant.email
-        if tenant.subscription_plan is not None:
-            update_data["subscription_tier"] = tenant.subscription_plan.value
         if tenant.status is not None:
             update_data["status"] = tenant.status.value
 
@@ -301,14 +464,59 @@ async def delete_tenant(tenant_id: str, user_info: dict = Depends(require_platfo
             )
 
         # Delete associated data in order (respecting foreign keys)
+
+        # First, get user IDs for this tenant (needed for FK cleanup)
+        user_response = db_service.client.table("users").select("id").eq("tenant_id", tenant_id).execute()
+        user_ids = [u["id"] for u in (user_response.data or [])]
+
+        # Clear all FK references to users before deleting them
+        # These tables have columns that reference users.id
+        fk_cleanup = [
+            ("workflow_snapshots", "created_by"),
+            ("promotions", "created_by"),
+            ("promotions", "approved_by"),
+            ("promotions", "rejected_by"),
+            ("deployments", "created_by"),
+            ("deployments", "deleted_by_user_id"),
+            ("deployments", "initiated_by"),
+            ("pipelines", "created_by"),
+            ("tenant_notes", "author_id"),
+            ("tenant_feature_overrides", "created_by"),
+            ("drift_incidents", "acknowledged_by"),
+            ("drift_incidents", "resolved_by"),
+            ("drift_approvals", "requested_by"),
+            ("drift_approvals", "approved_by"),
+        ]
+
+        if user_ids:
+            for table, column in fk_cleanup:
+                for user_id in user_ids:
+                    try:
+                        db_service.client.table(table).update(
+                            {column: None}
+                        ).eq(column, user_id).execute()
+                    except Exception:
+                        pass  # Table/column might not exist
+
+        # Delete tenant-owned data in dependency order
+
+        # Delete workflow snapshots
+        db_service.client.table("workflow_snapshots").delete().eq("tenant_id", tenant_id).execute()
+
+        # Delete promotions
+        db_service.client.table("promotions").delete().eq("tenant_id", tenant_id).execute()
+
+        # Delete deployments
+        db_service.client.table("deployments").delete().eq("tenant_id", tenant_id).execute()
+
+        # Delete pipelines
+        db_service.client.table("pipelines").delete().eq("tenant_id", tenant_id).execute()
+
         # Delete executions
         db_service.client.table("executions").delete().eq("tenant_id", tenant_id).execute()
 
         # Delete workflows
         db_service.client.table("workflows").delete().eq("tenant_id", tenant_id).execute()
-
-        # Delete workflow snapshots
-        db_service.client.table("workflow_snapshots").delete().eq("tenant_id", tenant_id).execute()
 
         # Delete credentials
         db_service.client.table("credentials").delete().eq("tenant_id", tenant_id).execute()
@@ -322,11 +530,30 @@ async def delete_tenant(tenant_id: str, user_info: dict = Depends(require_platfo
         # Delete environments
         db_service.client.table("environments").delete().eq("tenant_id", tenant_id).execute()
 
-        # Delete users (team members)
-        db_service.client.table("users").delete().eq("tenant_id", tenant_id).execute()
+        # Delete drift-related data
+        try:
+            db_service.client.table("drift_incidents").delete().eq("tenant_id", tenant_id).execute()
+        except Exception:
+            pass
+        try:
+            db_service.client.table("drift_approvals").delete().eq("tenant_id", tenant_id).execute()
+        except Exception:
+            pass
 
-        # Delete deployments
-        db_service.client.table("deployments").delete().eq("tenant_id", tenant_id).execute()
+        # Delete tenant notes
+        try:
+            db_service.client.table("tenant_notes").delete().eq("tenant_id", tenant_id).execute()
+        except Exception:
+            pass
+
+        # Delete tenant feature overrides
+        try:
+            db_service.client.table("tenant_feature_overrides").delete().eq("tenant_id", tenant_id).execute()
+        except Exception:
+            pass
+
+        # Delete users (team members) - now safe since all FK refs are cleared
+        db_service.client.table("users").delete().eq("tenant_id", tenant_id).execute()
 
         # Finally delete the tenant
         db_service.client.table("tenants").delete().eq("id", tenant_id).execute()
@@ -1194,6 +1421,8 @@ async def get_tenant_users(
     search: Optional[str] = Query(None, description="Search by name or email"),
     role: Optional[str] = Query(None, description="Filter by role"),
     status: Optional[str] = Query(None, description="Filter by status"),
+    sort_by: Optional[str] = Query("joined", description="Sort by: name, role, status, joined, last_activity"),
+    sort_order: Optional[str] = Query("desc", description="Sort order: asc or desc"),
     page: int = Query(1, ge=1),
     page_size: int = Query(50, ge=1, le=100),
     _: dict = Depends(require_platform_admin()),
@@ -1207,9 +1436,9 @@ async def get_tenant_users(
         if not tenant_response.data:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Tenant not found")
 
-        # Build query
+        # Build query - select columns (users table doesn't have last_login_at)
         query = db_service.client.table("users").select(
-            "id, email, name, role, status, tenant_id, created_at, last_login_at"
+            "id, email, name, role, status, tenant_id, created_at"
         ).eq("tenant_id", tenant_id)
 
         # Apply filters
@@ -1220,19 +1449,54 @@ async def get_tenant_users(
         if status:
             query = query.eq("status", status)
 
+        # Apply sorting
+        # Map frontend sort keys to database columns
+        sort_column_map = {
+            "name": "name",
+            "role": "role",
+            "status": "status",
+            "joined": "created_at",
+            "last_activity": "created_at",  # Use created_at as fallback (last_login_at may not exist)
+        }
+        sort_column = sort_column_map.get(sort_by, "created_at")
+        is_desc = sort_order.lower() == "desc"
+        
         # Apply pagination
         offset = (page - 1) * page_size
-        query = query.order("created_at", desc=True).range(offset, offset + page_size - 1)
-
-        response = query.execute()
-        users = response.data or []
+        # Supabase order method: desc=True for descending, omit desc for ascending
+        try:
+            if is_desc:
+                query = query.order(sort_column, desc=True).range(offset, offset + page_size - 1)
+            else:
+                query = query.order(sort_column).range(offset, offset + page_size - 1)
+            response = query.execute()
+            users = response.data or []
+        except Exception as query_error:
+            import logging
+            import traceback
+            from fastapi import status as http_status
+            logger = logging.getLogger(__name__)
+            error_trace = traceback.format_exc()
+            logger.error(f"Query execution failed: {error_trace}")
+            # Return more detailed error in response for debugging
+            raise HTTPException(
+                status_code=http_status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Query execution failed: {str(query_error)}. Sort column: {sort_column}, Desc: {is_desc}"
+            )
 
         # Check which users are platform admins
         user_ids = [u.get("id") for u in users if u.get("id")]
         platform_admin_ids = set()
         if user_ids:
-            pa_resp = db_service.client.table("platform_admins").select("user_id").in_("user_id", user_ids).execute()
-            platform_admin_ids = {row.get("user_id") for row in (pa_resp.data or []) if row.get("user_id")}
+            try:
+                pa_resp = db_service.client.table("platform_admins").select("user_id").in_("user_id", user_ids).execute()
+                platform_admin_ids = {row.get("user_id") for row in (pa_resp.data or []) if row.get("user_id")}
+            except Exception as pa_error:
+                # If platform_admins query fails, log but continue (users might not be platform admins)
+                import logging
+                logger = logging.getLogger(__name__)
+                logger.warning(f"Failed to check platform admin status: {pa_error}")
+                platform_admin_ids = set()
 
         # Format response
         formatted_users = []
@@ -1244,7 +1508,7 @@ async def get_tenant_users(
                 "role_in_tenant": u.get("role", "viewer"),
                 "status_in_tenant": u.get("status", "active"),
                 "joined_at": u.get("created_at"),
-                "last_activity_at": u.get("last_login_at"),
+                "last_activity_at": None,  # users table doesn't have last_login_at column
                 "is_platform_admin": u.get("id") in platform_admin_ids,
             })
 
@@ -1269,8 +1533,14 @@ async def get_tenant_users(
     except HTTPException:
         raise
     except Exception as e:
+        import logging
+        import traceback
+        from fastapi import status as http_status
+        logger = logging.getLogger(__name__)
+        error_details = traceback.format_exc()
+        logger.error(f"Failed to fetch tenant users: {error_details}")
         raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            status_code=http_status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to fetch tenant users: {str(e)}"
         )
 
@@ -1279,14 +1549,21 @@ async def get_tenant_users(
 async def impersonate_tenant_user(
     tenant_id: str,
     user_id: str,
-    user_info: dict = Depends(require_platform_admin()),
+    user_info: dict = Depends(require_platform_admin(allow_when_impersonating=True)),
 ):
     """Impersonate a user in a tenant (platform admin only)"""
     try:
-        actor = (user_info or {}).get("user") or {}
-        actor_id = actor.get("id")
+        # When impersonating, use the original platform admin (actor_user_id from require_platform_admin)
+        # Otherwise use the current user
+        actor_id = user_info.get("actor_user_id")
+        if not actor_id:
+            actor = (user_info or {}).get("user") or {}
+            actor_id = actor.get("id")
         if not actor_id:
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated")
+
+        # Get actor details for audit logging
+        actor = (user_info or {}).get("actor_user") or (user_info or {}).get("user") or {}
 
         # Verify tenant exists
         tenant_response = db_service.client.table("tenants").select("id, name").eq("id", tenant_id).single().execute()
@@ -1590,4 +1867,269 @@ async def remove_tenant_user(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to remove user: {str(e)}"
+        )
+
+
+# =============================================================================
+# Tenant Provider Subscriptions (Admin)
+# =============================================================================
+
+class TenantProviderSubscriptionCreateRequest(BaseModel):
+    provider_id: str
+    plan_id: str
+    billing_cycle: str = "monthly"
+
+
+@router.post("/{tenant_id}/provider-subscriptions", response_model=TenantProviderSubscriptionSimple)
+async def create_tenant_provider_subscription(
+    tenant_id: str,
+    request: TenantProviderSubscriptionCreateRequest,
+    user_info: dict = Depends(require_platform_admin()),
+):
+    """Create a provider subscription for a tenant (platform admin only)."""
+    try:
+        actor = (user_info or {}).get("user") or {}
+        actor_id = actor.get("id")
+        if not actor_id:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated")
+
+        # Verify tenant exists
+        tenant_response = db_service.client.table("tenants").select("id, name").eq("id", tenant_id).single().execute()
+        if not tenant_response.data:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Tenant not found")
+
+        tenant = tenant_response.data
+        provider_id = request.provider_id
+        plan_id = request.plan_id
+        billing_cycle = request.billing_cycle
+
+        # Verify provider exists
+        provider = await db_service.get_provider(provider_id)
+        if not provider:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Provider not found")
+
+        # Verify plan exists and belongs to provider
+        plan = await db_service.get_provider_plan(plan_id)
+        if not plan:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Plan not found")
+        if plan.get("provider_id") != provider_id:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Plan does not belong to this provider")
+
+        # Check if tenant already has a subscription for this provider
+        existing_sub = await db_service.get_tenant_provider_subscription(tenant_id, provider_id)
+        if existing_sub:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Tenant already has a subscription for this provider"
+            )
+
+        # Create subscription
+        subscription_data = {
+            "tenant_id": tenant_id,
+            "provider_id": provider_id,
+            "plan_id": plan_id,
+            "status": "active",
+            "billing_cycle": billing_cycle,
+        }
+
+        subscription = await db_service.create_tenant_provider_subscription(subscription_data)
+
+        # Audit log
+        from app.api.endpoints.admin_audit import create_audit_log
+        await create_audit_log(
+            action_type="tenant.subscription.created",
+            action=f"Created {provider.get('display_name')} subscription with {plan.get('display_name')} plan for tenant",
+            actor_id=actor_id,
+            actor_email=actor.get("email"),
+            actor_name=actor.get("name"),
+            tenant_id=tenant_id,
+            tenant_name=tenant.get("name"),
+            resource_type="subscription",
+            resource_id=subscription.get("id"),
+            new_value={"provider_id": provider_id, "plan_id": plan_id, "billing_cycle": billing_cycle},
+        )
+
+        return subscription
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to create subscription: {str(e)}"
+        )
+
+
+@router.patch("/{tenant_id}/provider-subscriptions/{provider_id}", response_model=TenantProviderSubscriptionSimple)
+async def update_tenant_provider_subscription(
+    tenant_id: str,
+    provider_id: str,
+    update: ProviderSubscriptionUpdate,
+    user_info: dict = Depends(require_platform_admin()),
+):
+    """Update a tenant's provider subscription (platform admin only)."""
+    try:
+        actor = (user_info or {}).get("user") or {}
+        actor_id = actor.get("id")
+        if not actor_id:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated")
+
+        # Verify tenant exists
+        tenant_response = db_service.client.table("tenants").select("id, name").eq("id", tenant_id).single().execute()
+        if not tenant_response.data:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Tenant not found")
+
+        tenant = tenant_response.data
+
+        # Get existing subscription
+        subscription = await db_service.get_tenant_provider_subscription(tenant_id, provider_id)
+        if not subscription:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="No subscription found for this provider"
+            )
+
+        update_data = {}
+        old_values = {}
+
+        # Handle cancellation
+        if update.cancel_at_period_end is not None:
+            old_values["cancel_at_period_end"] = subscription.get("cancel_at_period_end", False)
+            update_data["cancel_at_period_end"] = update.cancel_at_period_end
+
+            # If Stripe subscription exists, update it
+            if subscription.get("stripe_subscription_id"):
+                if update.cancel_at_period_end:
+                    await stripe_service.cancel_subscription(
+                        subscription["stripe_subscription_id"],
+                        at_period_end=True
+                    )
+                else:
+                    await stripe_service.reactivate_subscription(
+                        subscription["stripe_subscription_id"]
+                    )
+
+        # Handle plan change
+        if update.plan_id:
+            new_plan = await db_service.get_provider_plan(update.plan_id)
+            if not new_plan:
+                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Plan not found")
+            if new_plan["provider_id"] != provider_id:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Plan does not belong to this provider"
+                )
+            old_values["plan_id"] = subscription.get("plan_id")
+            update_data["plan_id"] = update.plan_id
+
+        if update_data:
+            result = await db_service.update_tenant_provider_subscription_by_provider(
+                tenant_id, provider_id, update_data
+            )
+
+            # Audit log
+            from app.api.endpoints.admin_audit import create_audit_log
+            await create_audit_log(
+                action_type="tenant.subscription.updated",
+                action=f"Updated provider subscription for tenant",
+                actor_id=actor_id,
+                actor_email=actor.get("email"),
+                actor_name=actor.get("name"),
+                tenant_id=tenant_id,
+                tenant_name=tenant.get("name"),
+                resource_type="subscription",
+                resource_id=subscription.get("id"),
+                old_value=old_values,
+                new_value=update_data,
+            )
+
+            return result
+
+        return subscription
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to update subscription: {str(e)}"
+        )
+
+
+@router.delete("/{tenant_id}/provider-subscriptions/{provider_id}")
+async def cancel_tenant_provider_subscription(
+    tenant_id: str,
+    provider_id: str,
+    at_period_end: bool = True,
+    user_info: dict = Depends(require_platform_admin()),
+):
+    """Cancel a tenant's provider subscription (platform admin only)."""
+    try:
+        actor = (user_info or {}).get("user") or {}
+        actor_id = actor.get("id")
+        if not actor_id:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated")
+
+        # Verify tenant exists
+        tenant_response = db_service.client.table("tenants").select("id, name").eq("id", tenant_id).single().execute()
+        if not tenant_response.data:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Tenant not found")
+
+        tenant = tenant_response.data
+
+        # Get existing subscription
+        subscription = await db_service.get_tenant_provider_subscription(tenant_id, provider_id)
+        if not subscription:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="No subscription found for this provider"
+            )
+
+        # If Stripe subscription exists, cancel it
+        if subscription.get("stripe_subscription_id"):
+            await stripe_service.cancel_subscription(
+                subscription["stripe_subscription_id"],
+                at_period_end=at_period_end
+            )
+
+        # Update database
+        update_data = {"cancel_at_period_end": True}
+        if not at_period_end:
+            # Find free plan for this provider
+            plans = await db_service.get_provider_plans(provider_id, active_only=True)
+            free_plan = next((p for p in plans if p.get("name") == "free" or p.get("price_monthly", 0) == 0), None)
+            if free_plan:
+                update_data["plan_id"] = free_plan["id"]
+                update_data["status"] = "active"
+            else:
+                update_data["status"] = "canceled"
+
+        await db_service.update_tenant_provider_subscription_by_provider(
+            tenant_id, provider_id, update_data
+        )
+
+        # Audit log
+        from app.api.endpoints.admin_audit import create_audit_log
+        await create_audit_log(
+            action_type="tenant.subscription.canceled",
+            action=f"Canceled provider subscription for tenant (at_period_end={at_period_end})",
+            actor_id=actor_id,
+            actor_email=actor.get("email"),
+            actor_name=actor.get("name"),
+            tenant_id=tenant_id,
+            tenant_name=tenant.get("name"),
+            resource_type="subscription",
+            resource_id=subscription.get("id"),
+            old_value={"status": subscription.get("status"), "cancel_at_period_end": subscription.get("cancel_at_period_end", False)},
+            new_value=update_data,
+        )
+
+        return {"success": True, "message": f"Subscription will be {'canceled at period end' if at_period_end else 'canceled immediately'}"}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to cancel subscription: {str(e)}"
         )

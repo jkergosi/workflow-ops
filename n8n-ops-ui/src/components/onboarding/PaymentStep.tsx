@@ -46,27 +46,50 @@ export function PaymentStep({ data, onNext, onBack, isLoading }: PaymentStepProp
       return;
     }
 
-    // Paid plan - initiate payment
+    // Paid plan - initiate payment via provider checkout (per spec)
     setProcessing(true);
     setPaymentStatus('processing');
 
     try {
-      const result = await apiClient.onboardingPayment({
-        plan_name: data.selectedPlan,
-        billing_cycle: data.billingCycle,
-        success_url: `${window.location.origin}/onboarding?step=3&success=true&session_id={CHECKOUT_SESSION_ID}`,
-        cancel_url: `${window.location.origin}/onboarding?step=3&canceled=true`,
-      });
+      // Use provider-based checkout if provider info is available (per spec)
+      if (data.selectedProviderId && data.selectedPlanId) {
+        const result = await apiClient.createProviderCheckout({
+          provider_id: data.selectedProviderId,
+          plan_id: data.selectedPlanId,
+          billing_cycle: data.billingCycle,
+          success_url: `${window.location.origin}/onboarding?step=3&success=true&session_id={CHECKOUT_SESSION_ID}`,
+          cancel_url: `${window.location.origin}/onboarding?step=3&canceled=true`,
+        });
 
-      if (result.data.requires_payment && result.data.checkout_url) {
-        // Redirect to Stripe Checkout
-        window.location.href = result.data.checkout_url;
+        if (result.data.checkout_url) {
+          // Redirect to Stripe Checkout
+          window.location.href = result.data.checkout_url;
+        } else {
+          // No checkout URL (shouldn't happen, but handle gracefully)
+          setPaymentStatus('success');
+          setTimeout(() => {
+            onNext({});
+          }, 1000);
+        }
       } else {
-        // No payment required (shouldn't happen for paid plans, but handle gracefully)
-        setPaymentStatus('success');
-        setTimeout(() => {
-          onNext({});
-        }, 1000);
+        // Fallback to legacy payment flow
+        const result = await apiClient.onboardingPayment({
+          plan_name: data.selectedPlan,
+          billing_cycle: data.billingCycle,
+          success_url: `${window.location.origin}/onboarding?step=3&success=true&session_id={CHECKOUT_SESSION_ID}`,
+          cancel_url: `${window.location.origin}/onboarding?step=3&canceled=true`,
+        });
+
+        if (result.data.requires_payment && result.data.checkout_url) {
+          // Redirect to Stripe Checkout
+          window.location.href = result.data.checkout_url;
+        } else {
+          // No payment required (shouldn't happen for paid plans, but handle gracefully)
+          setPaymentStatus('success');
+          setTimeout(() => {
+            onNext({});
+          }, 1000);
+        }
       }
     } catch (error: any) {
       console.error('Payment setup failed:', error);

@@ -847,7 +847,7 @@ export function CredentialsPage() {
             </CardDescription>
           </CardHeader>
           <CardContent>
-            <Button onClick={() => navigate('/admin/billing')} variant="outline" className="w-full">
+            <Button onClick={() => navigate('/admin/providers')} variant="outline" className="w-full">
               Upgrade to Pro
             </Button>
           </CardContent>

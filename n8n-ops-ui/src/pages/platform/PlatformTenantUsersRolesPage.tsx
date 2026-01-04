@@ -47,11 +47,12 @@ import {
   Trash2,
   MoreVertical,
   Loader2,
+  ArrowUpDown,
+  ArrowUp,
+  ArrowDown,
 } from 'lucide-react';
 import { apiClient } from '@/lib/api-client';
 import { toast } from 'sonner';
-import { useAuth } from '@/lib/auth';
-import { apiClient } from '@/lib/api-client';
 
 interface TenantUser {
   user_id: string;
@@ -79,6 +80,8 @@ export function PlatformTenantUsersRolesPage() {
   const [searchQuery, setSearchQuery] = useState('');
   const [roleFilter, setRoleFilter] = useState<string>('all');
   const [statusFilter, setStatusFilter] = useState<string>('all');
+  const [sortBy, setSortBy] = useState<string>('joined');
+  const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('desc');
   const [page, setPage] = useState(1);
   const pageSize = 50;
 
@@ -99,11 +102,13 @@ export function PlatformTenantUsersRolesPage() {
 
   // Fetch tenant users
   const { data: usersData, isLoading: usersLoading, refetch: refetchUsers } = useQuery({
-    queryKey: ['tenant-users', tenantId, searchQuery, roleFilter, statusFilter, page],
+    queryKey: ['tenant-users', tenantId, searchQuery, roleFilter, statusFilter, sortBy, sortOrder, page],
     queryFn: () => apiClient.getPlatformTenantUsers(tenantId!, {
       search: searchQuery || undefined,
       role: roleFilter !== 'all' ? roleFilter : undefined,
       status: statusFilter !== 'all' ? statusFilter : undefined,
+      sort_by: sortBy,
+      sort_order: sortOrder,
       page,
       page_size: pageSize,
     }),
@@ -116,11 +121,10 @@ export function PlatformTenantUsersRolesPage() {
 
   // Mutations
   const impersonateMutation = useMutation({
-    mutationFn: (userId: string) => apiClient.impersonatePlatformTenantUser(tenantId!, userId),
+    mutationFn: (userId: string) => apiClient.startPlatformImpersonation(userId),
     onSuccess: async (data) => {
       toast.success('Impersonation started');
       setImpersonateDialogOpen(false);
-      await apiClient.startPlatformImpersonation(userId);
       window.location.reload();
     },
     onError: (error: any) => {
@@ -352,11 +356,121 @@ export function PlatformTenantUsersRolesPage() {
                 <Table>
                   <TableHeader>
                     <TableRow>
-                      <TableHead>User</TableHead>
-                      <TableHead>Role</TableHead>
-                      <TableHead>Status</TableHead>
-                      <TableHead>Joined</TableHead>
-                      <TableHead>Last Activity</TableHead>
+                      <TableHead>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="h-8 -ml-3"
+                          onClick={() => {
+                            if (sortBy === 'name') {
+                              setSortOrder(sortOrder === 'asc' ? 'desc' : 'asc');
+                            } else {
+                              setSortBy('name');
+                              setSortOrder('asc');
+                            }
+                            setPage(1);
+                          }}
+                        >
+                          User
+                          {sortBy === 'name' ? (
+                            sortOrder === 'asc' ? <ArrowUp className="ml-2 h-4 w-4" /> : <ArrowDown className="ml-2 h-4 w-4" />
+                          ) : (
+                            <ArrowUpDown className="ml-2 h-4 w-4 opacity-50" />
+                          )}
+                        </Button>
+                      </TableHead>
+                      <TableHead>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="h-8 -ml-3"
+                          onClick={() => {
+                            if (sortBy === 'role') {
+                              setSortOrder(sortOrder === 'asc' ? 'desc' : 'asc');
+                            } else {
+                              setSortBy('role');
+                              setSortOrder('asc');
+                            }
+                            setPage(1);
+                          }}
+                        >
+                          Role
+                          {sortBy === 'role' ? (
+                            sortOrder === 'asc' ? <ArrowUp className="ml-2 h-4 w-4" /> : <ArrowDown className="ml-2 h-4 w-4" />
+                          ) : (
+                            <ArrowUpDown className="ml-2 h-4 w-4 opacity-50" />
+                          )}
+                        </Button>
+                      </TableHead>
+                      <TableHead>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="h-8 -ml-3"
+                          onClick={() => {
+                            if (sortBy === 'status') {
+                              setSortOrder(sortOrder === 'asc' ? 'desc' : 'asc');
+                            } else {
+                              setSortBy('status');
+                              setSortOrder('asc');
+                            }
+                            setPage(1);
+                          }}
+                        >
+                          Status
+                          {sortBy === 'status' ? (
+                            sortOrder === 'asc' ? <ArrowUp className="ml-2 h-4 w-4" /> : <ArrowDown className="ml-2 h-4 w-4" />
+                          ) : (
+                            <ArrowUpDown className="ml-2 h-4 w-4 opacity-50" />
+                          )}
+                        </Button>
+                      </TableHead>
+                      <TableHead>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="h-8 -ml-3"
+                          onClick={() => {
+                            if (sortBy === 'joined') {
+                              setSortOrder(sortOrder === 'asc' ? 'desc' : 'asc');
+                            } else {
+                              setSortBy('joined');
+                              setSortOrder('desc');
+                            }
+                            setPage(1);
+                          }}
+                        >
+                          Joined
+                          {sortBy === 'joined' ? (
+                            sortOrder === 'asc' ? <ArrowUp className="ml-2 h-4 w-4" /> : <ArrowDown className="ml-2 h-4 w-4" />
+                          ) : (
+                            <ArrowUpDown className="ml-2 h-4 w-4 opacity-50" />
+                          )}
+                        </Button>
+                      </TableHead>
+                      <TableHead>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="h-8 -ml-3"
+                          onClick={() => {
+                            if (sortBy === 'last_activity') {
+                              setSortOrder(sortOrder === 'asc' ? 'desc' : 'asc');
+                            } else {
+                              setSortBy('last_activity');
+                              setSortOrder('desc');
+                            }
+                            setPage(1);
+                          }}
+                        >
+                          Last Activity
+                          {sortBy === 'last_activity' ? (
+                            sortOrder === 'asc' ? <ArrowUp className="ml-2 h-4 w-4" /> : <ArrowDown className="ml-2 h-4 w-4" />
+                          ) : (
+                            <ArrowUpDown className="ml-2 h-4 w-4 opacity-50" />
+                          )}
+                        </Button>
+                      </TableHead>
                       <TableHead className="text-right">Actions</TableHead>
                     </TableRow>
                   </TableHeader>

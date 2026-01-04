@@ -2,6 +2,31 @@
 
 Multi-tenant workflow governance platform for managing n8n workflows across environments (dev, staging, production).
 
+## Testing Requirements (MANDATORY)
+
+**IMPORTANT: Always test changes before telling the user to test them.**
+
+Before reporting that a change is complete or asking the user to test:
+
+1. **Backend changes**: Run `pytest` or relevant test file to verify no regressions
+2. **Frontend changes**: Run `npm run build` to catch TypeScript/compilation errors
+3. **API changes**: Use `curl` or test the endpoint directly to verify it works
+4. **Full-stack changes**: Verify both backend and frontend compile/pass tests
+
+If tests fail, fix the issues before reporting completion. Do not hand off broken code to the user.
+
+## Server and Port Rules (MANDATORY)
+
+**Ask before restarting servers:**
+- If a change requires restarting the backend or frontend server, **ASK THE USER FIRST**
+- Do not restart servers without explicit permission
+- Explain why the restart is needed before asking
+
+**NEVER change ports without permission:**
+- Port configuration in `.env.local` is sacred - **NEVER modify without asking**
+- Do not change `VITE_API_BASE_URL`, `BACKEND_PORT`, `FRONTEND_PORT`, or any port settings
+- If you believe a port change is needed, explain why and get explicit approval first
+
 ## Quick Start
 
 ### 1. Check Ports

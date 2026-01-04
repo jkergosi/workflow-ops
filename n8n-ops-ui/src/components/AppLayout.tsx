@@ -101,7 +101,7 @@ const navigationSections: NavSection[] = [
       { id: 'adminDashboard', name: 'Admin Dashboard', href: '/admin', icon: LayoutGrid, minPlan: 'pro' },
       { id: 'members', name: 'Members', href: '/admin/members', icon: Users },
       { id: 'usage', name: 'Usage', href: '/admin/usage', icon: BarChart3, minPlan: 'pro' },
-      { id: 'billing', name: 'Billing', href: '/admin/billing', icon: CreditCard },
+      { id: 'providers', name: 'Billing & Plans', href: '/admin/providers', icon: CreditCard },
       { id: 'credentialHealth', name: 'Credential Health', href: '/admin/credential-health', icon: Shield, minPlan: 'pro' },
       { id: 'settings', name: 'Settings', href: '/admin/settings', icon: Settings },
     ],
@@ -438,9 +438,9 @@ export function AppLayout() {
                     {user?.role === 'admin' && (
                       <>
                         <DropdownMenuItem asChild>
-                          <Link to="/admin/billing" className="cursor-pointer">
+                          <Link to="/admin/providers" className="cursor-pointer">
                             <CreditCard className="mr-2 h-4 w-4" />
-                            Billing
+                            Billing & Plans
                           </Link>
                         </DropdownMenuItem>
                         <DropdownMenuItem asChild>
@@ -505,7 +505,7 @@ export function AppLayout() {
                   {/* Account Actions */}
                   {planName !== 'enterprise' && (
                     <DropdownMenuItem asChild>
-                      <Link to="/admin/billing" className="cursor-pointer">
+                      <Link to="/admin/providers" className="cursor-pointer">
                         <Sparkles className="mr-2 h-4 w-4" />
                         Upgrade Plan
                       </Link>
@@ -545,6 +545,29 @@ export function AppLayout() {
             </CommandGroup>
           </CommandList>
         </CommandDialog>
+
+        {/* Global Impersonation Banner */}
+        {impersonating && (
+          <div className="sticky top-0 z-40 w-full bg-yellow-500 dark:bg-yellow-600 border-b border-yellow-600 dark:border-yellow-700">
+            <div className="flex items-center justify-between px-4 py-2 text-sm font-medium text-yellow-900 dark:text-yellow-50">
+              <div className="flex items-center gap-2">
+                <Shield className="h-4 w-4" />
+                <span>
+                  <strong>IMPERSONATING:</strong> {user?.name || '—'} ({user?.email || '—'}) as {actorUser?.name || '—'} ({actorUser?.email || '—'})
+                </span>
+              </div>
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={handleStopImpersonating}
+                className="h-7 text-yellow-900 dark:text-yellow-50 hover:bg-yellow-600 dark:hover:bg-yellow-700"
+              >
+                <X className="h-4 w-4 mr-1" />
+                Stop Impersonating
+              </Button>
+            </div>
+          </div>
+        )}
 
         {/* Page Content */}
         <main className="p-6 bg-muted/30 min-h-[calc(100vh-3.5rem)]">
