@@ -23,35 +23,44 @@ logger = logging.getLogger(__name__)
 class DriftRetentionService:
     """Service for managing drift data retention and cleanup."""
 
-    # Plan-based retention defaults (in days) per D2.md specification
-    # 0 = never delete
-    # Note: Free tier has limited drift features, so N/A values are set high (no purge)
-    RETENTION_DEFAULTS = {
-        "free": {
-            "drift_checks": 7,  # 7 days
-            "closed_incidents": 0,  # N/A - no incidents for free tier, but if any exist, keep them
-            "reconciliation_artifacts": 0,  # N/A
-            "approvals": 0,  # N/A
-        },
-        "pro": {
-            "drift_checks": 30,  # 30 days
-            "closed_incidents": 180,  # 180 days (6 months)
-            "reconciliation_artifacts": 180,  # 180 days
-            "approvals": 180,  # 180 days
-        },
-        "agency": {
-            "drift_checks": 90,  # 90 days
-            "closed_incidents": 365,  # 365 days (1 year)
-            "reconciliation_artifacts": 365,  # 365 days
-            "approvals": 365,  # 365 days
-        },
-        "enterprise": {
-            "drift_checks": 180,  # 180 days
-            "closed_incidents": 2555,  # 7 years (2555 days)
-            "reconciliation_artifacts": 2555,  # 7 years
-            "approvals": 2555,  # 7 years
-        },
-    }
+    # Cache for retention defaults
+    _retention_cache: Dict[str, Dict[str, int]] = {}
+
+    async def _get_retention_defaults(self, plan_name: str) -> Dict[str, int]:
+        """Get retention defaults for a plan from database."""
+        plan_name = plan_name.lower()
+        
+        # Check cache first
+        if plan_name in self._retention_cache:
+            return self._retention_cache[plan_name]
+        
+        # Fetch from database
+        try:
+            response = db_service.client.table("plan_retention_defaults").select(
+                "drift_checks, closed_incidents, reconciliation_artifacts, approvals"
+            ).eq("plan_name", plan_name).single().execute()
+            
+            if response.data:
+                defaults = {
+                    "drift_checks": response.data.get("drift_checks", 7),
+                    "closed_incidents": response.data.get("closed_incidents", 0),
+                    "reconciliation_artifacts": response.data.get("reconciliation_artifacts", 0),
+                    "approvals": response.data.get("approvals", 0),
+                }
+                self._retention_cache[plan_name] = defaults
+                return defaults
+        except Exception as e:
+            logger.warning(f"Failed to fetch retention defaults for plan {plan_name}: {e}")
+        
+        # Fallback to free plan defaults
+        defaults = {
+            "drift_checks": 7,
+            "closed_incidents": 0,
+            "reconciliation_artifacts": 0,
+            "approvals": 0,
+        }
+        self._retention_cache[plan_name] = defaults
+        return defaults
 
     async def get_retention_policy(
         self, tenant_id: str
@@ -82,8 +91,8 @@ class DriftRetentionService:
 
             policy = policy_response.data[0] if policy_response.data else None
 
-            # Get plan defaults
-            plan_defaults = self.RETENTION_DEFAULTS.get(plan, self.RETENTION_DEFAULTS["free"])
+            # Get plan defaults from database
+            plan_defaults = await self._get_retention_defaults(plan)
 
             # Use policy values if set, otherwise use plan defaults
             retention_enabled = (

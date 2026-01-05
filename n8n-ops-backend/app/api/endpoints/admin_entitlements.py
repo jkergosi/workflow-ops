@@ -1,6 +1,6 @@
 """Admin endpoints for entitlements management (Phase 4)."""
 from fastapi import APIRouter, HTTPException, status, Query, Depends
-from typing import List, Optional
+from typing import List, Optional, Dict, Any
 from datetime import datetime
 
 from app.schemas.entitlements import (
@@ -17,6 +17,16 @@ from app.schemas.entitlements import (
     AdminPlanListResponse,
     AuditAction,
     AuditEntityType,
+)
+from app.schemas.billing import (
+    PlanMetadataUpdate,
+    PlanLimitsUpdate,
+    PlanRetentionDefaultsUpdate,
+    PlanFeatureRequirementUpdate,
+    PlanMetadataResponse,
+    PlanLimitsResponse,
+    PlanRetentionDefaultsResponse,
+    PlanFeatureRequirementResponse,
 )
 from app.services.database import db_service
 from app.services.audit_service import audit_service
@@ -556,4 +566,351 @@ async def debug_tenant_entitlements(tenant_id: str, _: dict = Depends(require_pl
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Debug failed: {str(e)}\n{traceback.format_exc()}"
+        )
+
+
+# =============================================================================
+# Plan Features - Get all plans with all features (for frontend PLAN_FEATURES)
+# =============================================================================
+
+@router.get("/plan-features/all", response_model=Dict[str, Dict[str, Any]])
+async def get_all_plan_features(_: dict = Depends(require_platform_admin())):
+    """
+    Get all plan features in a format suitable for frontend PLAN_FEATURES object.
+    Returns: { "free": { "feature1": value, ... }, "pro": { ... }, ... }
+    """
+    try:
+        # Get all plans
+        plans_response = db_service.client.table("plans").select("id, name").eq("is_active", True).execute()
+        plans = {p["id"]: p["name"] for p in (plans_response.data or [])}
+        
+        # Get all features
+        features_response = db_service.client.table("features").select("id, name, type").execute()
+        features = {f["id"]: f for f in (features_response.data or [])}
+        
+        # Get all plan-feature mappings
+        plan_features_response = db_service.client.table("plan_features").select(
+            "plan_id, feature_id, value"
+        ).execute()
+        
+        # Build result structure
+        result: Dict[str, Dict[str, Any]] = {}
+        
+        # Initialize all plans with empty dicts
+        for plan_name in plans.values():
+            result[plan_name] = {}
+        
+        # Populate with plan-feature values
+        for pf in (plan_features_response.data or []):
+            plan_id = pf.get("plan_id")
+            feature_id = pf.get("feature_id")
+            value = pf.get("value", {})
+            
+            if plan_id in plans and feature_id in features:
+                plan_name = plans[plan_id]
+                feature = features[feature_id]
+                feature_name = feature["name"]
+                feature_type = feature["type"]
+                
+                # Convert value based on type
+                if feature_type == "flag":
+                    result[plan_name][feature_name] = value.get("enabled", False)
+                elif feature_type == "limit":
+                    result[plan_name][feature_name] = value.get("value", 0)
+                else:
+                    result[plan_name][feature_name] = value
+        
+        return result
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to fetch all plan features: {str(e)}"
+        )
+
+
+# =============================================================================
+# Plan Configuration Management (Metadata, Limits, Retention, Feature Requirements)
+# =============================================================================
+
+@router.patch("/plan-configurations/metadata/{plan_name}", response_model=PlanMetadataResponse)
+async def update_plan_metadata(
+    plan_name: str,
+    update: PlanMetadataUpdate,
+    user_info: dict = Depends(require_platform_admin()),
+):
+    """Update plan metadata (icon, color, precedence, sort_order)."""
+    try:
+        # Verify plan exists
+        plan_response = db_service.client.table("plans").select("id, name, display_name, sort_order").eq(
+            "name", plan_name.lower()
+        ).single().execute()
+        
+        if not plan_response.data:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Plan not found")
+        
+        plan_id = plan_response.data["id"]
+        update_data = {}
+        if update.icon is not None:
+            update_data["icon"] = update.icon
+        if update.color_class is not None:
+            update_data["color_class"] = update.color_class
+        if update.precedence is not None:
+            update_data["precedence"] = update.precedence
+        if update.sort_order is not None:
+            update_data["sort_order"] = update.sort_order
+        
+        if update_data:
+            update_data["updated_at"] = datetime.utcnow().isoformat()
+            db_service.client.table("plans").update(update_data).eq("id", plan_id).execute()
+        
+        # Fetch updated plan
+        updated = db_service.client.table("plans").select(
+            "name, display_name, icon, color_class, precedence, sort_order"
+        ).eq("id", plan_id).single().execute()
+        
+        return PlanMetadataResponse(
+            name=updated.data["name"],
+            display_name=updated.data["display_name"],
+            icon=updated.data.get("icon"),
+            color_class=updated.data.get("color_class"),
+            precedence=updated.data.get("precedence", 0),
+            sort_order=updated.data.get("sort_order", 0),
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to update plan metadata: {str(e)}"
+        )
+
+
+@router.patch("/plan-configurations/limits/{plan_name}", response_model=PlanLimitsResponse)
+async def update_plan_limits(
+    plan_name: str,
+    update: PlanLimitsUpdate,
+    user_info: dict = Depends(require_platform_admin()),
+):
+    """Update plan limits."""
+    try:
+        update_data = {}
+        if update.max_workflows is not None:
+            update_data["max_workflows"] = update.max_workflows
+        if update.max_environments is not None:
+            update_data["max_environments"] = update.max_environments
+        if update.max_users is not None:
+            update_data["max_users"] = update.max_users
+        if update.max_executions_daily is not None:
+            update_data["max_executions_daily"] = update.max_executions_daily
+        
+        if update_data:
+            update_data["updated_at"] = datetime.utcnow().isoformat()
+            db_service.client.table("plan_limits").update(update_data).eq("plan_name", plan_name.lower()).execute()
+        
+        # Fetch updated limits
+        updated = db_service.client.table("plan_limits").select("*").eq("plan_name", plan_name.lower()).single().execute()
+        
+        if not updated.data:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Plan limits not found")
+        
+        return PlanLimitsResponse(
+            plan_name=updated.data["plan_name"],
+            max_workflows=updated.data["max_workflows"],
+            max_environments=updated.data["max_environments"],
+            max_users=updated.data["max_users"],
+            max_executions_daily=updated.data["max_executions_daily"],
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to update plan limits: {str(e)}"
+        )
+
+
+@router.patch("/plan-configurations/retention/{plan_name}", response_model=PlanRetentionDefaultsResponse)
+async def update_plan_retention(
+    plan_name: str,
+    update: PlanRetentionDefaultsUpdate,
+    user_info: dict = Depends(require_platform_admin()),
+):
+    """Update plan retention defaults."""
+    try:
+        update_data = {}
+        if update.drift_checks is not None:
+            update_data["drift_checks"] = update.drift_checks
+        if update.closed_incidents is not None:
+            update_data["closed_incidents"] = update.closed_incidents
+        if update.reconciliation_artifacts is not None:
+            update_data["reconciliation_artifacts"] = update.reconciliation_artifacts
+        if update.approvals is not None:
+            update_data["approvals"] = update.approvals
+        
+        if update_data:
+            update_data["updated_at"] = datetime.utcnow().isoformat()
+            db_service.client.table("plan_retention_defaults").update(update_data).eq("plan_name", plan_name.lower()).execute()
+        
+        # Fetch updated retention
+        updated = db_service.client.table("plan_retention_defaults").select("*").eq("plan_name", plan_name.lower()).single().execute()
+        
+        if not updated.data:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Plan retention defaults not found")
+        
+        return PlanRetentionDefaultsResponse(
+            plan_name=updated.data["plan_name"],
+            drift_checks=updated.data["drift_checks"],
+            closed_incidents=updated.data["closed_incidents"],
+            reconciliation_artifacts=updated.data["reconciliation_artifacts"],
+            approvals=updated.data["approvals"],
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to update plan retention defaults: {str(e)}"
+        )
+
+
+@router.patch("/plan-configurations/feature-requirements/{feature_name}", response_model=PlanFeatureRequirementResponse)
+async def update_plan_feature_requirement(
+    feature_name: str,
+    update: PlanFeatureRequirementUpdate,
+    user_info: dict = Depends(require_platform_admin()),
+):
+    """Update plan feature requirement."""
+    try:
+        update_data = {}
+        if update.required_plan is not None:
+            update_data["required_plan"] = update.required_plan.lower() if update.required_plan else None
+        
+        if update_data:
+            update_data["updated_at"] = datetime.utcnow().isoformat()
+            db_service.client.table("plan_feature_requirements").update(update_data).eq("feature_name", feature_name).execute()
+        
+        # Fetch updated requirement
+        updated = db_service.client.table("plan_feature_requirements").select("*").eq("feature_name", feature_name).single().execute()
+        
+        if not updated.data:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Feature requirement not found")
+        
+        return PlanFeatureRequirementResponse(
+            feature_name=updated.data["feature_name"],
+            required_plan=updated.data.get("required_plan"),
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to update feature requirement: {str(e)}"
+        )
+
+
+# =============================================================================
+# Workflow Policy Matrix Management
+# =============================================================================
+
+@router.get("/workflow-policy-matrix", response_model=List[Dict[str, Any]])
+async def get_workflow_policy_matrix(_: dict = Depends(require_platform_admin())):
+    """Get workflow policy matrix for all environment classes."""
+    try:
+        response = db_service.client.table("workflow_policy_matrix").select("*").execute()
+        return response.data or []
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to fetch workflow policy matrix: {str(e)}"
+        )
+
+
+@router.patch("/workflow-policy-matrix/{environment_class}", response_model=Dict[str, Any])
+async def update_workflow_policy_matrix(
+    environment_class: str,
+    update: Dict[str, Any],
+    user_info: dict = Depends(require_platform_admin()),
+):
+    """Update workflow policy matrix for an environment class."""
+    try:
+        update_data = {k: v for k, v in update.items() if v is not None}
+        if update_data:
+            update_data["updated_at"] = datetime.utcnow().isoformat()
+            db_service.client.table("workflow_policy_matrix").update(update_data).eq(
+                "environment_class", environment_class.lower()
+            ).execute()
+        
+        updated = db_service.client.table("workflow_policy_matrix").select("*").eq(
+            "environment_class", environment_class.lower()
+        ).single().execute()
+        
+        if not updated.data:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Policy matrix not found")
+        
+        return updated.data
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to update workflow policy matrix: {str(e)}"
+        )
+
+
+@router.get("/plan-policy-overrides", response_model=List[Dict[str, Any]])
+async def get_plan_policy_overrides(_: dict = Depends(require_platform_admin())):
+    """Get all plan-based policy overrides."""
+    try:
+        response = db_service.client.table("plan_policy_overrides").select("*").execute()
+        return response.data or []
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to fetch plan policy overrides: {str(e)}"
+        )
+
+
+@router.patch("/plan-policy-overrides/{plan_name}/{environment_class}", response_model=Dict[str, Any])
+async def update_plan_policy_override(
+    plan_name: str,
+    environment_class: str,
+    update: Dict[str, Any],
+    user_info: dict = Depends(require_platform_admin()),
+):
+    """Update or create plan-based policy override."""
+    try:
+        update_data = {k: v for k, v in update.items() if v is not None}
+        if update_data:
+            update_data["updated_at"] = datetime.utcnow().isoformat()
+            # Try to update first
+            existing = db_service.client.table("plan_policy_overrides").select("id").eq(
+                "plan_name", plan_name.lower()
+            ).eq("environment_class", environment_class.lower()).execute()
+            
+            if existing.data:
+                db_service.client.table("plan_policy_overrides").update(update_data).eq(
+                    "id", existing.data[0]["id"]
+                ).execute()
+            else:
+                # Create new
+                db_service.client.table("plan_policy_overrides").insert({
+                    "plan_name": plan_name.lower(),
+                    "environment_class": environment_class.lower(),
+                    **update_data,
+                }).execute()
+        
+        updated = db_service.client.table("plan_policy_overrides").select("*").eq(
+            "plan_name", plan_name.lower()
+        ).eq("environment_class", environment_class.lower()).single().execute()
+        
+        if not updated.data:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Policy override not found")
+        
+        return updated.data
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to update plan policy override: {str(e)}"
         )

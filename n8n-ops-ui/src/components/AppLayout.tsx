@@ -132,7 +132,7 @@ const navigationSections: NavSection[] = [
 export function AppLayout() {
   const location = useLocation();
   const navigate = useNavigate();
-  const { user, logout, impersonating, stopImpersonating, actorUser } = useAuth();
+  const { user, tenant, logout, impersonating, stopImpersonating } = useAuth();
   const { sidebarOpen, toggleSidebar } = useAppStore();
   const { planName } = useFeatures();
   const { setTheme } = useTheme();
@@ -383,8 +383,9 @@ export function AppLayout() {
               {impersonating && (
                 <div className="flex items-center gap-2">
                   <div className="flex items-center gap-2 px-2 py-1 bg-yellow-100 dark:bg-yellow-900/30 text-yellow-800 dark:text-yellow-200 rounded-md text-xs">
-                    <span className="truncate max-w-[360px]">
-                      Impersonating: {user?.name || '—'} ({user?.email || '—'}) as {actorUser?.name || '—'} ({actorUser?.email || '—'})
+                    <span className="truncate max-w-[300px]">
+                      Viewing as {user?.name || user?.email || '—'}
+                      {tenant && <> ({tenant.name})</>}
                     </span>
                     <button
                       onClick={handleStopImpersonating}
@@ -557,29 +558,6 @@ export function AppLayout() {
             </CommandGroup>
           </CommandList>
         </CommandDialog>
-
-        {/* Global Impersonation Banner */}
-        {impersonating && (
-          <div className="sticky top-0 z-40 w-full bg-yellow-500 dark:bg-yellow-600 border-b border-yellow-600 dark:border-yellow-700">
-            <div className="flex items-center justify-between px-4 py-2 text-sm font-medium text-yellow-900 dark:text-yellow-50">
-              <div className="flex items-center gap-2">
-                <Shield className="h-4 w-4" />
-                <span>
-                  <strong>IMPERSONATING:</strong> {user?.name || '—'} ({user?.email || '—'}) as {actorUser?.name || '—'} ({actorUser?.email || '—'})
-                </span>
-              </div>
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={handleStopImpersonating}
-                className="h-7 text-yellow-900 dark:text-yellow-50 hover:bg-yellow-600 dark:hover:bg-yellow-700"
-              >
-                <X className="h-4 w-4 mr-1" />
-                Stop Impersonating
-              </Button>
-            </div>
-          </div>
-        )}
 
         {/* Page Content */}
         <main className="p-6 bg-muted/30 min-h-[calc(100vh-3.5rem)]">

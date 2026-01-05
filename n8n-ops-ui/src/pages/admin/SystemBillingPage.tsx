@@ -84,6 +84,15 @@ export function SystemBillingPage() {
     queryFn: () => apiClient.getDunningTenants(),
   });
 
+  // Fetch plans from database
+  const { data: plansData } = useQuery({
+    queryKey: ['admin-plans'],
+    queryFn: () => apiClient.getAdminPlans(),
+  });
+
+  const plans = plansData?.data?.plans || [];
+  const sortedPlans = [...plans].sort((a, b) => (a.sortOrder || 0) - (b.sortOrder || 0));
+
   const metrics: BillingMetrics = metricsData?.data || {
     mrr: 0,
     arr: 0,
@@ -200,10 +209,6 @@ export function SystemBillingPage() {
   // Calculate plan distribution percentages
   const totalTenants = distribution.reduce((sum, d) => sum + (d.count || 0), 0);
   const getPlanPercentage = (count: number) => totalTenants > 0 ? Math.round((count / totalTenants) * 100) : 0;
-
-  // Calculate estimated revenue by plan
-  const planPrices: Record<string, number> = { free: 0, pro: 49, agency: 199, enterprise: 499 };
-  const getEstimatedRevenue = (plan: string, count: number) => (planPrices[plan] || 0) * count;
 
   return (
     <div className="space-y-6">
@@ -384,8 +389,8 @@ export function SystemBillingPage() {
                 <CardDescription>Breakdown of tenants by subscription plan</CardDescription>
               </CardHeader>
               <CardContent className="space-y-4">
-                {['free', 'pro', 'agency', 'enterprise'].map((plan) => {
-                  const planData = distribution.find((d) => (d.plan || d.planName) === plan);
+                {sortedPlans.map((plan) => {
+                  const planData = distribution.find((d) => (d.plan || d.planName) === plan.name);
                   const count = planData?.count || 0;
                   const percentage = getPlanPercentage(count);
                   const colorClass = {
@@ -393,14 +398,14 @@ export function SystemBillingPage() {
                     pro: 'bg-blue-500',
                     agency: 'bg-purple-500',
                     enterprise: 'bg-amber-500',
-                  }[plan];
+                  }[plan.name] || 'bg-gray-400';
 
                   return (
-                    <div key={plan} className="space-y-3">
+                    <div key={plan.id} className="space-y-3">
                       <div className="flex items-center justify-between">
                         <div className="flex items-center gap-2">
-                          <Badge variant={plan === 'free' ? 'outline' : plan === 'pro' ? 'secondary' : 'default'} className="capitalize">
-                            {plan}
+                          <Badge variant={plan.name === 'free' ? 'outline' : plan.name === 'pro' ? 'secondary' : 'default'} className="capitalize">
+                            {plan.displayName}
                           </Badge>
                           <span className="text-sm text-muted-foreground">
                             {count} tenants
@@ -432,23 +437,22 @@ export function SystemBillingPage() {
               <CardContent>
                 <div className="space-y-6">
                   <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-                    {['free', 'pro', 'agency', 'enterprise'].map((plan) => {
-                      const planData = distribution.find((d) => (d.plan || d.planName) === plan);
+                    {sortedPlans.map((plan) => {
+                      const planData = distribution.find((d) => (d.plan || d.planName) === plan.name);
                       const count = planData?.count || 0;
-                      const revenue = getEstimatedRevenue(plan, count);
                       const bgClass = {
                         free: 'bg-muted/50',
                         pro: 'bg-blue-50 dark:bg-blue-950',
                         agency: 'bg-purple-50 dark:bg-purple-950',
                         enterprise: 'bg-amber-50 dark:bg-amber-950',
-                      }[plan];
+                      }[plan.name] || 'bg-muted/50';
 
                       return (
-                        <div key={plan} className={`p-4 rounded-lg ${bgClass}`}>
-                          <p className="text-sm text-muted-foreground capitalize">{plan} Tier</p>
-                          <p className="text-xl font-bold">${revenue.toLocaleString()}</p>
+                        <div key={plan.id} className={`p-4 rounded-lg ${bgClass}`}>
+                          <p className="text-sm text-muted-foreground">{plan.displayName} Tier</p>
+                          <p className="text-xl font-bold">{count}</p>
                           <p className="text-xs text-muted-foreground mt-1">
-                            {count} tenants × ${planPrices[plan]}/mo
+                            {count} tenant{count !== 1 ? 's' : ''}
                           </p>
                         </div>
                       );

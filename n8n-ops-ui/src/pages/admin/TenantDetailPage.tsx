@@ -1566,7 +1566,8 @@ export function TenantDetailPage() {
                   <SelectContent>
                     {(() => {
                       const provider = providers.find((p: ProviderWithPlans) => p.id === selectedSubscription.provider_id);
-                      return provider?.plans
+                      return [...(provider?.plans || [])]
+                        .sort((a: ProviderPlan, b: ProviderPlan) => (a.sort_order || 0) - (b.sort_order || 0))
                         .filter((p: ProviderPlan) => p.is_active)
                         .map((plan: ProviderPlan) => (
                           <SelectItem key={plan.id} value={plan.id}>

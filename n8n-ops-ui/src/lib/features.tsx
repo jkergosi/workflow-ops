@@ -73,8 +73,11 @@ export interface PlanFeatures {
   drift_incidents?: boolean;
 }
 
-// Default plan configurations - Phase 2 Full Feature Catalog
-const PLAN_FEATURES: Record<string, PlanFeatures> = {
+// Plan features cache - loaded from API
+let PLAN_FEATURES_CACHE: Record<string, PlanFeatures> = {};
+
+// Fallback plan features (used if API fails)
+const PLAN_FEATURES_FALLBACK: Record<string, PlanFeatures> = {
   free: {
     // Legacy
     max_environments: 1,
@@ -359,9 +362,11 @@ export const FEATURE_DISPLAY_NAMES: Record<string, string> = {
   drift_incidents: 'Drift Incidents',
 };
 
-// Which plan is required for each feature - Phase 2 Full Catalog
-export const FEATURE_REQUIRED_PLANS: Record<string, 'free' | 'pro' | 'agency' | 'enterprise' | null> = {
-  // Legacy
+// Feature required plans - loaded from API
+let FEATURE_REQUIRED_PLANS_CACHE: Record<string, 'free' | 'pro' | 'agency' | 'enterprise' | null> = {};
+
+// Fallback for features not in database
+const FEATURE_REQUIRED_PLANS_FALLBACK: Record<string, 'free' | 'pro' | 'agency' | 'enterprise' | null> = {
   max_environments: null,
   max_team_members: null,
   max_workflows_per_env: null,
@@ -375,47 +380,113 @@ export const FEATURE_REQUIRED_PLANS: Record<string, 'free' | 'pro' | 'agency' | 
   sso: 'enterprise',
   api_access: 'pro',
   priority_support: 'pro',
-  // Phase 2 Environment
   environment_basic: 'free',
   environment_health: 'pro',
   environment_diff: 'pro',
   environment_limits: null,
-  // Phase 2 Workflows
   workflow_read: 'free',
   workflow_push: 'free',
   workflow_dirty_check: 'pro',
   workflow_ci_cd: 'pro',
   workflow_ci_cd_approval: 'agency',
   workflow_limits: null,
-  // Phase 2 Snapshots
   snapshots_enabled: 'free',
   snapshots_auto: 'pro',
   snapshots_history: null,
   snapshots_export: 'pro',
-  // Phase 2 Observability
   observability_basic: 'free',
   observability_alerts: 'pro',
   observability_alerts_advanced: 'enterprise',
   observability_logs: 'pro',
   observability_limits: null,
-  // Phase 2 RBAC
   rbac_basic: 'free',
   rbac_advanced: 'agency',
   audit_logs_enabled: 'pro',
   audit_export: 'agency',
-  // Phase 2 Agency
   agency_enabled: 'agency',
   agency_client_management: 'agency',
   agency_whitelabel: 'agency',
   agency_client_limits: null,
-  // Phase 2 Enterprise
   sso_saml: 'enterprise',
   support_priority: 'pro',
   data_residency: 'enterprise',
   enterprise_limits: null,
-  // Drift
   drift_incidents: 'agency',
 };
+
+// Feature display names cache - loaded from API
+let FEATURE_DISPLAY_NAMES_CACHE: Record<string, string> = {};
+
+// Load plan features from API
+async function loadPlanFeatures() {
+  try {
+    const response = await apiClient.getAllPlanFeatures();
+    PLAN_FEATURES_CACHE = response.data as Record<string, PlanFeatures>;
+    
+    // Check for empty response (misconfiguration)
+    if (!response.data || Object.keys(response.data).length === 0 || 
+        Object.values(response.data).every(plan => Object.keys(plan).length === 0)) {
+      console.error('Plan features table is empty - misconfiguration');
+      PLAN_FEATURES_CACHE = PLAN_FEATURES_FALLBACK;
+    }
+  } catch (error) {
+    console.warn('Failed to load plan features from API, using fallback:', error);
+    PLAN_FEATURES_CACHE = PLAN_FEATURES_FALLBACK;
+  }
+}
+
+// Load feature display names from API
+async function loadFeatureDisplayNames() {
+  try {
+    const response = await apiClient.getFeatureDisplayNames();
+    FEATURE_DISPLAY_NAMES_CACHE = response.data as Record<string, string>;
+    
+    // Merge with fallback for any missing names
+    Object.assign(FEATURE_DISPLAY_NAMES_CACHE, FEATURE_DISPLAY_NAMES);
+  } catch (error) {
+    console.warn('Failed to load feature display names from API, using fallback:', error);
+    FEATURE_DISPLAY_NAMES_CACHE = FEATURE_DISPLAY_NAMES;
+  }
+}
+
+// Load feature requirements from API
+async function loadFeatureRequirements() {
+  try {
+    const response = await apiClient.getPlanConfigurations();
+    const requirements = response.data.feature_requirements || [];
+    const cache: Record<string, 'free' | 'pro' | 'agency' | 'enterprise' | null> = {};
+    for (const req of requirements) {
+      cache[req.feature_name] = (req.required_plan as 'free' | 'pro' | 'agency' | 'enterprise' | null) || null;
+    }
+    FEATURE_REQUIRED_PLANS_CACHE = cache;
+  } catch (error) {
+    console.warn('Failed to load feature requirements from API, using fallback:', error);
+    FEATURE_REQUIRED_PLANS_CACHE = FEATURE_REQUIRED_PLANS_FALLBACK;
+  }
+}
+
+// Export getter function for plan features
+export function getPlanFeatures(plan: string): PlanFeatures {
+  return PLAN_FEATURES_CACHE[plan] ?? PLAN_FEATURES_FALLBACK[plan] ?? PLAN_FEATURES_FALLBACK['free'];
+}
+
+// Export getter function that uses cache or fallback
+export function getFeatureRequiredPlan(feature: string): 'free' | 'pro' | 'agency' | 'enterprise' | null {
+  return FEATURE_REQUIRED_PLANS_CACHE[feature] ?? FEATURE_REQUIRED_PLANS_FALLBACK[feature] ?? null;
+}
+
+// For backward compatibility, export as object that uses getter
+export const FEATURE_REQUIRED_PLANS = new Proxy({} as Record<string, 'free' | 'pro' | 'agency' | 'enterprise' | null>, {
+  get(target, prop: string) {
+    return getFeatureRequiredPlan(prop);
+  },
+  has(target, prop: string) {
+    return prop in FEATURE_REQUIRED_PLANS_CACHE || prop in FEATURE_REQUIRED_PLANS_FALLBACK;
+  },
+  ownKeys(target) {
+    return [...new Set([...Object.keys(FEATURE_REQUIRED_PLANS_CACHE), ...Object.keys(FEATURE_REQUIRED_PLANS_FALLBACK)])];
+  },
+});
 
 // Usage tracking interface
 interface ResourceUsage {
@@ -469,9 +540,20 @@ export function FeaturesProvider({ children }: FeaturesProviderProps) {
   const { user, entitlements, needsOnboarding } = useAuth();
   const isTest = import.meta.env.MODE === 'test';
   const [planName, setPlanName] = useState<string>('free');
-  const [features, setFeatures] = useState<PlanFeatures>(PLAN_FEATURES.free);
+  const [features, setFeatures] = useState<PlanFeatures>(getPlanFeatures('free'));
   const [usage, setUsage] = useState<UsageData | null>(null);
   const [isLoading, setIsLoading] = useState(true);
+
+  // Load all plan data on mount
+  useEffect(() => {
+    loadFeatureRequirements();
+    loadPlanFeatures();
+    loadFeatureDisplayNames();
+    // Also load workflow policy matrix
+    import('./workflow-action-policy').then(({ loadWorkflowPolicyMatrix }) => {
+      loadWorkflowPolicyMatrix();
+    });
+  }, []);
 
   // Provider-scoped entitlements - source of truth from backend
   const [providerEntitlements, setProviderEntitlements] = useState<ProviderEntitlements | null>(null);
@@ -486,8 +568,8 @@ export function FeaturesProvider({ children }: FeaturesProviderProps) {
         const userPlan = entitlements?.plan_name || 'free';
         setPlanName(userPlan);
 
-        // Start with base plan features
-        const baseFeatures = PLAN_FEATURES[userPlan] || PLAN_FEATURES.free;
+        // Start with base plan features from cache
+        const baseFeatures = getPlanFeatures(userPlan);
 
         // Get environment_limits from entitlements - prioritize entitlements over baseFeatures
         let envLimits = 1; // Default fallback
@@ -643,7 +725,7 @@ export function FeaturesProvider({ children }: FeaturesProviderProps) {
   };
 
   const getRequiredPlan = (feature: keyof PlanFeatures | string): 'free' | 'pro' | 'agency' | 'enterprise' | null => {
-    return FEATURE_REQUIRED_PLANS[feature] ?? null;
+    return getFeatureRequiredPlan(feature);
   };
 
   const refreshUsage = async (): Promise<void> => {

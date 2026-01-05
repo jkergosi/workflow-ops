@@ -43,6 +43,14 @@ from app.schemas.promotion import (
     WorkflowSelection,
     GateResult,
     PromotionExecutionResult,
+    # NEW: Compare schemas
+    DiffStatus,
+    ChangeCategory,
+    RiskLevel,
+    WorkflowCompareResult,
+    CompareSummary,
+    PromotionCompareResult,
+    DiffSummaryResponse,
 )
 from app.core.provider import Provider, DEFAULT_PROVIDER
 from app.schemas.pipeline import PipelineResponse
@@ -159,6 +167,524 @@ def get_tenant_id(user_info: dict) -> str:
     if not tenant_id:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Authentication required")
     return tenant_id
+
+
+@router.get("/compare", response_model=PromotionCompareResult)
+async def compare_environments(
+    pipeline_id: str = Query(..., description="Pipeline ID"),
+    stage_id: str = Query(..., description="Stage ID within the pipeline"),
+    user_info: dict = Depends(get_current_user),
+    _: None = Depends(require_entitlement("workflow_ci_cd"))
+):
+    """
+    Compare source and target environments for a pipeline stage.
+    Returns authoritative diff status for each workflow.
+
+    This is the canonical comparison endpoint - frontend MUST use this
+    instead of computing diff status locally.
+    """
+    from app.services.diff_service import (
+        compute_workflow_comparison,
+        compute_change_categories,
+        compute_risk_level,
+        compute_diff_hash,
+    )
+    from app.services.promotion_service import normalize_workflow_for_comparison
+
+    try:
+        tenant_id = get_tenant_id(user_info)
+
+        # Get pipeline
+        pipeline_data = await db_service.get_pipeline(pipeline_id, tenant_id)
+        if not pipeline_data:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Pipeline not found"
+            )
+
+        # Find the stage by ID, index, or source/target environment IDs
+        active_stage = None
+        stages = pipeline_data.get("stages", [])
+        
+        if not stages:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Pipeline has no stages configured"
+            )
+        
+        # Try to match by index first (most common case - stage_id is numeric string like "0", "1", etc.)
+        # This handles the case where frontend passes stage index
+        try:
+            stage_index = int(stage_id)
+            if 0 <= stage_index < len(stages):
+                active_stage = stages[stage_index]
+        except (ValueError, TypeError):
+            # stage_id is not numeric, continue to other matching methods
+            pass
+        
+        # If not found by index, try to match by ID (for backwards compatibility if stages have IDs)
+        if not active_stage:
+            for stage in stages:
+                if stage.get("id") == stage_id:
+                    active_stage = stage
+                    break
+        
+        # If still not found, try to match by source/target environment IDs
+        # (stage_id might be in format "source_env_id:target_env_id")
+        if not active_stage and ":" in stage_id:
+            parts = stage_id.split(":", 1)
+            if len(parts) == 2:
+                source_id, target_id = parts
+                for stage in stages:
+                    if (stage.get("source_environment_id") == source_id and 
+                        stage.get("target_environment_id") == target_id):
+                        active_stage = stage
+                        break
+
+        if not active_stage:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Stage '{stage_id}' not found in pipeline. Pipeline has {len(stages)} stage(s). Valid stage indices are 0-{len(stages)-1}."
+            )
+
+        source_env_id = active_stage.get("source_environment_id")
+        target_env_id = active_stage.get("target_environment_id")
+
+        if not source_env_id or not target_env_id:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Stage missing source or target environment ID"
+            )
+
+        # Get environment configs
+        source_env = await db_service.get_environment(source_env_id, tenant_id)
+        target_env = await db_service.get_environment(target_env_id, tenant_id)
+
+        if not source_env or not target_env:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Source or target environment not found"
+            )
+
+        # Get workflows from GitHub for both environments
+        source_github = promotion_service._get_github_service(source_env)
+        target_github = promotion_service._get_github_service(target_env)
+
+        source_env_type = source_env.get("n8n_type")
+        target_env_type = target_env.get("n8n_type")
+
+        if not source_env_type or not target_env_type:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Environment type is required for comparison"
+            )
+
+        # Fetch workflows from GitHub
+        source_map = await source_github.get_all_workflows_from_github(environment_type=source_env_type)
+        target_map = await target_github.get_all_workflows_from_github(environment_type=target_env_type)
+
+        # Build comparison results
+        workflows: List[WorkflowCompareResult] = []
+        summary_counts = {
+            "added": 0,
+            "modified": 0,
+            "deleted": 0,
+            "unchanged": 0,
+            "target_hotfix": 0,
+        }
+
+        all_workflow_ids = set(source_map.keys()) | set(target_map.keys())
+
+        for wf_id in all_workflow_ids:
+            source_wf = source_map.get(wf_id)
+            target_wf = target_map.get(wf_id)
+
+            # Determine DiffStatus
+            diff_status: DiffStatus
+            risk_level = RiskLevel.LOW
+            change_categories: List[ChangeCategory] = []
+            diff_hash = None
+
+            if source_wf and not target_wf:
+                # Exists only in source -> ADDED
+                diff_status = DiffStatus.ADDED
+                summary_counts["added"] += 1
+                diff_hash = compute_diff_hash(source_wf, None)
+
+            elif target_wf and not source_wf:
+                # Exists only in target -> DELETED (target-only)
+                diff_status = DiffStatus.DELETED
+                summary_counts["deleted"] += 1
+                diff_hash = compute_diff_hash(None, target_wf)
+
+            else:
+                # Exists in both - compare normalized content
+                source_normalized = normalize_workflow_for_comparison(source_wf)
+                target_normalized = normalize_workflow_for_comparison(target_wf)
+
+                import json
+                source_json = json.dumps(source_normalized, sort_keys=True)
+                target_json = json.dumps(target_normalized, sort_keys=True)
+
+                if source_json == target_json:
+                    # Content identical -> UNCHANGED
+                    diff_status = DiffStatus.UNCHANGED
+                    summary_counts["unchanged"] += 1
+                    diff_hash = compute_diff_hash(source_wf, target_wf)
+                else:
+                    # Content differs - check timestamps to determine who's newer
+                    source_updated = source_wf.get("updatedAt")
+                    target_updated = target_wf.get("updatedAt")
+
+                    target_is_newer = False
+                    if source_updated and target_updated:
+                        try:
+                            source_dt = datetime.fromisoformat(source_updated.replace('Z', '+00:00'))
+                            target_dt = datetime.fromisoformat(target_updated.replace('Z', '+00:00'))
+                            target_is_newer = target_dt > source_dt
+                        except (ValueError, TypeError):
+                            pass
+
+                    if target_is_newer:
+                        # Target modified more recently -> TARGET_HOTFIX
+                        diff_status = DiffStatus.TARGET_HOTFIX
+                        summary_counts["target_hotfix"] += 1
+                    else:
+                        # Source newer or unknown -> MODIFIED
+                        diff_status = DiffStatus.MODIFIED
+                        summary_counts["modified"] += 1
+
+                    # Compute semantic categories and risk for modified workflows
+                    from app.services.diff_service import compare_workflows as diff_compare
+                    drift_result = diff_compare(source_wf, target_wf)
+                    change_categories = compute_change_categories(source_wf, target_wf, drift_result.differences)
+                    risk_level = compute_risk_level(change_categories)
+                    diff_hash = compute_diff_hash(source_wf, target_wf)
+
+            # Build result
+            workflow_name = (source_wf or target_wf or {}).get("name", "Unknown")
+            workflows.append(WorkflowCompareResult(
+                workflow_id=wf_id,
+                name=workflow_name,
+                diff_status=diff_status,
+                risk_level=risk_level,
+                change_categories=change_categories,
+                diff_hash=diff_hash,
+                details_available=True,
+                source_updated_at=datetime.fromisoformat(source_wf.get("updatedAt").replace('Z', '+00:00')) if source_wf and source_wf.get("updatedAt") else None,
+                target_updated_at=datetime.fromisoformat(target_wf.get("updatedAt").replace('Z', '+00:00')) if target_wf and target_wf.get("updatedAt") else None,
+                enabled_in_source=source_wf.get("active", False) if source_wf else False,
+                enabled_in_target=target_wf.get("active", False) if target_wf else None,
+            ))
+
+        # Build summary
+        total = len(workflows)
+        summary = CompareSummary(
+            total=total,
+            added=summary_counts["added"],
+            modified=summary_counts["modified"],
+            deleted=summary_counts["deleted"],
+            unchanged=summary_counts["unchanged"],
+            target_hotfix=summary_counts["target_hotfix"],
+        )
+
+        return PromotionCompareResult(
+            pipeline_id=pipeline_id,
+            stage_id=stage_id,
+            source_env_id=source_env_id,
+            target_env_id=target_env_id,
+            summary=summary,
+            workflows=workflows,
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to compare environments: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to compare environments: {str(e)}"
+        )
+
+
+def _generate_summary_bullets(
+    diff_status: DiffStatus,
+    change_categories: List[ChangeCategory],
+    risk_level: RiskLevel,
+    diff_result: dict,
+    source_workflow: dict,
+    target_workflow: dict
+) -> tuple[List[str], Dict[str, List[str]]]:
+    """
+    Generate human-readable summary bullets from structured diff facts.
+    Returns (bullets, evidence_map) where evidence_map maps each bullet to supporting facts.
+    """
+    bullets = []
+    evidence_map = {}
+
+    # Handle new workflow
+    if diff_status == DiffStatus.ADDED:
+        node_count = len(source_workflow.get("nodes", []))
+        triggers = [n for n in source_workflow.get("nodes", []) if "trigger" in n.get("type", "").lower()]
+        bullet = f"New workflow with {node_count} nodes"
+        if triggers:
+            trigger_types = [t.get("type", "").replace("n8n-nodes-base.", "") for t in triggers]
+            bullet += f", triggered by {', '.join(trigger_types[:2])}"
+        bullets.append(bullet)
+        evidence_map[bullet] = ["Workflow exists only in source environment"]
+        return bullets, evidence_map
+
+    # Handle target-only workflow
+    if diff_status == DiffStatus.DELETED:
+        bullets.append("Workflow exists only in target environment (will not be affected by promotion)")
+        evidence_map[bullets[0]] = ["No matching workflow in source environment"]
+        return bullets, evidence_map
+
+    # Handle unchanged
+    if diff_status == DiffStatus.UNCHANGED:
+        bullets.append("No functional differences detected between source and target")
+        evidence_map[bullets[0]] = ["Normalized workflow content is identical"]
+        return bullets, evidence_map
+
+    # Handle target hotfix
+    if diff_status == DiffStatus.TARGET_HOTFIX:
+        bullets.append("Target environment has newer changes - promoting will overwrite hotfixes")
+        evidence_map[bullets[0]] = ["Target workflow updatedAt is more recent than source"]
+
+    # Generate category-specific bullets
+    category_bullets = {
+        ChangeCategory.NODE_ADDED: ("Nodes added to workflow", ["Node count increased"]),
+        ChangeCategory.NODE_REMOVED: ("Nodes removed from workflow", ["Node count decreased"]),
+        ChangeCategory.NODE_TYPE_CHANGED: ("Node types have changed", ["Node type property differs"]),
+        ChangeCategory.CREDENTIALS_CHANGED: ("Credential references updated", ["credentials property differs"]),
+        ChangeCategory.EXPRESSIONS_CHANGED: ("Dynamic expressions modified", ["Expression syntax detected in changes"]),
+        ChangeCategory.HTTP_CHANGED: ("HTTP/API request configuration changed", ["HTTP node parameters differ"]),
+        ChangeCategory.TRIGGER_CHANGED: ("Trigger configuration modified", ["Trigger node properties differ"]),
+        ChangeCategory.ROUTING_CHANGED: ("Workflow routing/branching updated", ["Router/Switch/IF node changes"]),
+        ChangeCategory.ERROR_HANDLING_CHANGED: ("Error handling configuration updated", ["Error handling node changes"]),
+        ChangeCategory.SETTINGS_CHANGED: ("Workflow settings modified", ["settings property differs"]),
+        ChangeCategory.CODE_CHANGED: ("Code/Function node logic modified", ["Code/Function node parameters differ"]),
+        ChangeCategory.RENAME_ONLY: ("Only workflow or node names changed (no functional impact)", ["name property differs"]),
+    }
+
+    for category in change_categories:
+        if category in category_bullets:
+            bullet, evidence = category_bullets[category]
+            bullets.append(bullet)
+            evidence_map[bullet] = evidence
+
+    # Add diff summary if available
+    summary = diff_result.get("summary", {})
+    if summary:
+        if summary.get("nodesAdded", 0) > 0:
+            b = f"{summary['nodesAdded']} node(s) added"
+            if b not in bullets:
+                bullets.append(b)
+                evidence_map[b] = [f"nodesAdded: {summary['nodesAdded']}"]
+        if summary.get("nodesRemoved", 0) > 0:
+            b = f"{summary['nodesRemoved']} node(s) removed"
+            if b not in bullets:
+                bullets.append(b)
+                evidence_map[b] = [f"nodesRemoved: {summary['nodesRemoved']}"]
+        if summary.get("nodesModified", 0) > 0:
+            b = f"{summary['nodesModified']} node(s) modified"
+            if b not in bullets:
+                bullets.append(b)
+                evidence_map[b] = [f"nodesModified: {summary['nodesModified']}"]
+
+    # Limit to 6 bullets
+    if len(bullets) > 6:
+        bullets = bullets[:6]
+        evidence_map = {k: v for k, v in evidence_map.items() if k in bullets}
+
+    # Ensure at least one bullet
+    if not bullets:
+        bullets.append("Workflow content differs between environments")
+        evidence_map[bullets[0]] = ["Normalized JSON comparison detected differences"]
+
+    return bullets, evidence_map
+
+
+def _get_risk_explanation(risk_level: RiskLevel, change_categories: List[ChangeCategory]) -> str:
+    """Generate a human-readable explanation for the risk level."""
+    if risk_level == RiskLevel.HIGH:
+        high_risk_cats = [c for c in change_categories if c in {
+            ChangeCategory.CREDENTIALS_CHANGED,
+            ChangeCategory.EXPRESSIONS_CHANGED,
+            ChangeCategory.TRIGGER_CHANGED,
+            ChangeCategory.HTTP_CHANGED,
+            ChangeCategory.ROUTING_CHANGED,
+            ChangeCategory.CODE_CHANGED,
+        }]
+        cat_names = [c.value.replace("_", " ") for c in high_risk_cats]
+        return f"High risk due to: {', '.join(cat_names)}. These changes may affect workflow behavior or security."
+
+    if risk_level == RiskLevel.MEDIUM:
+        return "Medium risk: Changes to error handling or settings may affect workflow reliability."
+
+    return "Low risk: Changes are cosmetic or non-functional (e.g., renaming)."
+
+
+# Simple in-memory cache for diff summaries (keyed by diff_hash)
+_diff_summary_cache: Dict[str, DiffSummaryResponse] = {}
+
+
+@router.post("/diff-summary", response_model=DiffSummaryResponse)
+async def generate_diff_summary(
+    workflow_id: str = Query(..., description="Workflow ID to generate summary for"),
+    source_env_id: str = Query(..., description="Source environment ID"),
+    target_env_id: str = Query(..., description="Target environment ID"),
+    user_info: dict = Depends(get_current_user),
+    _: None = Depends(require_entitlement("workflow_ci_cd"))
+):
+    """
+    Generate AI summary from structured diff facts.
+    Cached by diff_hash for performance.
+
+    Returns human-readable summary bullets with evidence links.
+    """
+    from app.services.diff_service import (
+        compute_change_categories,
+        compute_risk_level,
+        compute_diff_hash,
+        compare_workflows as diff_compare,
+    )
+    from app.services.promotion_service import normalize_workflow_for_comparison
+
+    try:
+        tenant_id = get_tenant_id(user_info)
+
+        # Get environment configs
+        source_env = await db_service.get_environment(source_env_id, tenant_id)
+        target_env = await db_service.get_environment(target_env_id, tenant_id)
+
+        if not source_env or not target_env:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Source or target environment not found"
+            )
+
+        # Get workflows from GitHub
+        source_github = promotion_service._get_github_service(source_env)
+        target_github = promotion_service._get_github_service(target_env)
+
+        source_env_type = source_env.get("n8n_type")
+        target_env_type = target_env.get("n8n_type")
+
+        if not source_env_type or not target_env_type:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Environment type is required for diff summary"
+            )
+
+        # Fetch workflows
+        source_map = await source_github.get_all_workflows_from_github(environment_type=source_env_type)
+        target_map = await target_github.get_all_workflows_from_github(environment_type=target_env_type)
+
+        source_wf = source_map.get(workflow_id)
+        target_wf = target_map.get(workflow_id)
+
+        # Compute diff hash for caching
+        diff_hash = compute_diff_hash(source_wf, target_wf)
+
+        # Check cache
+        if diff_hash and diff_hash in _diff_summary_cache:
+            cached = _diff_summary_cache[diff_hash]
+            return DiffSummaryResponse(
+                bullets=cached.bullets,
+                risk_level=cached.risk_level,
+                risk_explanation=cached.risk_explanation,
+                evidence_map=cached.evidence_map,
+                change_categories=cached.change_categories,
+                is_new_workflow=cached.is_new_workflow,
+                cached=True,
+            )
+
+        # Determine diff status
+        diff_status: DiffStatus
+        risk_level = RiskLevel.LOW
+        change_categories: List[ChangeCategory] = []
+        diff_result = {"summary": {}, "differences": []}
+
+        if source_wf and not target_wf:
+            diff_status = DiffStatus.ADDED
+            is_new = True
+        elif target_wf and not source_wf:
+            diff_status = DiffStatus.DELETED
+            is_new = False
+        else:
+            is_new = False
+            # Compare normalized content
+            source_normalized = normalize_workflow_for_comparison(source_wf)
+            target_normalized = normalize_workflow_for_comparison(target_wf)
+
+            import json
+            source_json = json.dumps(source_normalized, sort_keys=True)
+            target_json = json.dumps(target_normalized, sort_keys=True)
+
+            if source_json == target_json:
+                diff_status = DiffStatus.UNCHANGED
+            else:
+                # Check timestamps
+                source_updated = source_wf.get("updatedAt")
+                target_updated = target_wf.get("updatedAt")
+                target_is_newer = False
+
+                if source_updated and target_updated:
+                    try:
+                        source_dt = datetime.fromisoformat(source_updated.replace('Z', '+00:00'))
+                        target_dt = datetime.fromisoformat(target_updated.replace('Z', '+00:00'))
+                        target_is_newer = target_dt > source_dt
+                    except (ValueError, TypeError):
+                        pass
+
+                if target_is_newer:
+                    diff_status = DiffStatus.TARGET_HOTFIX
+                else:
+                    diff_status = DiffStatus.MODIFIED
+
+                # Compute detailed diff
+                diff_result = diff_compare(source_wf, target_wf)
+                change_categories = compute_change_categories(source_wf, target_wf, diff_result.differences)
+                risk_level = compute_risk_level(change_categories)
+
+        # Generate summary bullets
+        bullets, evidence_map = _generate_summary_bullets(
+            diff_status=diff_status,
+            change_categories=change_categories,
+            risk_level=risk_level,
+            diff_result=diff_result if isinstance(diff_result, dict) else {"summary": diff_result.summary.__dict__ if hasattr(diff_result, 'summary') else {}, "differences": []},
+            source_workflow=source_wf or {},
+            target_workflow=target_wf or {},
+        )
+
+        # Get risk explanation
+        risk_explanation = _get_risk_explanation(risk_level, change_categories)
+
+        response = DiffSummaryResponse(
+            bullets=bullets,
+            risk_level=risk_level,
+            risk_explanation=risk_explanation,
+            evidence_map=evidence_map,
+            change_categories=change_categories,
+            is_new_workflow=diff_status == DiffStatus.ADDED,
+            cached=False,
+        )
+
+        # Cache the response
+        if diff_hash:
+            _diff_summary_cache[diff_hash] = response
+
+        return response
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to generate diff summary: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to generate diff summary: {str(e)}"
+        )
 
 
 @router.post("/initiate", response_model=PromotionInitiateResponse)
@@ -1432,15 +1958,21 @@ async def check_drift(
         )
 
 
-@router.post("/compare-workflows")
+@router.post("/compare-workflows", deprecated=True)
 async def compare_workflows(
     request: dict,
     user_info: dict = Depends(get_current_user),
     _: None = Depends(require_entitlement("workflow_ci_cd"))
 ):
     """
+    DEPRECATED: Use GET /promotions/compare instead.
+
     Compare workflows between source and target environments.
     Returns list of workflow selections with change types.
+
+    This endpoint is deprecated and will be removed in a future version.
+    Use GET /promotions/compare?pipeline_id=...&stage_id=... for authoritative
+    diff status with semantic categories and risk levels.
     """
     try:
         tenant_id = get_tenant_id(user_info)

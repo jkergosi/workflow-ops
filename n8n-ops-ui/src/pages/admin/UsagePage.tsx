@@ -98,6 +98,15 @@ export function UsagePage() {
     queryFn: () => apiClient.getTenantsAtLimit(75, providerFilter),
   });
 
+  // Fetch plans from database
+  const { data: plansData } = useQuery({
+    queryKey: ['admin-plans'],
+    queryFn: () => apiClient.getAdminPlans(),
+  });
+
+  const plans = plansData?.data?.plans || [];
+  const sortedPlans = [...plans].sort((a, b) => (a.sortOrder || 0) - (b.sortOrder || 0));
+
   const stats: GlobalUsageStats = usageData?.data?.stats || {
     total_tenants: 0,
     total_workflows: 0,
@@ -197,10 +206,10 @@ export function UsagePage() {
       { metric: 'Tenants Over Limit', value: stats.tenants_over_limit },
       { metric: 'Tenants At Limit', value: stats.tenants_at_limit },
       { metric: 'Tenants Near Limit', value: stats.tenants_near_limit },
-      { metric: 'Free Plan Tenants', value: usageByPlan['free'] || 0 },
-      { metric: 'Pro Plan Tenants', value: usageByPlan['pro'] || 0 },
-      { metric: 'Agency Plan Tenants', value: usageByPlan['agency'] || 0 },
-      { metric: 'Enterprise Plan Tenants', value: usageByPlan['enterprise'] || 0 },
+      ...sortedPlans.map((plan) => ({
+        metric: `${plan.displayName} Plan Tenants`,
+        value: usageByPlan[plan.name] || 0,
+      })),
     ];
 
     const columns = [
@@ -371,8 +380,8 @@ export function UsagePage() {
             </CardHeader>
             <CardContent>
               <div className="grid gap-4 md:grid-cols-4">
-                {['free', 'pro', 'agency', 'enterprise'].map((plan) => {
-                  const count = usageByPlan[plan] || 0;
+                {sortedPlans.map((plan) => {
+                  const count = usageByPlan[plan.name] || 0;
                   const total = stats.total_tenants || 1;
                   const percentage = Math.round((count / total) * 100);
                   const colorClass = {
@@ -380,13 +389,13 @@ export function UsagePage() {
                     pro: 'bg-blue-500',
                     agency: 'bg-purple-500',
                     enterprise: 'bg-amber-500',
-                  }[plan];
+                  }[plan.name] || 'bg-gray-400';
 
                   return (
-                    <div key={plan} className="p-4 border rounded-lg">
+                    <div key={plan.id} className="p-4 border rounded-lg">
                       <div className="flex items-center justify-between mb-2">
-                        <Badge variant={getPlanBadgeVariant(plan)} className="capitalize">
-                          {plan}
+                        <Badge variant={getPlanBadgeVariant(plan.name)} className="capitalize">
+                          {plan.displayName}
                         </Badge>
                         <span className="text-2xl font-bold">{count}</span>
                       </div>

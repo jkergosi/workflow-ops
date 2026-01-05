@@ -307,7 +307,7 @@ function ProviderPlansManagement() {
                         </tr>
                       </thead>
                       <tbody>
-                        {provider.plans?.map((plan: any) => (
+                        {[...(provider.plans || [])].sort((a: any, b: any) => (a.sort_order || 0) - (b.sort_order || 0)).map((plan: any) => (
                           <tr key={plan.id} className="border-t">
                             {editingPlan?.id === plan.id ? (
                               // Editing mode
@@ -423,6 +423,20 @@ function ProviderPlansManagement() {
                                       />
                                       <span className="text-xs text-muted-foreground">wf</span>
                                     </div>
+                                    <div className="flex items-center gap-1">
+                                      <Input
+                                        type="number"
+                                        value={editingPlan.sort_order}
+                                        onChange={(e) =>
+                                          setEditingPlan({
+                                            ...editingPlan,
+                                            sort_order: parseInt(e.target.value) || 0,
+                                          })
+                                        }
+                                        className="w-16"
+                                      />
+                                      <span className="text-xs text-muted-foreground">order</span>
+                                    </div>
                                     <p className="text-xs text-muted-foreground">-1 = unlimited</p>
                                   </div>
                                 </td>
@@ -454,6 +468,7 @@ function ProviderPlansManagement() {
                                             max_workflows: editingPlan.max_workflows,
                                             is_active: editingPlan.is_active,
                                             contact_sales: editingPlan.contact_sales,
+                                            sort_order: editingPlan.sort_order,
                                           },
                                         });
                                       }}
@@ -1032,7 +1047,7 @@ export function PlatformSettingsPage() {
       </div>
 
       <Tabs defaultValue="general" className="space-y-6">
-        <TabsList className="grid w-full grid-cols-7">
+        <TabsList className="grid w-full grid-cols-8">
           <TabsTrigger value="general">General</TabsTrigger>
           <TabsTrigger value="provider">Provider</TabsTrigger>
           <TabsTrigger value="database">Database</TabsTrigger>
@@ -1040,6 +1055,7 @@ export function PlatformSettingsPage() {
           <TabsTrigger value="payments">Payments</TabsTrigger>
           <TabsTrigger value="email">Email</TabsTrigger>
           <TabsTrigger value="environments">Environments</TabsTrigger>
+          <TabsTrigger value="plan-configs">Plan Configs</TabsTrigger>
         </TabsList>
 
         {/* General Tab */}
@@ -1305,7 +1321,7 @@ export function PlatformSettingsPage() {
 
                         {/* Plans Grid */}
                         <div className="grid gap-4 md:grid-cols-3">
-                          {provider.plans?.map((plan) => {
+                          {[...(provider.plans || [])].sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0)).map((plan) => {
                             const isCurrentPlan = existingSub?.plan_id === plan.id && existingSub?.status === 'active';
                             const price = selectedBillingCycle === 'yearly' ? plan.price_yearly : plan.price_monthly;
                             const monthlyEquivalent = selectedBillingCycle === 'yearly' ? plan.price_yearly / 12 : plan.price_monthly;
@@ -1933,7 +1949,811 @@ export function PlatformSettingsPage() {
             </CardContent>
           </Card>
         </TabsContent>
+
+        {/* Plan Configurations Tab */}
+        <TabsContent value="plan-configs" className="space-y-6">
+          <PlanConfigurationsManagement />
+        </TabsContent>
       </Tabs>
+    </div>
+  );
+}
+
+// Plan Configurations Management Component
+function PlanConfigurationsManagement() {
+  const queryClient = useQueryClient();
+  const [editingMetadata, setEditingMetadata] = useState<string | null>(null);
+  const [editingLimits, setEditingLimits] = useState<string | null>(null);
+  const [editingRetention, setEditingRetention] = useState<string | null>(null);
+  const [editingFeatureReq, setEditingFeatureReq] = useState<string | null>(null);
+
+  const { data: configsData, isLoading } = useQuery({
+    queryKey: ['plan-configurations'],
+    queryFn: () => apiClient.getPlanConfigurations(),
+  });
+
+  const configs = configsData?.data || {
+    metadata: [],
+    limits: [],
+    retention_defaults: [],
+    feature_requirements: [],
+  };
+
+  const updateMetadataMutation = useMutation({
+    mutationFn: ({ planName, data }: { planName: string; data: any }) =>
+      apiClient.updatePlanMetadata(planName, data),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['plan-configurations'] });
+      toast.success('Plan metadata updated');
+      setEditingMetadata(null);
+    },
+    onError: (error: any) => {
+      toast.error(error.response?.data?.detail || 'Failed to update plan metadata');
+    },
+  });
+
+  const updateLimitsMutation = useMutation({
+    mutationFn: ({ planName, data }: { planName: string; data: any }) =>
+      apiClient.updatePlanLimits(planName, data),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['plan-configurations'] });
+      toast.success('Plan limits updated');
+      setEditingLimits(null);
+    },
+    onError: (error: any) => {
+      toast.error(error.response?.data?.detail || 'Failed to update plan limits');
+    },
+  });
+
+  const updateRetentionMutation = useMutation({
+    mutationFn: ({ planName, data }: { planName: string; data: any }) =>
+      apiClient.updatePlanRetention(planName, data),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['plan-configurations'] });
+      toast.success('Plan retention defaults updated');
+      setEditingRetention(null);
+    },
+    onError: (error: any) => {
+      toast.error(error.response?.data?.detail || 'Failed to update plan retention defaults');
+    },
+  });
+
+  const updateFeatureReqMutation = useMutation({
+    mutationFn: ({ featureName, data }: { featureName: string; data: any }) =>
+      apiClient.updatePlanFeatureRequirement(featureName, data),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['plan-configurations'] });
+      toast.success('Feature requirement updated');
+      setEditingFeatureReq(null);
+    },
+    onError: (error: any) => {
+      toast.error(error.response?.data?.detail || 'Failed to update feature requirement');
+    },
+  });
+
+  if (isLoading) {
+    return <div className="text-center py-8">Loading plan configurations...</div>;
+  }
+
+  return (
+    <div className="space-y-6">
+      {/* Plan Metadata */}
+      <Card>
+        <CardHeader>
+          <CardTitle>Plan Metadata</CardTitle>
+          <CardDescription>Manage plan icons, colors, precedence, and sort order</CardDescription>
+        </CardHeader>
+        <CardContent>
+          <div className="space-y-4">
+            {configs.metadata.map((meta) => (
+              <div key={meta.name} className="border rounded-lg p-4 space-y-3">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <h4 className="font-medium">{meta.display_name}</h4>
+                    <p className="text-sm text-muted-foreground">Plan: {meta.name}</p>
+                  </div>
+                  {editingMetadata === meta.name ? (
+                    <div className="flex gap-2">
+                      <Button
+                        size="sm"
+                        onClick={() => {
+                          const icon = (document.getElementById(`icon-${meta.name}`) as HTMLInputElement)?.value;
+                          const color = (document.getElementById(`color-${meta.name}`) as HTMLInputElement)?.value;
+                          const precedence = parseInt((document.getElementById(`precedence-${meta.name}`) as HTMLInputElement)?.value || '0');
+                          const sortOrder = parseInt((document.getElementById(`sort-${meta.name}`) as HTMLInputElement)?.value || '0');
+                          updateMetadataMutation.mutate({
+                            planName: meta.name,
+                            data: { icon, color_class: color, precedence, sort_order: sortOrder },
+                          });
+                        }}
+                        disabled={updateMetadataMutation.isPending}
+                      >
+                        {updateMetadataMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Check className="h-4 w-4" />}
+                      </Button>
+                      <Button size="sm" variant="ghost" onClick={() => setEditingMetadata(null)}>
+                        <X className="h-4 w-4" />
+                      </Button>
+                    </div>
+                  ) : (
+                    <Button size="sm" variant="outline" onClick={() => setEditingMetadata(meta.name)}>
+                      <Pencil className="h-4 w-4" />
+                    </Button>
+                  )}
+                </div>
+                {editingMetadata === meta.name ? (
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <Label htmlFor={`icon-${meta.name}`}>Icon</Label>
+                      <Input id={`icon-${meta.name}`} defaultValue={meta.icon || ''} placeholder="zap" />
+                    </div>
+                    <div>
+                      <Label htmlFor={`color-${meta.name}`}>Color Class</Label>
+                      <Input id={`color-${meta.name}`} defaultValue={meta.color_class || ''} placeholder="text-blue-600" />
+                    </div>
+                    <div>
+                      <Label htmlFor={`precedence-${meta.name}`}>Precedence</Label>
+                      <Input id={`precedence-${meta.name}`} type="number" defaultValue={meta.precedence} />
+                    </div>
+                    <div>
+                      <Label htmlFor={`sort-${meta.name}`}>Sort Order</Label>
+                      <Input id={`sort-${meta.name}`} type="number" defaultValue={meta.sort_order} />
+                    </div>
+                  </div>
+                ) : (
+                  <div className="grid grid-cols-4 gap-4 text-sm">
+                    <div>
+                      <span className="text-muted-foreground">Icon:</span> {meta.icon || '-'}
+                    </div>
+                    <div>
+                      <span className="text-muted-foreground">Color:</span> {meta.color_class || '-'}
+                    </div>
+                    <div>
+                      <span className="text-muted-foreground">Precedence:</span> {meta.precedence}
+                    </div>
+                    <div>
+                      <span className="text-muted-foreground">Sort:</span> {meta.sort_order}
+                    </div>
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* Plan Limits */}
+      <Card>
+        <CardHeader>
+          <CardTitle>Plan Limits</CardTitle>
+          <CardDescription>Manage usage limits for each plan</CardDescription>
+        </CardHeader>
+        <CardContent>
+          <div className="space-y-4">
+            {configs.limits.map((limit) => (
+              <div key={limit.plan_name} className="border rounded-lg p-4 space-y-3">
+                <div className="flex items-center justify-between">
+                  <h4 className="font-medium capitalize">{limit.plan_name}</h4>
+                  {editingLimits === limit.plan_name ? (
+                    <div className="flex gap-2">
+                      <Button
+                        size="sm"
+                        onClick={() => {
+                          const max_workflows = parseInt((document.getElementById(`wf-${limit.plan_name}`) as HTMLInputElement)?.value || '0');
+                          const max_environments = parseInt((document.getElementById(`env-${limit.plan_name}`) as HTMLInputElement)?.value || '0');
+                          const max_users = parseInt((document.getElementById(`users-${limit.plan_name}`) as HTMLInputElement)?.value || '0');
+                          const max_executions_daily = parseInt((document.getElementById(`exec-${limit.plan_name}`) as HTMLInputElement)?.value || '0');
+                          updateLimitsMutation.mutate({
+                            planName: limit.plan_name,
+                            data: { max_workflows, max_environments, max_users, max_executions_daily },
+                          });
+                        }}
+                        disabled={updateLimitsMutation.isPending}
+                      >
+                        {updateLimitsMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Check className="h-4 w-4" />}
+                      </Button>
+                      <Button size="sm" variant="ghost" onClick={() => setEditingLimits(null)}>
+                        <X className="h-4 w-4" />
+                      </Button>
+                    </div>
+                  ) : (
+                    <Button size="sm" variant="outline" onClick={() => setEditingLimits(limit.plan_name)}>
+                      <Pencil className="h-4 w-4" />
+                    </Button>
+                  )}
+                </div>
+                {editingLimits === limit.plan_name ? (
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <Label htmlFor={`wf-${limit.plan_name}`}>Max Workflows</Label>
+                      <Input id={`wf-${limit.plan_name}`} type="number" defaultValue={limit.max_workflows} />
+                    </div>
+                    <div>
+                      <Label htmlFor={`env-${limit.plan_name}`}>Max Environments</Label>
+                      <Input id={`env-${limit.plan_name}`} type="number" defaultValue={limit.max_environments} />
+                    </div>
+                    <div>
+                      <Label htmlFor={`users-${limit.plan_name}`}>Max Users</Label>
+                      <Input id={`users-${limit.plan_name}`} type="number" defaultValue={limit.max_users} />
+                    </div>
+                    <div>
+                      <Label htmlFor={`exec-${limit.plan_name}`}>Max Executions Daily</Label>
+                      <Input id={`exec-${limit.plan_name}`} type="number" defaultValue={limit.max_executions_daily} />
+                    </div>
+                  </div>
+                ) : (
+                  <div className="grid grid-cols-4 gap-4 text-sm">
+                    <div>
+                      <span className="text-muted-foreground">Workflows:</span> {limit.max_workflows === -1 ? 'Unlimited' : limit.max_workflows}
+                    </div>
+                    <div>
+                      <span className="text-muted-foreground">Environments:</span> {limit.max_environments === -1 ? 'Unlimited' : limit.max_environments}
+                    </div>
+                    <div>
+                      <span className="text-muted-foreground">Users:</span> {limit.max_users === -1 ? 'Unlimited' : limit.max_users}
+                    </div>
+                    <div>
+                      <span className="text-muted-foreground">Executions/Day:</span> {limit.max_executions_daily === -1 ? 'Unlimited' : limit.max_executions_daily}
+                    </div>
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* Plan Retention Defaults */}
+      <Card>
+        <CardHeader>
+          <CardTitle>Plan Retention Defaults</CardTitle>
+          <CardDescription>Manage data retention periods (in days) for each plan</CardDescription>
+        </CardHeader>
+        <CardContent>
+          <div className="space-y-4">
+            {configs.retention_defaults.map((retention) => (
+              <div key={retention.plan_name} className="border rounded-lg p-4 space-y-3">
+                <div className="flex items-center justify-between">
+                  <h4 className="font-medium capitalize">{retention.plan_name}</h4>
+                  {editingRetention === retention.plan_name ? (
+                    <div className="flex gap-2">
+                      <Button
+                        size="sm"
+                        onClick={() => {
+                          const drift_checks = parseInt((document.getElementById(`drift-${retention.plan_name}`) as HTMLInputElement)?.value || '0');
+                          const closed_incidents = parseInt((document.getElementById(`incidents-${retention.plan_name}`) as HTMLInputElement)?.value || '0');
+                          const reconciliation_artifacts = parseInt((document.getElementById(`artifacts-${retention.plan_name}`) as HTMLInputElement)?.value || '0');
+                          const approvals = parseInt((document.getElementById(`approvals-${retention.plan_name}`) as HTMLInputElement)?.value || '0');
+                          updateRetentionMutation.mutate({
+                            planName: retention.plan_name,
+                            data: { drift_checks, closed_incidents, reconciliation_artifacts, approvals },
+                          });
+                        }}
+                        disabled={updateRetentionMutation.isPending}
+                      >
+                        {updateRetentionMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Check className="h-4 w-4" />}
+                      </Button>
+                      <Button size="sm" variant="ghost" onClick={() => setEditingRetention(null)}>
+                        <X className="h-4 w-4" />
+                      </Button>
+                    </div>
+                  ) : (
+                    <Button size="sm" variant="outline" onClick={() => setEditingRetention(retention.plan_name)}>
+                      <Pencil className="h-4 w-4" />
+                    </Button>
+                  )}
+                </div>
+                {editingRetention === retention.plan_name ? (
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <Label htmlFor={`drift-${retention.plan_name}`}>Drift Checks (days)</Label>
+                      <Input id={`drift-${retention.plan_name}`} type="number" defaultValue={retention.drift_checks} />
+                    </div>
+                    <div>
+                      <Label htmlFor={`incidents-${retention.plan_name}`}>Closed Incidents (days)</Label>
+                      <Input id={`incidents-${retention.plan_name}`} type="number" defaultValue={retention.closed_incidents} />
+                    </div>
+                    <div>
+                      <Label htmlFor={`artifacts-${retention.plan_name}`}>Reconciliation Artifacts (days)</Label>
+                      <Input id={`artifacts-${retention.plan_name}`} type="number" defaultValue={retention.reconciliation_artifacts} />
+                    </div>
+                    <div>
+                      <Label htmlFor={`approvals-${retention.plan_name}`}>Approvals (days)</Label>
+                      <Input id={`approvals-${retention.plan_name}`} type="number" defaultValue={retention.approvals} />
+                    </div>
+                  </div>
+                ) : (
+                  <div className="grid grid-cols-4 gap-4 text-sm">
+                    <div>
+                      <span className="text-muted-foreground">Drift Checks:</span> {retention.drift_checks === 0 ? 'Never' : `${retention.drift_checks} days`}
+                    </div>
+                    <div>
+                      <span className="text-muted-foreground">Closed Incidents:</span> {retention.closed_incidents === 0 ? 'Never' : `${retention.closed_incidents} days`}
+                    </div>
+                    <div>
+                      <span className="text-muted-foreground">Artifacts:</span> {retention.reconciliation_artifacts === 0 ? 'Never' : `${retention.reconciliation_artifacts} days`}
+                    </div>
+                    <div>
+                      <span className="text-muted-foreground">Approvals:</span> {retention.approvals === 0 ? 'Never' : `${retention.approvals} days`}
+                    </div>
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* Feature Requirements */}
+      <Card>
+        <CardHeader>
+          <CardTitle>Feature Requirements</CardTitle>
+          <CardDescription>Manage minimum plan required for each feature</CardDescription>
+        </CardHeader>
+        <CardContent>
+          <div className="space-y-2 max-h-96 overflow-y-auto">
+            {configs.feature_requirements.map((req) => (
+              <div key={req.feature_name} className="border rounded-lg p-3 flex items-center justify-between">
+                <div className="flex-1">
+                  <code className="text-sm font-mono">{req.feature_name}</code>
+                </div>
+                {editingFeatureReq === req.feature_name ? (
+                  <div className="flex items-center gap-2">
+                    <select
+                      id={`plan-${req.feature_name}`}
+                      className="px-2 py-1 border rounded text-sm"
+                      defaultValue={req.required_plan || ''}
+                    >
+                      <option value="">None</option>
+                      <option value="free">Free</option>
+                      <option value="pro">Pro</option>
+                      <option value="agency">Agency</option>
+                      <option value="enterprise">Enterprise</option>
+                    </select>
+                    <Button
+                      size="sm"
+                      onClick={() => {
+                        const select = document.getElementById(`plan-${req.feature_name}`) as HTMLSelectElement;
+                        updateFeatureReqMutation.mutate({
+                          featureName: req.feature_name,
+                          data: { required_plan: select.value || null },
+                        });
+                      }}
+                      disabled={updateFeatureReqMutation.isPending}
+                    >
+                      {updateFeatureReqMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Check className="h-4 w-4" />}
+                    </Button>
+                    <Button size="sm" variant="ghost" onClick={() => setEditingFeatureReq(null)}>
+                      <X className="h-4 w-4" />
+                    </Button>
+                  </div>
+                ) : (
+                  <div className="flex items-center gap-2">
+                    <Badge variant="outline">{req.required_plan || 'None'}</Badge>
+                    <Button size="sm" variant="outline" onClick={() => setEditingFeatureReq(req.feature_name)}>
+                      <Pencil className="h-4 w-4" />
+                    </Button>
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* Plan Features */}
+      <PlanFeaturesManagement />
+
+      {/* Workflow Policy Matrix */}
+      <WorkflowPolicyMatrixManagement />
+    </div>
+  );
+}
+
+// Plan Features Management Component
+function PlanFeaturesManagement() {
+  const queryClient = useQueryClient();
+  const [selectedPlan, setSelectedPlan] = useState<string | null>(null);
+  const [editingFeature, setEditingFeature] = useState<{ planId: string; featureKey: string } | null>(null);
+
+  const { data: plansData } = useQuery({
+    queryKey: ['admin-plans'],
+    queryFn: () => apiClient.getAdminPlans(),
+  });
+
+  const { data: featuresData } = useQuery({
+    queryKey: ['admin-features'],
+    queryFn: () => apiClient.getAdminFeatures(),
+  });
+
+  const plans = plansData?.data?.plans || [];
+  const features = featuresData?.data?.features || [];
+
+  const { data: planFeaturesData } = useQuery({
+    queryKey: ['plan-features', selectedPlan],
+    queryFn: () => {
+      if (!selectedPlan) return Promise.resolve({ data: [] });
+      const plan = plans.find((p: any) => p.id === selectedPlan);
+      if (!plan) return Promise.resolve({ data: [] });
+      return apiClient.getPlanFeatures(selectedPlan);
+    },
+    enabled: !!selectedPlan,
+  });
+
+  const planFeatures = planFeaturesData?.data || [];
+
+  const updateFeatureMutation = useMutation({
+    mutationFn: ({ planId, featureKey, value, reason }: { planId: string; featureKey: string; value: any; reason?: string }) =>
+      apiClient.updatePlanFeatureValue(planId, featureKey, value, reason),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['plan-features', selectedPlan] });
+      queryClient.invalidateQueries({ queryKey: ['plan-features/all'] });
+      toast.success('Plan feature updated');
+      setEditingFeature(null);
+    },
+    onError: (error: any) => {
+      toast.error(error.response?.data?.detail || 'Failed to update plan feature');
+    },
+  });
+
+  if (!selectedPlan) {
+    return (
+      <Card>
+        <CardHeader>
+          <CardTitle>Plan Features</CardTitle>
+          <CardDescription>Manage feature values for each plan</CardDescription>
+        </CardHeader>
+        <CardContent>
+          <div className="space-y-2">
+            <Label>Select a plan to manage features:</Label>
+            <div className="grid grid-cols-2 gap-2">
+              {plans.map((plan: any) => (
+                <Button
+                  key={plan.id}
+                  variant="outline"
+                  onClick={() => setSelectedPlan(plan.id)}
+                >
+                  {plan.displayName}
+                </Button>
+              ))}
+            </div>
+          </div>
+        </CardContent>
+      </Card>
+    );
+  }
+
+  const selectedPlanObj = plans.find((p: any) => p.id === selectedPlan);
+
+  return (
+    <Card>
+      <CardHeader>
+        <div className="flex items-center justify-between">
+          <div>
+            <CardTitle>Plan Features: {selectedPlanObj?.displayName}</CardTitle>
+            <CardDescription>Manage feature values for {selectedPlanObj?.displayName} plan</CardDescription>
+          </div>
+          <Button variant="outline" onClick={() => setSelectedPlan(null)}>
+            Back to Plans
+          </Button>
+        </div>
+      </CardHeader>
+      <CardContent>
+        <div className="space-y-4 max-h-96 overflow-y-auto">
+          {features.map((feature: any) => {
+            const planFeature = planFeatures.find((pf: any) => pf.featureKey === feature.name);
+            const currentValue = planFeature?.value || feature.defaultValue;
+            const isEditing = editingFeature?.planId === selectedPlan && editingFeature?.featureKey === feature.name;
+            const isFlag = feature.type === 'flag';
+            const isLimit = feature.type === 'limit';
+
+            return (
+              <div key={feature.id} className="border rounded-lg p-4 space-y-3">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <h4 className="font-medium">{feature.displayName || feature.name}</h4>
+                    <p className="text-sm text-muted-foreground">{feature.description || feature.name}</p>
+                    <Badge variant="outline" className="mt-1">{feature.type}</Badge>
+                  </div>
+                  {isEditing ? (
+                    <div className="flex gap-2">
+                      <Button
+                        size="sm"
+                        onClick={() => {
+                          let value: any;
+                          if (isFlag) {
+                            const checkbox = document.getElementById(`feature-${feature.name}`) as HTMLInputElement;
+                            value = { enabled: checkbox.checked };
+                          } else if (isLimit) {
+                            const input = document.getElementById(`feature-${feature.name}`) as HTMLInputElement;
+                            value = { value: parseInt(input.value) || 0 };
+                          }
+                          updateFeatureMutation.mutate({
+                            planId: selectedPlan,
+                            featureKey: feature.name,
+                            value,
+                          });
+                        }}
+                        disabled={updateFeatureMutation.isPending}
+                      >
+                        {updateFeatureMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Check className="h-4 w-4" />}
+                      </Button>
+                      <Button size="sm" variant="ghost" onClick={() => setEditingFeature(null)}>
+                        <X className="h-4 w-4" />
+                      </Button>
+                    </div>
+                  ) : (
+                    <Button size="sm" variant="outline" onClick={() => setEditingFeature({ planId: selectedPlan, featureKey: feature.name })}>
+                      <Pencil className="h-4 w-4" />
+                    </Button>
+                  )}
+                </div>
+                {isEditing ? (
+                  <div>
+                    {isFlag ? (
+                      <div className="flex items-center gap-2">
+                        <input
+                          type="checkbox"
+                          id={`feature-${feature.name}`}
+                          defaultChecked={currentValue?.enabled ?? false}
+                          className="h-4 w-4"
+                        />
+                        <Label htmlFor={`feature-${feature.name}`}>Enabled</Label>
+                      </div>
+                    ) : isLimit ? (
+                      <div>
+                        <Label htmlFor={`feature-${feature.name}`}>Value</Label>
+                        <Input
+                          id={`feature-${feature.name}`}
+                          type="number"
+                          defaultValue={currentValue?.value ?? 0}
+                        />
+                      </div>
+                    ) : null}
+                  </div>
+                ) : (
+                  <div className="text-sm">
+                    {isFlag ? (
+                      <span className={currentValue?.enabled ? 'text-green-600' : 'text-gray-400'}>
+                        {currentValue?.enabled ? 'Enabled' : 'Disabled'}
+                      </span>
+                    ) : isLimit ? (
+                      <span>{currentValue?.value ?? 0}</span>
+                    ) : (
+                      <span className="text-muted-foreground">Complex value</span>
+                    )}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
+// Workflow Policy Matrix Management Component
+function WorkflowPolicyMatrixManagement() {
+  const queryClient = useQueryClient();
+  const [editingPolicy, setEditingPolicy] = useState<string | null>(null);
+  const [editingOverride, setEditingOverride] = useState<{ plan: string; env: string } | null>(null);
+
+  const { data: matrixData } = useQuery({
+    queryKey: ['workflow-policy-matrix'],
+    queryFn: () => apiClient.getWorkflowPolicyMatrix(),
+  });
+
+  const { data: overridesData } = useQuery({
+    queryKey: ['plan-policy-overrides'],
+    queryFn: () => apiClient.getPlanPolicyOverrides(),
+  });
+
+  const matrix = matrixData?.data || [];
+  const overrides = overridesData?.data || [];
+
+  const updateMatrixMutation = useMutation({
+    mutationFn: ({ envClass, data }: { envClass: string; data: any }) =>
+      apiClient.updateWorkflowPolicyMatrix(envClass, data),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['workflow-policy-matrix'] });
+      toast.success('Policy matrix updated');
+      setEditingPolicy(null);
+    },
+    onError: (error: any) => {
+      toast.error(error.response?.data?.detail || 'Failed to update policy matrix');
+    },
+  });
+
+  const updateOverrideMutation = useMutation({
+    mutationFn: ({ plan, env, data }: { plan: string; env: string; data: any }) =>
+      apiClient.updatePlanPolicyOverride(plan, env, data),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['plan-policy-overrides'] });
+      toast.success('Policy override updated');
+      setEditingOverride(null);
+    },
+    onError: (error: any) => {
+      toast.error(error.response?.data?.detail || 'Failed to update policy override');
+    },
+  });
+
+  return (
+    <div className="space-y-6">
+      {/* Policy Matrix */}
+      <Card>
+        <CardHeader>
+          <CardTitle>Workflow Policy Matrix</CardTitle>
+          <CardDescription>Base policy rules for each environment class</CardDescription>
+        </CardHeader>
+        <CardContent>
+          <div className="space-y-4">
+            {matrix.map((policy: any) => {
+              const envClass = policy.environment_class;
+              const isEditing = editingPolicy === envClass;
+              return (
+                <div key={envClass} className="border rounded-lg p-4 space-y-3">
+                  <div className="flex items-center justify-between">
+                    <h4 className="font-medium capitalize">{envClass}</h4>
+                    {isEditing ? (
+                      <div className="flex gap-2">
+                        <Button
+                          size="sm"
+                          onClick={() => {
+                            const data: any = {};
+                            const fields = [
+                              'can_view_details', 'can_open_in_n8n', 'can_create_deployment',
+                              'can_edit_directly', 'can_soft_delete', 'can_hard_delete',
+                              'can_create_drift_incident', 'drift_incident_required',
+                              'edit_requires_confirmation', 'edit_requires_admin'
+                            ];
+                            fields.forEach(field => {
+                              const checkbox = document.getElementById(`${field}-${envClass}`) as HTMLInputElement;
+                              if (checkbox) data[field] = checkbox.checked;
+                            });
+                            updateMatrixMutation.mutate({ envClass, data });
+                          }}
+                          disabled={updateMatrixMutation.isPending}
+                        >
+                          {updateMatrixMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Check className="h-4 w-4" />}
+                        </Button>
+                        <Button size="sm" variant="ghost" onClick={() => setEditingPolicy(null)}>
+                          <X className="h-4 w-4" />
+                        </Button>
+                      </div>
+                    ) : (
+                      <Button size="sm" variant="outline" onClick={() => setEditingPolicy(envClass)}>
+                        <Pencil className="h-4 w-4" />
+                      </Button>
+                    )}
+                  </div>
+                  {isEditing ? (
+                    <div className="grid grid-cols-2 gap-3">
+                      {['can_view_details', 'can_open_in_n8n', 'can_create_deployment', 'can_edit_directly', 'can_soft_delete', 'can_hard_delete', 'can_create_drift_incident', 'drift_incident_required', 'edit_requires_confirmation', 'edit_requires_admin'].map(field => (
+                        <div key={field} className="flex items-center gap-2">
+                          <input
+                            type="checkbox"
+                            id={`${field}-${envClass}`}
+                            defaultChecked={policy[field] ?? false}
+                            className="h-4 w-4"
+                          />
+                          <Label htmlFor={`${field}-${envClass}`} className="text-sm">
+                            {field.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase())}
+                          </Label>
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <div className="grid grid-cols-2 gap-2 text-sm">
+                      {Object.entries(policy).filter(([k]) => k.startsWith('can_') || k.startsWith('drift_') || k.startsWith('edit_')).map(([key, value]) => (
+                        <div key={key}>
+                          <span className="text-muted-foreground">{key.replace(/_/g, ' ')}:</span>{' '}
+                          <span className={value ? 'text-green-600' : 'text-gray-400'}>{value ? 'Yes' : 'No'}</span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* Plan Policy Overrides */}
+      <Card>
+        <CardHeader>
+          <CardTitle>Plan Policy Overrides</CardTitle>
+          <CardDescription>Override base policies for specific plan/environment combinations</CardDescription>
+        </CardHeader>
+        <CardContent>
+          <div className="space-y-4">
+            {overrides.map((override: any) => {
+              const key = `${override.plan_name}:${override.environment_class}`;
+              const isEditing = editingOverride?.plan === override.plan_name && editingOverride?.env === override.environment_class;
+              return (
+                <div key={key} className="border rounded-lg p-4 space-y-3">
+                  <div className="flex items-center justify-between">
+                    <h4 className="font-medium">
+                      {override.plan_name} / {override.environment_class}
+                    </h4>
+                    {isEditing ? (
+                      <div className="flex gap-2">
+                        <Button
+                          size="sm"
+                          onClick={() => {
+                            const data: any = {};
+                            const fields = [
+                              'can_edit_directly', 'can_soft_delete', 'can_hard_delete',
+                              'can_create_drift_incident', 'drift_incident_required',
+                              'edit_requires_confirmation', 'edit_requires_admin'
+                            ];
+                            fields.forEach(field => {
+                              const checkbox = document.getElementById(`override-${field}-${key}`) as HTMLInputElement;
+                              if (checkbox) {
+                                const checked = checkbox.checked;
+                                // Only include if different from default or explicitly set
+                                if (checked !== (override[field] ?? false)) {
+                                  data[field] = checked;
+                                }
+                              }
+                            });
+                            updateOverrideMutation.mutate({
+                              plan: override.plan_name,
+                              env: override.environment_class,
+                              data,
+                            });
+                          }}
+                          disabled={updateOverrideMutation.isPending}
+                        >
+                          {updateOverrideMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Check className="h-4 w-4" />}
+                        </Button>
+                        <Button size="sm" variant="ghost" onClick={() => setEditingOverride(null)}>
+                          <X className="h-4 w-4" />
+                        </Button>
+                      </div>
+                    ) : (
+                      <Button size="sm" variant="outline" onClick={() => setEditingOverride({ plan: override.plan_name, env: override.environment_class })}>
+                        <Pencil className="h-4 w-4" />
+                      </Button>
+                    )}
+                  </div>
+                  {isEditing ? (
+                    <div className="grid grid-cols-2 gap-3">
+                      {['can_edit_directly', 'can_soft_delete', 'can_hard_delete', 'can_create_drift_incident', 'drift_incident_required', 'edit_requires_confirmation', 'edit_requires_admin'].map(field => (
+                        <div key={field} className="flex items-center gap-2">
+                          <input
+                            type="checkbox"
+                            id={`override-${field}-${key}`}
+                            defaultChecked={override[field] ?? false}
+                            className="h-4 w-4"
+                          />
+                          <Label htmlFor={`override-${field}-${key}`} className="text-sm">
+                            {field.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase())}
+                          </Label>
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <div className="grid grid-cols-2 gap-2 text-sm">
+                      {Object.entries(override).filter(([k, v]) => (k.startsWith('can_') || k.startsWith('drift_') || k.startsWith('edit_')) && v !== null).map(([key, value]) => (
+                        <div key={key}>
+                          <span className="text-muted-foreground">{key.replace(/_/g, ' ')}:</span>{' '}
+                          <span className={value ? 'text-green-600' : 'text-gray-400'}>{value ? 'Yes' : 'No'}</span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+            {overrides.length === 0 && (
+              <div className="text-center py-8 text-muted-foreground">
+                No plan policy overrides. Create one by editing a plan's policy.
+              </div>
+            )}
+          </div>
+        </CardContent>
+      </Card>
     </div>
   );
 }

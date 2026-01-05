@@ -1296,6 +1296,83 @@ class ApiClient {
   }
 
   // Deployment endpoints (formerly promotions)
+
+  /**
+   * Compare source and target environments for a pipeline stage.
+   * Returns authoritative diff status for each workflow.
+   * This is the canonical comparison endpoint - frontend MUST use this
+   * instead of computing diff status locally.
+   */
+  async compareEnvironments(
+    pipelineId: string,
+    stageId: string
+  ): Promise<{
+    data: {
+      pipelineId: string;
+      stageId: string;
+      sourceEnvId: string;
+      targetEnvId: string;
+      summary: {
+        total: number;
+        added: number;
+        modified: number;
+        deleted: number;
+        unchanged: number;
+        targetHotfix: number;
+      };
+      workflows: Array<{
+        workflowId: string;
+        name: string;
+        diffStatus: 'added' | 'modified' | 'deleted' | 'unchanged' | 'target_hotfix';
+        riskLevel: 'low' | 'medium' | 'high';
+        changeCategories: string[];
+        diffHash?: string;
+        detailsAvailable: boolean;
+        sourceUpdatedAt?: string;
+        targetUpdatedAt?: string;
+        enabledInSource: boolean;
+        enabledInTarget?: boolean;
+      }>;
+    };
+  }> {
+    const params = new URLSearchParams({
+      pipeline_id: pipelineId,
+      stage_id: stageId,
+    });
+    const response = await this.client.get(`/promotions/compare?${params.toString()}`);
+    // Transform snake_case to camelCase for frontend
+    const data = response.data;
+    return {
+      data: {
+        pipelineId: data.pipeline_id,
+        stageId: data.stage_id,
+        sourceEnvId: data.source_env_id,
+        targetEnvId: data.target_env_id,
+        summary: {
+          total: data.summary.total,
+          added: data.summary.added,
+          modified: data.summary.modified,
+          deleted: data.summary.deleted,
+          unchanged: data.summary.unchanged,
+          targetHotfix: data.summary.target_hotfix,
+        },
+        workflows: data.workflows.map((w: any) => ({
+          workflowId: w.workflow_id,
+          name: w.name,
+          diffStatus: w.diff_status,
+          riskLevel: w.risk_level,
+          changeCategories: w.change_categories,
+          diffHash: w.diff_hash,
+          detailsAvailable: w.details_available,
+          sourceUpdatedAt: w.source_updated_at,
+          targetUpdatedAt: w.target_updated_at,
+          enabledInSource: w.enabled_in_source,
+          enabledInTarget: w.enabled_in_target,
+        })),
+      },
+    };
+  }
+
   async initiateDeployment(request: PromotionInitiateRequest): Promise<{ data: any }> {
     // Transform camelCase to snake_case for backend
     const payload = {
@@ -1385,6 +1462,48 @@ class ApiClient {
           connectionsChanged: data.summary?.connections_changed || false,
           settingsChanged: data.summary?.settings_changed || false,
         },
+      },
+    };
+  }
+
+  /**
+   * Generate AI summary from structured diff facts.
+   * Returns human-readable summary bullets with evidence links.
+   * Cached by diff_hash for performance.
+   */
+  async getDiffSummary(
+    workflowId: string,
+    sourceEnvId: string,
+    targetEnvId: string
+  ): Promise<{
+    data: {
+      bullets: string[];
+      riskLevel: 'low' | 'medium' | 'high';
+      riskExplanation: string;
+      evidenceMap: Record<string, string[]>;
+      changeCategories: string[];
+      isNewWorkflow: boolean;
+      cached: boolean;
+    };
+  }> {
+    const params = new URLSearchParams({
+      workflow_id: workflowId,
+      source_env_id: sourceEnvId,
+      target_env_id: targetEnvId,
+    });
+    const response = await this.client.post<any>(`/promotions/diff-summary?${params.toString()}`);
+
+    // Transform snake_case to camelCase
+    const data = response.data;
+    return {
+      data: {
+        bullets: data.bullets || [],
+        riskLevel: data.risk_level || 'low',
+        riskExplanation: data.risk_explanation || '',
+        evidenceMap: data.evidence_map || {},
+        changeCategories: data.change_categories || [],
+        isNewWorkflow: data.is_new_workflow || false,
+        cached: data.cached || false,
       },
     };
   }
@@ -2451,6 +2570,126 @@ class ApiClient {
 
   async getSubscriptionPlans(): Promise<{ data: SubscriptionPlan[] }> {
     const response = await this.client.get<SubscriptionPlan[]>('/billing/plans');
+    return { data: response.data };
+  }
+
+  async getPlanConfigurations(): Promise<{
+    data: {
+      metadata: Array<{
+        name: string;
+        display_name: string;
+        icon?: string;
+        color_class?: string;
+        precedence: number;
+        sort_order: number;
+      }>;
+      limits: Array<{
+        plan_name: string;
+        max_workflows: number;
+        max_environments: number;
+        max_users: number;
+        max_executions_daily: number;
+      }>;
+      retention_defaults: Array<{
+        plan_name: string;
+        drift_checks: number;
+        closed_incidents: number;
+        reconciliation_artifacts: number;
+        approvals: number;
+      }>;
+      feature_requirements: Array<{
+        feature_name: string;
+        required_plan: string | null;
+      }>;
+    };
+  }> {
+    const response = await this.client.get('/billing/plan-configurations');
+    return { data: response.data };
+  }
+
+  async updatePlanMetadata(planName: string, data: {
+    icon?: string;
+    color_class?: string;
+    precedence?: number;
+    sort_order?: number;
+  }): Promise<{ data: any }> {
+    const response = await this.client.patch(`/admin/entitlements/plan-configurations/metadata/${planName}`, data);
+    return { data: response.data };
+  }
+
+  async updatePlanLimits(planName: string, data: {
+    max_workflows?: number;
+    max_environments?: number;
+    max_users?: number;
+    max_executions_daily?: number;
+  }): Promise<{ data: any }> {
+    const response = await this.client.patch(`/admin/entitlements/plan-configurations/limits/${planName}`, data);
+    return { data: response.data };
+  }
+
+  async updatePlanRetention(planName: string, data: {
+    drift_checks?: number;
+    closed_incidents?: number;
+    reconciliation_artifacts?: number;
+    approvals?: number;
+  }): Promise<{ data: any }> {
+    const response = await this.client.patch(`/admin/entitlements/plan-configurations/retention/${planName}`, data);
+    return { data: response.data };
+  }
+
+  async updatePlanFeatureRequirement(featureName: string, data: {
+    required_plan?: string | null;
+  }): Promise<{ data: any }> {
+    const response = await this.client.patch(`/admin/entitlements/plan-configurations/feature-requirements/${featureName}`, data);
+    return { data: response.data };
+  }
+
+  async getAllPlanFeatures(): Promise<{ data: Record<string, Record<string, any>> }> {
+    const response = await this.client.get('/billing/plan-features/all');
+    return { data: response.data };
+  }
+
+  async getFeatureDisplayNames(): Promise<{ data: Record<string, string> }> {
+    const response = await this.client.get('/billing/feature-display-names');
+    return { data: response.data };
+  }
+
+  async getWorkflowPolicyMatrix(): Promise<{ data: Array<any> }> {
+    const response = await this.client.get('/admin/entitlements/workflow-policy-matrix');
+    return { data: response.data };
+  }
+
+  async updateWorkflowPolicyMatrix(environmentClass: string, data: {
+    can_view_details?: boolean;
+    can_open_in_n8n?: boolean;
+    can_create_deployment?: boolean;
+    can_edit_directly?: boolean;
+    can_soft_delete?: boolean;
+    can_hard_delete?: boolean;
+    can_create_drift_incident?: boolean;
+    drift_incident_required?: boolean;
+    edit_requires_confirmation?: boolean;
+    edit_requires_admin?: boolean;
+  }): Promise<{ data: any }> {
+    const response = await this.client.patch(`/admin/entitlements/workflow-policy-matrix/${environmentClass}`, data);
+    return { data: response.data };
+  }
+
+  async getPlanPolicyOverrides(): Promise<{ data: Array<any> }> {
+    const response = await this.client.get('/admin/entitlements/plan-policy-overrides');
+    return { data: response.data };
+  }
+
+  async updatePlanPolicyOverride(planName: string, environmentClass: string, data: {
+    can_edit_directly?: boolean;
+    can_soft_delete?: boolean;
+    can_hard_delete?: boolean;
+    can_create_drift_incident?: boolean;
+    drift_incident_required?: boolean;
+    edit_requires_confirmation?: boolean;
+    edit_requires_admin?: boolean;
+  }): Promise<{ data: any }> {
+    const response = await this.client.patch(`/admin/entitlements/plan-policy-overrides/${planName}/${environmentClass}`, data);
     return { data: response.data };
   }
 

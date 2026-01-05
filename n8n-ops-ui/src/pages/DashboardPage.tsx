@@ -335,7 +335,7 @@ export function DashboardPage() {
                   const secondary = [
                     { 
                       label: hasSnapshots ? 'Promote Workflows' : 'View Snapshots', 
-                      href: hasSnapshots ? '/deployments/new' : '/snapshots', 
+                      href: hasSnapshots ? '/promote' : '/snapshots', 
                       icon: hasSnapshots ? GitBranch : Camera 
                     },
                     { label: 'Restore from Snapshot', href: '/snapshots', icon: RotateCcw },
@@ -394,7 +394,7 @@ export function DashboardPage() {
 
                   const primary = {
                     label: !hasPipelines ? 'Configure Pipeline' : 'Run Promotion',
-                    href: !hasPipelines ? '/deployments?tab=pipelines' : '/deployments/new',
+                    href: !hasPipelines ? '/deployments?tab=pipelines' : '/promote',
                     icon: !hasPipelines ? Settings : ArrowRight,
                   };
                   const secondary = [

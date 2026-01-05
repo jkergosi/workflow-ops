@@ -66,48 +66,32 @@ PLAN_ENVIRONMENT_LIMITS = {
     "enterprise": 9999,  # Unlimited
 }
 
-# Minimum plan required for each feature (for upgrade messages)
-FEATURE_REQUIRED_PLANS = {
-    # Phase 1 features
-    "snapshots_enabled": "free",
-    "workflow_ci_cd": "pro",
-    "workflow_limits": "free",
-    # Environment features
-    "environment_basic": "free",
-    "environment_health": "pro",
-    "environment_diff": "pro",
-    "environment_limits": "free",
-    # Workflow features
-    "workflow_read": "free",
-    "workflow_push": "free",
-    "workflow_dirty_check": "pro",
-    "workflow_ci_cd_approval": "agency",
-    # Snapshot features
-    "snapshots_auto": "pro",
-    "snapshots_history": "free",
-    "snapshots_export": "pro",
-    # Observability features
-    "observability_basic": "free",
-    "observability_alerts": "pro",
-    "observability_alerts_advanced": "enterprise",
-    "observability_logs": "pro",
-    "observability_limits": "free",
-    # Security/RBAC features
-    "rbac_basic": "free",
-    "rbac_advanced": "agency",
-    "audit_logs": "pro",
-    "audit_export": "agency",
-    # Agency features
-    "agency_enabled": "agency",
-    "agency_client_management": "agency",
-    "agency_whitelabel": "agency",
-    "agency_client_limits": "agency",
-    # Enterprise features
-    "sso_saml": "enterprise",
-    "support_priority": "pro",
-    "data_residency": "enterprise",
-    "enterprise_limits": "enterprise",
-}
+# Cache for feature requirements
+_feature_requirements_cache: Dict[str, Optional[str]] = {}
+
+
+async def _get_feature_required_plan(feature_name: str) -> Optional[str]:
+    """Get required plan for a feature from database."""
+    # Check cache first
+    if feature_name in _feature_requirements_cache:
+        return _feature_requirements_cache[feature_name]
+    
+    # Fetch from database
+    try:
+        response = db_service.client.table("plan_feature_requirements").select(
+            "required_plan"
+        ).eq("feature_name", feature_name).single().execute()
+        
+        if response.data:
+            required_plan = response.data.get("required_plan")
+            _feature_requirements_cache[feature_name] = required_plan
+            return required_plan
+    except Exception:
+        pass
+    
+    # Not found in database, return None
+    _feature_requirements_cache[feature_name] = None
+    return None
 
 
 class EntitlementsService:
@@ -236,8 +220,8 @@ class EntitlementsService:
         if allowed:
             return True, ""
 
-        # Get required plan for this feature
-        required_plan = FEATURE_REQUIRED_PLANS.get(feature_name, "pro")
+        # Get required plan for this feature from database
+        required_plan = await _get_feature_required_plan(feature_name) or "pro"
         display_name = FEATURE_DISPLAY_NAMES.get(feature_name, feature_name)
         return False, f"{display_name} requires a {required_plan.title()} plan or higher. Please upgrade to access this feature."
 
@@ -284,7 +268,7 @@ class EntitlementsService:
                     endpoint=endpoint,
                 )
 
-            required_plan = FEATURE_REQUIRED_PLANS.get(feature_name, "pro")
+            required_plan = await _get_feature_required_plan(feature_name) or "pro"
             display_name = FEATURE_DISPLAY_NAMES.get(feature_name, feature_name)
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,

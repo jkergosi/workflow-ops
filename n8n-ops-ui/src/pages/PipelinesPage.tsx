@@ -150,7 +150,7 @@ export function PipelinesPage() {
                 <Link to="/billing">
                   <Button>Upgrade to Agency</Button>
                 </Link>
-                <Link to="/deployments/new">
+                <Link to="/promote">
                   <Button variant="outline">Promote manually</Button>
                 </Link>
               </div>

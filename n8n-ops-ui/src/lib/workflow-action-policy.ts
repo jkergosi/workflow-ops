@@ -36,45 +36,93 @@ export function inferEnvironmentClass(legacyType?: string): EnvironmentClass {
   return 'dev';
 }
 
-// Default action policy matrix
-const DEFAULT_POLICY_MATRIX: Record<EnvironmentClass, WorkflowActionPolicy> = {
+// Policy matrix cache - loaded from API
+let POLICY_MATRIX_CACHE: Record<EnvironmentClass, WorkflowActionPolicy> = {
   dev: {
     canViewDetails: true,
     canOpenInN8N: true,
     canCreateDeployment: true,
     canEditDirectly: true,
-    canSoftDelete: true,          // Default delete = soft (archive)
-    canHardDelete: false,         // Hard delete requires explicit admin action
-    canCreateDriftIncident: true, // Plan-gated below
-    driftIncidentRequired: false, // Plan-gated below
-    editRequiresConfirmation: true, // Warn about drift
+    canSoftDelete: true,
+    canHardDelete: false,
+    canCreateDriftIncident: true,
+    driftIncidentRequired: false,
+    editRequiresConfirmation: true,
     editRequiresAdmin: false,
   },
   staging: {
     canViewDetails: true,
     canOpenInN8N: true,
     canCreateDeployment: true,
-    canEditDirectly: true,        // Admin-gated below
-    canSoftDelete: false,         // Route to deployment
-    canHardDelete: false,         // Never in staging
+    canEditDirectly: true,
+    canSoftDelete: false,
+    canHardDelete: false,
     canCreateDriftIncident: true,
-    driftIncidentRequired: false, // Plan-gated below
+    driftIncidentRequired: false,
     editRequiresConfirmation: true,
-    editRequiresAdmin: true,      // Admin only
+    editRequiresAdmin: true,
   },
   production: {
     canViewDetails: true,
     canOpenInN8N: true,
     canCreateDeployment: true,
-    canEditDirectly: false,       // Never in production
-    canSoftDelete: false,         // Never in production
-    canHardDelete: false,         // Never in production
+    canEditDirectly: false,
+    canSoftDelete: false,
+    canHardDelete: false,
     canCreateDriftIncident: true,
-    driftIncidentRequired: true,  // Always required in production
-    editRequiresConfirmation: false, // N/A
-    editRequiresAdmin: false,     // N/A
+    driftIncidentRequired: true,
+    editRequiresConfirmation: false,
+    editRequiresAdmin: false,
   },
 };
+
+// Plan policy overrides cache
+let PLAN_POLICY_OVERRIDES_CACHE: Record<string, Partial<WorkflowActionPolicy>> = {};
+
+// Load policy matrix from API
+export async function loadWorkflowPolicyMatrix() {
+  try {
+    const { apiClient } = await import('./api-client');
+    const matrixResponse = await apiClient.getWorkflowPolicyMatrix();
+    const overridesResponse = await apiClient.getPlanPolicyOverrides();
+    
+    // Update matrix cache
+    for (const row of matrixResponse.data || []) {
+      const envClass = row.environment_class as EnvironmentClass;
+      if (envClass) {
+        POLICY_MATRIX_CACHE[envClass] = {
+          canViewDetails: row.can_view_details ?? true,
+          canOpenInN8N: row.can_open_in_n8n ?? true,
+          canCreateDeployment: row.can_create_deployment ?? true,
+          canEditDirectly: row.can_edit_directly ?? false,
+          canSoftDelete: row.can_soft_delete ?? false,
+          canHardDelete: row.can_hard_delete ?? false,
+          canCreateDriftIncident: row.can_create_drift_incident ?? false,
+          driftIncidentRequired: row.drift_incident_required ?? false,
+          editRequiresConfirmation: row.edit_requires_confirmation ?? true,
+          editRequiresAdmin: row.edit_requires_admin ?? false,
+        };
+      }
+    }
+    
+    // Update overrides cache
+    PLAN_POLICY_OVERRIDES_CACHE = {};
+    for (const override of overridesResponse.data || []) {
+      const key = `${override.plan_name}:${override.environment_class}`;
+      PLAN_POLICY_OVERRIDES_CACHE[key] = {
+        canEditDirectly: override.can_edit_directly ?? undefined,
+        canSoftDelete: override.can_soft_delete ?? undefined,
+        canHardDelete: override.can_hard_delete ?? undefined,
+        canCreateDriftIncident: override.can_create_drift_incident ?? undefined,
+        driftIncidentRequired: override.drift_incident_required ?? undefined,
+        editRequiresConfirmation: override.edit_requires_confirmation ?? undefined,
+        editRequiresAdmin: override.edit_requires_admin ?? undefined,
+      };
+    }
+  } catch (error) {
+    console.warn('Failed to load workflow policy matrix from API, using defaults:', error);
+  }
+}
 
 /**
  * Pure function to compute workflow action policy.
@@ -96,33 +144,61 @@ export function getWorkflowActionPolicy(
   const envClass: EnvironmentClass = environment?.environmentClass ||
     inferEnvironmentClass(environment?.type);
 
-  const basePolicy = { ...DEFAULT_POLICY_MATRIX[envClass] };
+  const basePolicy = { ...POLICY_MATRIX_CACHE[envClass] };
   const planTier = planName.toLowerCase();
   const isAgencyPlus = planTier === 'agency' || planTier === 'agency_plus' || planTier === 'enterprise';
   const isAdmin = userRole === 'admin' || userRole === 'platform_admin' || userRole === 'superuser' || userRole === 'super_admin';
 
   // =============================================
-  // PLAN-BASED RESTRICTIONS
+  // PLAN-BASED RESTRICTIONS (from database)
   // =============================================
-
-  // Free tier: No drift incident workflow at all
-  if (planTier === 'free') {
-    basePolicy.canCreateDriftIncident = false;
-    basePolicy.driftIncidentRequired = false;
-  }
-
-  // Pro tier: Drift incidents optional (not required)
-  if (planTier === 'pro') {
-    basePolicy.driftIncidentRequired = false;
-  }
-
-  // Agency+: Drift incidents required by default in staging/production
-  if (isAgencyPlus) {
-    if (envClass === 'staging') {
-      basePolicy.canEditDirectly = false; // Even stricter for agency+
-      basePolicy.driftIncidentRequired = true;
+  
+  // Check for plan-based override from database
+  const overrideKey = `${planTier}:${envClass}`;
+  const planOverride = PLAN_POLICY_OVERRIDES_CACHE[overrideKey];
+  if (planOverride) {
+    if (typeof planOverride.canEditDirectly === 'boolean') {
+      basePolicy.canEditDirectly = planOverride.canEditDirectly;
     }
-    // Production already has driftIncidentRequired = true
+    if (typeof planOverride.canSoftDelete === 'boolean') {
+      basePolicy.canSoftDelete = planOverride.canSoftDelete;
+    }
+    if (typeof planOverride.canHardDelete === 'boolean') {
+      basePolicy.canHardDelete = planOverride.canHardDelete;
+    }
+    if (typeof planOverride.canCreateDriftIncident === 'boolean') {
+      basePolicy.canCreateDriftIncident = planOverride.canCreateDriftIncident;
+    }
+    if (typeof planOverride.driftIncidentRequired === 'boolean') {
+      basePolicy.driftIncidentRequired = planOverride.driftIncidentRequired;
+    }
+    if (typeof planOverride.editRequiresConfirmation === 'boolean') {
+      basePolicy.editRequiresConfirmation = planOverride.editRequiresConfirmation;
+    }
+    if (typeof planOverride.editRequiresAdmin === 'boolean') {
+      basePolicy.editRequiresAdmin = planOverride.editRequiresAdmin;
+    }
+  } else {
+    // Fallback to hard-coded logic if no database override
+    // Free tier: No drift incident workflow at all
+    if (planTier === 'free') {
+      basePolicy.canCreateDriftIncident = false;
+      basePolicy.driftIncidentRequired = false;
+    }
+
+    // Pro tier: Drift incidents optional (not required)
+    if (planTier === 'pro') {
+      basePolicy.driftIncidentRequired = false;
+    }
+
+    // Agency+: Drift incidents required by default in staging/production
+    if (isAgencyPlus) {
+      if (envClass === 'staging') {
+        basePolicy.canEditDirectly = false; // Even stricter for agency+
+        basePolicy.driftIncidentRequired = true;
+      }
+      // Production already has driftIncidentRequired = true
+    }
   }
 
   // =============================================

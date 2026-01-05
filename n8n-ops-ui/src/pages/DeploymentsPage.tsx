@@ -61,10 +61,26 @@ export function DeploymentsPage() {
   
   const activeTab = searchParams.get('tab') || 'deployments';
   
-  // Get plan for terminology suppression (Pipeline: ❌ Free, ⚠️ Pro, ✅ Agency+)
-  const { planName } = useFeatures();
+  // Get plan and features for access control
+  const { planName, canUseFeature } = useFeatures();
   const planLower = planName?.toLowerCase() || 'free';
   const canSeePipelines = planLower !== 'free'; // Free cannot see, Pro+ can see
+  
+  // Feature-based access control: deployments require workflow_ci_cd feature
+  const hasDeploymentsAccess = canUseFeature('workflow_ci_cd') || canUseFeature('deployments');
+  
+  // Redirect if user doesn't have access (backup protection in case route protection fails)
+  useEffect(() => {
+    if (!hasDeploymentsAccess) {
+      console.warn('[DeploymentsPage] User does not have access to deployments, redirecting to dashboard');
+      navigate('/', { replace: true });
+    }
+  }, [hasDeploymentsAccess, navigate]);
+  
+  // Don't render if no access
+  if (!hasDeploymentsAccess) {
+    return null;
+  }
   
   // Redirect free users away from pipelines tab
   useEffect(() => {
@@ -232,7 +248,7 @@ export function DeploymentsPage() {
   };
 
   const handlePromoteWorkflows = () => {
-    navigate('/deployments/new');
+    navigate('/promote');
   };
 
   const deleteMutation = useMutation({

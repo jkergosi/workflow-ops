@@ -85,9 +85,13 @@ export function ChangePlanModal({ open, onOpenChange, currentPlanKey }: ChangePl
     });
   };
 
-  const availablePlans = plans?.data?.filter((p: any) => 
-    ['free', 'pro', 'agency'].includes(p.name)
-  ) || [];
+  const availablePlans = [...(plans?.data || [])]
+    .filter((p: any) => ['free', 'pro', 'agency'].includes(p.name))
+    .sort((a: any, b: any) => {
+      // Sort by name order: free, pro, agency, enterprise
+      const order: Record<string, number> = { free: 1, pro: 2, agency: 3, enterprise: 4 };
+      return (order[a.name] || 999) - (order[b.name] || 999);
+    });
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>

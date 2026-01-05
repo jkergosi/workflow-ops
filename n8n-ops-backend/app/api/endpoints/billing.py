@@ -12,7 +12,12 @@ from app.schemas.billing import (
     InvoiceResponse,
     UpcomingInvoiceResponse,
     BillingOverviewResponse,
-    PaymentMethodResponse
+    PaymentMethodResponse,
+    PlanConfigurationsResponse,
+    PlanMetadataResponse,
+    PlanLimitsResponse,
+    PlanRetentionDefaultsResponse,
+    PlanFeatureRequirementResponse
 )
 from app.services.database import db_service
 from app.services.stripe_service import stripe_service
@@ -85,6 +90,150 @@ async def get_subscription_plans():
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to fetch subscription plans: {str(e)}"
+        )
+
+
+@router.get("/plan-features/all")
+async def get_all_plan_features_public():
+    """
+    Get all plan features in format suitable for frontend PLAN_FEATURES object.
+    Public endpoint (no auth required) for frontend to load plan features.
+    """
+    try:
+        # Get all plans
+        plans_response = db_service.client.table("plans").select("id, name").eq("is_active", True).execute()
+        plans = {p["id"]: p["name"] for p in (plans_response.data or [])}
+        
+        # Get all features
+        features_response = db_service.client.table("features").select("id, name, type, display_name").execute()
+        features = {f["id"]: f for f in (features_response.data or [])}
+        
+        # Get all plan-feature mappings
+        plan_features_response = db_service.client.table("plan_features").select(
+            "plan_id, feature_id, value"
+        ).execute()
+        
+        # Build result structure
+        result: Dict[str, Dict[str, Any]] = {}
+        
+        # Initialize all plans with empty dicts
+        for plan_name in plans.values():
+            result[plan_name] = {}
+        
+        # Populate with plan-feature values
+        for pf in (plan_features_response.data or []):
+            plan_id = pf.get("plan_id")
+            feature_id = pf.get("feature_id")
+            value = pf.get("value", {})
+            
+            if plan_id in plans and feature_id in features:
+                plan_name = plans[plan_id]
+                feature = features[feature_id]
+                feature_name = feature["name"]
+                feature_type = feature["type"]
+                
+                # Convert value based on type
+                if feature_type == "flag":
+                    result[plan_name][feature_name] = value.get("enabled", False)
+                elif feature_type == "limit":
+                    result[plan_name][feature_name] = value.get("value", 0)
+                else:
+                    result[plan_name][feature_name] = value
+        
+        return result
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to fetch plan features: {str(e)}"
+        )
+
+
+@router.get("/feature-display-names")
+async def get_feature_display_names():
+    """
+    Get all feature display names from database.
+    Public endpoint for frontend to load feature display names.
+    """
+    try:
+        response = db_service.client.table("features").select("name, display_name").execute()
+        result = {}
+        for feature in (response.data or []):
+            result[feature["name"]] = feature.get("display_name") or feature["name"]
+        return result
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to fetch feature display names: {str(e)}"
+        )
+
+
+@router.get("/plan-configurations", response_model=PlanConfigurationsResponse)
+async def get_plan_configurations():
+    """Get all plan configurations (metadata, limits, retention defaults, feature requirements)"""
+    try:
+        # Fetch plan metadata
+        plans_response = db_service.client.table("plans").select(
+            "name, display_name, icon, color_class, precedence, sort_order"
+        ).eq("is_active", True).order("sort_order").execute()
+        
+        metadata = [
+            PlanMetadataResponse(
+                name=row["name"],
+                display_name=row["display_name"],
+                icon=row.get("icon"),
+                color_class=row.get("color_class"),
+                precedence=row.get("precedence", 0),
+                sort_order=row.get("sort_order", 0)
+            )
+            for row in (plans_response.data or [])
+        ]
+        
+        # Fetch plan limits
+        limits_response = db_service.client.table("plan_limits").select("*").execute()
+        limits = [
+            PlanLimitsResponse(
+                plan_name=row["plan_name"],
+                max_workflows=row["max_workflows"],
+                max_environments=row["max_environments"],
+                max_users=row["max_users"],
+                max_executions_daily=row["max_executions_daily"]
+            )
+            for row in (limits_response.data or [])
+        ]
+        
+        # Fetch retention defaults
+        retention_response = db_service.client.table("plan_retention_defaults").select("*").execute()
+        retention_defaults = [
+            PlanRetentionDefaultsResponse(
+                plan_name=row["plan_name"],
+                drift_checks=row["drift_checks"],
+                closed_incidents=row["closed_incidents"],
+                reconciliation_artifacts=row["reconciliation_artifacts"],
+                approvals=row["approvals"]
+            )
+            for row in (retention_response.data or [])
+        ]
+        
+        # Fetch feature requirements
+        feature_req_response = db_service.client.table("plan_feature_requirements").select("*").execute()
+        feature_requirements = [
+            PlanFeatureRequirementResponse(
+                feature_name=row["feature_name"],
+                required_plan=row.get("required_plan")
+            )
+            for row in (feature_req_response.data or [])
+        ]
+        
+        return PlanConfigurationsResponse(
+            metadata=metadata,
+            limits=limits,
+            retention_defaults=retention_defaults,
+            feature_requirements=feature_requirements
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to fetch plan configurations: {str(e)}"
         )
 
 

@@ -611,7 +611,7 @@ export function WorkflowsPage() {
   // Governance handlers for WorkflowActionsMenu
   const handleCreateDeployment = (workflow: Workflow) => {
     // Navigate to new deployment page with workflow context
-    navigate(`/deployments/new?workflow=${workflow.id}&source=${currentEnvironment?.id}`);
+    navigate(`/promote?workflow=${workflow.id}&source=${currentEnvironment?.id}`);
   };
 
   const handleViewDriftIncident = (workflow: Workflow) => {

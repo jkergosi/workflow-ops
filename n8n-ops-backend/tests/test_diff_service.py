@@ -422,3 +422,353 @@ class TestIgnoredFields:
         expected_ignored = ["id", "webhookId", "notesInFlow"]
         for field in expected_ignored:
             assert field in IGNORED_NODE_FIELDS
+
+
+# =============================================================================
+# NEW: Tests for semantic change categories and risk levels
+# =============================================================================
+
+from app.services.diff_service import (
+    compute_change_categories,
+    compute_risk_level,
+    compute_diff_hash,
+    DriftDifference,
+)
+from app.schemas.promotion import ChangeCategory, RiskLevel
+
+
+def _make_diff(path: str, diff_type: str = "modified", git_value=None, runtime_value=None) -> DriftDifference:
+    """Helper to create DriftDifference objects for testing."""
+    return DriftDifference(
+        path=path,
+        diff_type=diff_type,
+        git_value=git_value,
+        runtime_value=runtime_value
+    )
+
+
+class TestComputeChangeCategories:
+    """Tests for compute_change_categories function."""
+
+    @pytest.mark.unit
+    def test_node_added_category(self):
+        """Adding nodes should result in NODE_ADDED category."""
+        source_wf = {
+            "nodes": [
+                {"name": "Start", "type": "n8n-nodes-base.start"},
+                {"name": "HTTP", "type": "n8n-nodes-base.httpRequest"},
+            ]
+        }
+        target_wf = {
+            "nodes": [
+                {"name": "Start", "type": "n8n-nodes-base.start"},
+            ]
+        }
+        differences = [_make_diff("nodes[HTTP]", "added")]
+
+        categories = compute_change_categories(source_wf, target_wf, differences)
+
+        assert ChangeCategory.NODE_ADDED in categories
+
+    @pytest.mark.unit
+    def test_node_removed_category(self):
+        """Removing nodes should result in NODE_REMOVED category."""
+        source_wf = {
+            "nodes": [
+                {"name": "Start", "type": "n8n-nodes-base.start"},
+            ]
+        }
+        target_wf = {
+            "nodes": [
+                {"name": "Start", "type": "n8n-nodes-base.start"},
+                {"name": "HTTP", "type": "n8n-nodes-base.httpRequest"},
+            ]
+        }
+        differences = [_make_diff("nodes[HTTP]", "removed")]
+
+        categories = compute_change_categories(source_wf, target_wf, differences)
+
+        assert ChangeCategory.NODE_REMOVED in categories
+
+    @pytest.mark.unit
+    def test_credentials_changed_category(self):
+        """Credential changes should result in CREDENTIALS_CHANGED category."""
+        source_wf = {
+            "nodes": [
+                {"name": "HTTP", "type": "n8n-nodes-base.httpRequest", "credentials": {"httpBasicAuth": {"id": "new-cred"}}},
+            ]
+        }
+        target_wf = {
+            "nodes": [
+                {"name": "HTTP", "type": "n8n-nodes-base.httpRequest", "credentials": {"httpBasicAuth": {"id": "old-cred"}}},
+            ]
+        }
+        differences = [_make_diff("nodes[HTTP].credentials", "modified")]
+
+        categories = compute_change_categories(source_wf, target_wf, differences)
+
+        assert ChangeCategory.CREDENTIALS_CHANGED in categories
+
+    @pytest.mark.unit
+    def test_http_changed_category(self):
+        """HTTP node changes should result in HTTP_CHANGED category."""
+        source_wf = {
+            "nodes": [
+                {"name": "HTTP", "type": "n8n-nodes-base.httpRequest", "parameters": {"url": "https://new.api.com"}},
+            ]
+        }
+        target_wf = {
+            "nodes": [
+                {"name": "HTTP", "type": "n8n-nodes-base.httpRequest", "parameters": {"url": "https://old.api.com"}},
+            ]
+        }
+        differences = [_make_diff("nodes[HTTP].parameters.url", "modified")]
+
+        categories = compute_change_categories(source_wf, target_wf, differences)
+
+        assert ChangeCategory.HTTP_CHANGED in categories
+
+    @pytest.mark.unit
+    def test_trigger_changed_category(self):
+        """Trigger node changes should result in TRIGGER_CHANGED category."""
+        # Note: webhook is in HTTP_NODE_TYPES (higher priority), so use scheduleTrigger
+        source_wf = {
+            "nodes": [
+                {"name": "Schedule", "type": "n8n-nodes-base.scheduleTrigger", "parameters": {"rule": "0 * * * *"}},
+            ]
+        }
+        target_wf = {
+            "nodes": [
+                {"name": "Schedule", "type": "n8n-nodes-base.scheduleTrigger", "parameters": {"rule": "0 0 * * *"}},
+            ]
+        }
+        differences = [_make_diff("nodes[Schedule].parameters.rule", "modified")]
+
+        categories = compute_change_categories(source_wf, target_wf, differences)
+
+        assert ChangeCategory.TRIGGER_CHANGED in categories
+
+    @pytest.mark.unit
+    def test_code_changed_category(self):
+        """Code/Function node changes should result in CODE_CHANGED category."""
+        source_wf = {
+            "nodes": [
+                {"name": "Function", "type": "n8n-nodes-base.function", "parameters": {"functionCode": "return items;"}},
+            ]
+        }
+        target_wf = {
+            "nodes": [
+                {"name": "Function", "type": "n8n-nodes-base.function", "parameters": {"functionCode": "return [];"}},
+            ]
+        }
+        differences = [_make_diff("nodes[Function].parameters.functionCode", "modified")]
+
+        categories = compute_change_categories(source_wf, target_wf, differences)
+
+        assert ChangeCategory.CODE_CHANGED in categories
+
+    @pytest.mark.unit
+    def test_settings_changed_category(self):
+        """Settings changes should result in SETTINGS_CHANGED category."""
+        source_wf = {
+            "settings": {"saveExecutionProgress": True},
+            "nodes": []
+        }
+        target_wf = {
+            "settings": {"saveExecutionProgress": False},
+            "nodes": []
+        }
+        differences = [_make_diff("settings.saveExecutionProgress", "modified")]
+
+        categories = compute_change_categories(source_wf, target_wf, differences)
+
+        assert ChangeCategory.SETTINGS_CHANGED in categories
+
+    @pytest.mark.unit
+    def test_rename_only_category(self):
+        """Name-only changes should result in RENAME_ONLY category."""
+        source_wf = {
+            "name": "New Workflow Name",
+            "nodes": [{"name": "Start", "type": "n8n-nodes-base.start"}]
+        }
+        target_wf = {
+            "name": "Old Workflow Name",
+            "nodes": [{"name": "Start", "type": "n8n-nodes-base.start"}]
+        }
+        # Only name changed, no other differences
+        differences = [_make_diff("name", "modified")]
+
+        categories = compute_change_categories(source_wf, target_wf, differences)
+
+        # When only name changes, should include RENAME_ONLY
+        assert ChangeCategory.RENAME_ONLY in categories
+
+    @pytest.mark.unit
+    def test_multiple_categories(self):
+        """Multiple changes should result in multiple categories."""
+        source_wf = {
+            "nodes": [
+                {"name": "HTTP", "type": "n8n-nodes-base.httpRequest", "parameters": {"url": "https://new.api.com"}},
+                {"name": "Function", "type": "n8n-nodes-base.function"},
+            ]
+        }
+        target_wf = {
+            "nodes": [
+                {"name": "HTTP", "type": "n8n-nodes-base.httpRequest", "parameters": {"url": "https://old.api.com"}},
+            ]
+        }
+        differences = [
+            _make_diff("nodes[HTTP].parameters.url", "modified"),
+            _make_diff("nodes[Function]", "added"),
+        ]
+
+        categories = compute_change_categories(source_wf, target_wf, differences)
+
+        assert ChangeCategory.HTTP_CHANGED in categories
+        assert ChangeCategory.NODE_ADDED in categories
+
+
+class TestComputeRiskLevel:
+    """Tests for compute_risk_level function."""
+
+    @pytest.mark.unit
+    def test_high_risk_for_credentials(self):
+        """Credential changes should be high risk."""
+        categories = [ChangeCategory.CREDENTIALS_CHANGED]
+        risk = compute_risk_level(categories)
+        assert risk == RiskLevel.HIGH
+
+    @pytest.mark.unit
+    def test_high_risk_for_expressions(self):
+        """Expression changes should be high risk."""
+        categories = [ChangeCategory.EXPRESSIONS_CHANGED]
+        risk = compute_risk_level(categories)
+        assert risk == RiskLevel.HIGH
+
+    @pytest.mark.unit
+    def test_high_risk_for_code(self):
+        """Code changes should be high risk."""
+        categories = [ChangeCategory.CODE_CHANGED]
+        risk = compute_risk_level(categories)
+        assert risk == RiskLevel.HIGH
+
+    @pytest.mark.unit
+    def test_high_risk_for_http(self):
+        """HTTP changes should be high risk."""
+        categories = [ChangeCategory.HTTP_CHANGED]
+        risk = compute_risk_level(categories)
+        assert risk == RiskLevel.HIGH
+
+    @pytest.mark.unit
+    def test_high_risk_for_trigger(self):
+        """Trigger changes should be high risk."""
+        categories = [ChangeCategory.TRIGGER_CHANGED]
+        risk = compute_risk_level(categories)
+        assert risk == RiskLevel.HIGH
+
+    @pytest.mark.unit
+    def test_medium_risk_for_error_handling(self):
+        """Error handling changes should be medium risk."""
+        categories = [ChangeCategory.ERROR_HANDLING_CHANGED]
+        risk = compute_risk_level(categories)
+        assert risk == RiskLevel.MEDIUM
+
+    @pytest.mark.unit
+    def test_medium_risk_for_settings(self):
+        """Settings changes should be medium risk."""
+        categories = [ChangeCategory.SETTINGS_CHANGED]
+        risk = compute_risk_level(categories)
+        assert risk == RiskLevel.MEDIUM
+
+    @pytest.mark.unit
+    def test_low_risk_for_rename(self):
+        """Rename-only changes should be low risk."""
+        categories = [ChangeCategory.RENAME_ONLY]
+        risk = compute_risk_level(categories)
+        assert risk == RiskLevel.LOW
+
+    @pytest.mark.unit
+    def test_low_risk_for_node_added(self):
+        """Node additions should be low risk."""
+        categories = [ChangeCategory.NODE_ADDED]
+        risk = compute_risk_level(categories)
+        assert risk == RiskLevel.LOW
+
+    @pytest.mark.unit
+    def test_empty_categories_is_low_risk(self):
+        """Empty categories should be low risk."""
+        categories = []
+        risk = compute_risk_level(categories)
+        assert risk == RiskLevel.LOW
+
+    @pytest.mark.unit
+    def test_high_overrides_medium(self):
+        """High risk categories should override medium."""
+        categories = [ChangeCategory.SETTINGS_CHANGED, ChangeCategory.CREDENTIALS_CHANGED]
+        risk = compute_risk_level(categories)
+        assert risk == RiskLevel.HIGH
+
+    @pytest.mark.unit
+    def test_medium_overrides_low(self):
+        """Medium risk categories should override low."""
+        categories = [ChangeCategory.RENAME_ONLY, ChangeCategory.SETTINGS_CHANGED]
+        risk = compute_risk_level(categories)
+        assert risk == RiskLevel.MEDIUM
+
+
+class TestComputeDiffHash:
+    """Tests for compute_diff_hash function."""
+
+    @pytest.mark.unit
+    def test_hash_for_two_workflows(self):
+        """Computing hash for two workflows should return a string."""
+        source_wf = {"name": "Test", "nodes": []}
+        target_wf = {"name": "Test", "nodes": [{"name": "Node1"}]}
+
+        hash_result = compute_diff_hash(source_wf, target_wf)
+
+        assert hash_result is not None
+        assert isinstance(hash_result, str)
+        assert len(hash_result) > 0  # Hash should have some length
+
+    @pytest.mark.unit
+    def test_same_workflows_same_hash(self):
+        """Same workflows should produce same hash."""
+        wf = {"name": "Test", "nodes": [{"name": "Node1"}]}
+
+        hash1 = compute_diff_hash(wf, wf)
+        hash2 = compute_diff_hash(wf, wf)
+
+        assert hash1 == hash2
+
+    @pytest.mark.unit
+    def test_different_workflows_different_hash(self):
+        """Different workflows should produce different hashes."""
+        wf1 = {"name": "Test1", "nodes": []}
+        wf2 = {"name": "Test2", "nodes": []}
+
+        hash1 = compute_diff_hash(wf1, wf2)
+        hash2 = compute_diff_hash(wf2, wf1)
+
+        # Order matters for diff hash
+        assert hash1 != hash2
+
+    @pytest.mark.unit
+    def test_hash_with_none_source(self):
+        """Hash with None source should still work."""
+        target_wf = {"name": "Test", "nodes": []}
+
+        hash_result = compute_diff_hash(None, target_wf)
+
+        assert hash_result is not None
+        assert isinstance(hash_result, str)
+
+    @pytest.mark.unit
+    def test_hash_with_none_target(self):
+        """Hash with None target should still work."""
+        source_wf = {"name": "Test", "nodes": []}
+
+        hash_result = compute_diff_hash(source_wf, None)
+
+        assert hash_result is not None
+        assert isinstance(hash_result, str)

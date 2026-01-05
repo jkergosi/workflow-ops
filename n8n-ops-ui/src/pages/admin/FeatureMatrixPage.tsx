@@ -220,7 +220,7 @@ export function FeatureMatrixPage() {
             </div>
           </CardContent>
         </Card>
-        {matrix?.plans.map((plan) => (
+        {[...(matrix?.plans || [])].sort((a, b) => (a.sortOrder || 0) - (b.sortOrder || 0)).map((plan) => (
           <Card key={plan.id}>
             <CardContent className="pt-6">
               <div className="flex items-center gap-3">
@@ -261,7 +261,7 @@ export function FeatureMatrixPage() {
                     <TableHead className="w-[250px]">Feature</TableHead>
                     <TableHead className="w-[80px]">Type</TableHead>
                     <TableHead className="w-[80px]">Status</TableHead>
-                    {matrix.plans.map((plan) => (
+                    {[...(matrix.plans || [])].sort((a, b) => (a.sortOrder || 0) - (b.sortOrder || 0)).map((plan) => (
                       <TableHead key={plan.id} className="text-center min-w-[100px]">
                         {plan.displayName}
                       </TableHead>
@@ -297,7 +297,7 @@ export function FeatureMatrixPage() {
                       </TableCell>
                       <TableCell>{getFeatureTypeBadge(feature.featureType)}</TableCell>
                       <TableCell>{getStatusBadge(feature.status)}</TableCell>
-                      {matrix.plans.map((plan) => (
+                      {[...(matrix.plans || [])].sort((a, b) => (a.sortOrder || 0) - (b.sortOrder || 0)).map((plan) => (
                         <TableCell
                           key={plan.id}
                           className="text-center cursor-pointer hover:bg-muted/50 transition-colors"

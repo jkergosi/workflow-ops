@@ -15,7 +15,107 @@ class PromotionStatus(str, Enum):
     CANCELLED = "cancelled"
 
 
+# =============================================================================
+# NEW: Authoritative Diff Status (Azure-aligned)
+# =============================================================================
+
+class DiffStatus(str, Enum):
+    """
+    Canonical diff status for workflow comparison.
+    Frontend must use these values directly - no local computation.
+    """
+    ADDED = "added"              # Exists only in source
+    MODIFIED = "modified"        # Exists in both, content differs, source newer
+    DELETED = "deleted"          # Exists only in target (target-only)
+    UNCHANGED = "unchanged"      # Normalized content identical
+    TARGET_HOTFIX = "target_hotfix"  # Content differs, target newer
+
+
+class ChangeCategory(str, Enum):
+    """
+    Semantic change categories for understanding what changed.
+    Computed from structured diff facts, not from raw JSON inspection.
+    """
+    NODE_ADDED = "node_added"
+    NODE_REMOVED = "node_removed"
+    NODE_TYPE_CHANGED = "node_type_changed"
+    CREDENTIALS_CHANGED = "credentials_changed"
+    EXPRESSIONS_CHANGED = "expressions_changed"
+    HTTP_CHANGED = "http_changed"
+    TRIGGER_CHANGED = "trigger_changed"
+    ROUTING_CHANGED = "routing_changed"
+    ERROR_HANDLING_CHANGED = "error_handling_changed"
+    SETTINGS_CHANGED = "settings_changed"
+    RENAME_ONLY = "rename_only"
+    CODE_CHANGED = "code_changed"  # Code/Function node changes
+
+
+class RiskLevel(str, Enum):
+    """
+    Risk level based on change categories.
+    High: credentials, expressions, triggers, HTTP, code, routing
+    Medium: error handling, settings
+    Low: rename only, metadata
+    """
+    LOW = "low"
+    MEDIUM = "medium"
+    HIGH = "high"
+
+
+# =============================================================================
+# NEW: Compare Response Schemas
+# =============================================================================
+
+class WorkflowCompareResult(BaseModel):
+    """
+    Per-workflow comparison result.
+    This is the authoritative source for diff status - frontend must not compute this.
+    """
+    workflow_id: str
+    name: str
+    diff_status: DiffStatus
+    risk_level: RiskLevel
+    change_categories: List[ChangeCategory] = []
+    diff_hash: Optional[str] = None  # For caching AI summaries
+    details_available: bool = True
+    source_updated_at: Optional[datetime] = None
+    target_updated_at: Optional[datetime] = None
+    enabled_in_source: bool = False
+    enabled_in_target: Optional[bool] = None
+
+
+class CompareSummary(BaseModel):
+    """Summary counts for the promotion compare result."""
+    total: int
+    added: int
+    modified: int
+    deleted: int  # target-only workflows
+    unchanged: int
+    target_hotfix: int
+
+
+class PromotionCompareResult(BaseModel):
+    """
+    Complete comparison result for a pipeline stage.
+    Frontend calls this once per stage selection - never computes diff locally.
+    """
+    pipeline_id: str
+    stage_id: str
+    source_env_id: str
+    target_env_id: str
+    summary: CompareSummary
+    workflows: List[WorkflowCompareResult]
+
+
+# =============================================================================
+# LEGACY: WorkflowChangeType (to be removed in Phase 6)
+# =============================================================================
+
 class WorkflowChangeType(str, Enum):
+    """
+    DEPRECATED: Use DiffStatus instead.
+    Kept temporarily for backward compatibility during migration.
+    """
     NEW = "new"
     CHANGED = "changed"
     STAGING_HOTFIX = "staging_hotfix"
@@ -154,4 +254,22 @@ class PromotionDriftCheck(BaseModel):
     drift_details: List[Dict[str, Any]] = []
     can_proceed: bool = False
     requires_sync: bool = False
+
+
+# =============================================================================
+# NEW: Diff Summary Response (AI-generated)
+# =============================================================================
+
+class DiffSummaryResponse(BaseModel):
+    """
+    AI-generated summary of workflow differences.
+    Generated from structured diff facts, cached by diff_hash.
+    """
+    bullets: List[str]  # 3-6 summary bullet points
+    risk_level: RiskLevel
+    risk_explanation: str
+    evidence_map: Dict[str, List[str]] = {}  # bullet -> supporting facts
+    change_categories: List[ChangeCategory] = []
+    is_new_workflow: bool = False
+    cached: bool = False
 

@@ -60,7 +60,7 @@ async def get_workflow_action_policy(
         env_class = EnvironmentClass.DEV  # Safe fallback
 
     # Build policy
-    policy = build_policy(env_class, plan, role)
+    policy = await build_policy(env_class, plan, role)
 
     return WorkflowPolicyResponse(
         environment_id=environment_id,

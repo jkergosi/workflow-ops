@@ -25,16 +25,11 @@ from uuid import UUID
 from app.services.database import db_service
 
 
-# Plan precedence ranking (higher = more privileged)
-PLAN_PRECEDENCE = {
-    "free": 0,
-    "pro": 10,
-    "agency": 20,
-    "enterprise": 30,
-}
-
 # Valid active statuses
 ACTIVE_STATUSES = ("active", "trialing")
+
+# Cache for plan precedence (loaded from database)
+_plan_precedence_cache: dict[str, int] = {}
 
 
 def _normalize_plan_name(plan_name: Optional[str]) -> str:
@@ -44,10 +39,31 @@ def _normalize_plan_name(plan_name: Optional[str]) -> str:
     return plan_name.lower().strip()
 
 
-def _get_plan_rank(plan_name: str) -> int:
-    """Get the precedence rank for a plan name."""
+async def _get_plan_rank(plan_name: str, db: Any = None) -> int:
+    """Get the precedence rank for a plan name from database."""
+    if db is None:
+        db = db_service
+    
     normalized = _normalize_plan_name(plan_name)
-    return PLAN_PRECEDENCE.get(normalized, 0)
+    
+    # Check cache first
+    if normalized in _plan_precedence_cache:
+        return _plan_precedence_cache[normalized]
+    
+    # Fetch from database
+    try:
+        response = db.client.table("plans").select("precedence").eq("name", normalized).single().execute()
+        if response.data:
+            precedence = response.data.get("precedence", 0)
+            _plan_precedence_cache[normalized] = precedence
+            return precedence
+    except Exception:
+        pass
+    
+    # Fallback to default (0 for free, or unknown plans)
+    default = 0 if normalized == "free" else 0
+    _plan_precedence_cache[normalized] = default
+    return default
 
 
 def _is_subscription_active(subscription: dict, now: datetime) -> bool:
@@ -145,7 +161,7 @@ async def resolve_effective_plan(
         # Get plan name from joined plan data
         plan_data = sub.get("plan") or {}
         plan_name = _normalize_plan_name(plan_data.get("name"))
-        plan_rank = _get_plan_rank(plan_name)
+        plan_rank = await _get_plan_rank(plan_name, db)
 
         active_subs.append({
             "id": sub.get("id"),

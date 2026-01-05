@@ -122,37 +122,47 @@ class TenantsAtLimitResponse(BaseModel):
 # Plan Limits Configuration
 # ============================================================================
 
-PLAN_LIMITS = {
-    "free": {
-        "max_workflows": 10,
-        "max_environments": 1,
-        "max_users": 2,
-        "max_executions_daily": 100,
-    },
-    "pro": {
-        "max_workflows": 100,
-        "max_environments": 3,
-        "max_users": 10,
-        "max_executions_daily": 1000,
-    },
-    "agency": {
-        "max_workflows": 500,
-        "max_environments": 10,
-        "max_users": 50,
-        "max_executions_daily": 10000,
-    },
-    "enterprise": {
-        "max_workflows": -1,  # Unlimited
-        "max_environments": -1,
-        "max_users": -1,
-        "max_executions_daily": -1,
-    },
-}
+# Cache for plan limits
+_plan_limits_cache: Dict[str, Dict[str, int]] = {}
 
 
-def get_limit(plan: str, metric: str) -> int:
-    """Get limit for a plan and metric. Returns -1 for unlimited."""
-    return PLAN_LIMITS.get(plan, PLAN_LIMITS["free"]).get(metric, 0)
+async def get_limit(plan: str, metric: str) -> int:
+    """Get limit for a plan and metric from database. Returns -1 for unlimited."""
+    plan = plan.lower()
+    
+    # Check cache first
+    if plan not in _plan_limits_cache:
+        # Fetch from database
+        try:
+            response = db_service.client.table("plan_limits").select(
+                "max_workflows, max_environments, max_users, max_executions_daily"
+            ).eq("plan_name", plan).single().execute()
+            
+            if response.data:
+                _plan_limits_cache[plan] = {
+                    "max_workflows": response.data.get("max_workflows", 10),
+                    "max_environments": response.data.get("max_environments", 1),
+                    "max_users": response.data.get("max_users", 2),
+                    "max_executions_daily": response.data.get("max_executions_daily", 100),
+                }
+            else:
+                # Fallback to free plan defaults
+                _plan_limits_cache[plan] = {
+                    "max_workflows": 10,
+                    "max_environments": 1,
+                    "max_users": 2,
+                    "max_executions_daily": 100,
+                }
+        except Exception:
+            # Fallback to free plan defaults on error
+            _plan_limits_cache[plan] = {
+                "max_workflows": 10,
+                "max_environments": 1,
+                "max_users": 2,
+                "max_executions_daily": 100,
+            }
+    
+    return _plan_limits_cache[plan].get(metric, 0)
 
 
 def calculate_usage_percentage(current: int, limit: int) -> float:
@@ -261,9 +271,9 @@ async def get_global_usage(
             env_count = tenant_envs.get(tid, 0)
             user_count = tenant_users.get(tid, 0)
 
-            wf_limit = get_limit(plan, "max_workflows")
-            env_limit = get_limit(plan, "max_environments")
-            user_limit = get_limit(plan, "max_users")
+            wf_limit = await get_limit(plan, "max_workflows")
+            env_limit = await get_limit(plan, "max_environments")
+            user_limit = await get_limit(plan, "max_users")
 
             wf_pct = calculate_usage_percentage(wf_count, wf_limit)
             env_pct = calculate_usage_percentage(env_count, env_limit)
@@ -406,7 +416,7 @@ async def get_top_tenants(
                     if tid in tenants:
                         t = tenants[tid]
                         plan = t.get("subscription_tier", "free") or "free"
-                        limit_val = get_limit(plan, "max_workflows")
+                        limit_val = await get_limit(plan, "max_workflows")
                         # For "all" providers, create separate entries per provider
                         for prov, count in prov_counts.items():
                             tenant_values.append({
@@ -430,7 +440,7 @@ async def get_top_tenants(
                     if tid in tenants:
                         t = tenants[tid]
                         plan = t.get("subscription_tier", "free") or "free"
-                        limit_val = get_limit(plan, "max_workflows")
+                        limit_val = await get_limit(plan, "max_workflows")
                         tenant_values.append({
                             "tenant_id": tid,
                             "tenant_name": t.get("name", "Unknown"),
@@ -450,7 +460,7 @@ async def get_top_tenants(
                 if tid in tenants:
                     t = tenants[tid]
                     plan = t.get("subscription_tier", "free") or "free"
-                    limit_val = get_limit(plan, "max_users")
+                    limit_val = await get_limit(plan, "max_users")
                     tenant_values.append({
                         "tenant_id": tid,
                         "tenant_name": t.get("name", "Unknown"),
@@ -478,7 +488,7 @@ async def get_top_tenants(
                     if tid in tenants:
                         t = tenants[tid]
                         plan = t.get("subscription_tier", "free") or "free"
-                        limit_val = get_limit(plan, "max_environments")
+                        limit_val = await get_limit(plan, "max_environments")
                         # For "all" providers, create separate entries per provider
                         for prov, count in prov_counts.items():
                             tenant_values.append({
@@ -502,7 +512,7 @@ async def get_top_tenants(
                     if tid in tenants:
                         t = tenants[tid]
                         plan = t.get("subscription_tier", "free") or "free"
-                        limit_val = get_limit(plan, "max_environments")
+                        limit_val = await get_limit(plan, "max_environments")
                         tenant_values.append({
                             "tenant_id": tid,
                             "tenant_name": t.get("name", "Unknown"),
@@ -669,7 +679,7 @@ async def get_tenants_at_limit(
 
             # Check workflows
             wf_current = workflow_counts.get(tid, 0)
-            wf_limit = get_limit(plan, "max_workflows")
+            wf_limit = await get_limit(plan, "max_workflows")
             wf_pct = calculate_usage_percentage(wf_current, wf_limit)
             wf_status = get_usage_status(wf_pct, wf_limit)
             max_pct = max(max_pct, wf_pct)
@@ -684,7 +694,7 @@ async def get_tenants_at_limit(
 
             # Check environments
             env_current = env_counts.get(tid, 0)
-            env_limit = get_limit(plan, "max_environments")
+            env_limit = await get_limit(plan, "max_environments")
             env_pct = calculate_usage_percentage(env_current, env_limit)
             env_status = get_usage_status(env_pct, env_limit)
             max_pct = max(max_pct, env_pct)
@@ -699,7 +709,7 @@ async def get_tenants_at_limit(
 
             # Check users
             user_current = user_counts.get(tid, 0)
-            user_limit = get_limit(plan, "max_users")
+            user_limit = await get_limit(plan, "max_users")
             user_pct = calculate_usage_percentage(user_current, user_limit)
             user_status = get_usage_status(user_pct, user_limit)
             max_pct = max(max_pct, user_pct)
