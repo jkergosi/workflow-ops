@@ -48,11 +48,18 @@ async def get_active_providers(
         ).execute()
         environments = envs_result.data or []
 
-        # Get workflow counts by provider
-        workflows_result = await db_service.client.table("workflows").select(
-            "provider, tenant_id"
-        ).execute()
-        workflows = workflows_result.data or []
+        # Get workflow counts from canonical system (provider not directly available, use default)
+        # Count unique canonical workflows per tenant
+        mappings_result = await db_service.client.table("workflow_env_map").select("tenant_id, canonical_id").execute()
+        tenant_workflow_counts = {}
+        for mapping in (mappings_result.data or []):
+            tid = mapping.get("tenant_id")
+            if tid:
+                if tid not in tenant_workflow_counts:
+                    tenant_workflow_counts[tid] = set()
+                tenant_workflow_counts[tid].add(mapping.get("canonical_id"))
+        # Convert to list format with default provider for compatibility
+        workflows = [{"tenant_id": tid, "provider": "n8n"} for tid, cids in tenant_workflow_counts.items() for _ in cids]
 
         # Aggregate by provider
         provider_stats = {}

@@ -207,11 +207,19 @@ async def get_global_usage(
         tenants_result = await db_service.client.table("tenants").select("*").execute()
         tenants = tenants_result.data or []
 
-        # Get workflow counts (provider-scoped)
-        workflows_query = db_service.client.table("workflows").select("id, tenant_id")
-        workflows_query = apply_provider_filter(workflows_query, provider)
-        workflows_result = await workflows_query.execute()
-        workflows = workflows_result.data or []
+        # Get workflow counts from canonical system (provider-scoped via environments)
+        # Count unique canonical workflows per tenant from workflow_env_map
+        workflows_result = await db_service.client.table("workflow_env_map").select("tenant_id, canonical_id").execute()
+        # Group by tenant and count unique canonical_ids
+        tenant_workflow_counts = {}
+        for mapping in (workflows_result.data or []):
+            tid = mapping.get("tenant_id")
+            if tid:
+                if tid not in tenant_workflow_counts:
+                    tenant_workflow_counts[tid] = set()
+                tenant_workflow_counts[tid].add(mapping.get("canonical_id"))
+        # Convert to list format for compatibility
+        workflows = [{"tenant_id": tid, "id": cid} for tid, cids in tenant_workflow_counts.items() for cid in cids]
 
         # Get environment counts (provider-scoped)
         envs_query = db_service.client.table("environments").select("id, tenant_id")
@@ -398,43 +406,45 @@ async def get_top_tenants(
         tenant_values = []
 
         if metric == "workflows":
-            # Workflows are provider-scoped
+            # Workflows from canonical system (count unique canonical workflows per tenant)
+            # Note: Provider filtering not directly supported in canonical system
+            # We'll count all workflows regardless of provider for now
             if provider == "all":
-                # When querying all providers, group by provider
-                query = db_service.client.table("workflows").select("tenant_id, provider")
-                result = await query.execute()
-                counts_by_provider = {}
-                for item in (result.data or []):
-                    tid = item.get("tenant_id")
-                    prov = item.get("provider", "n8n")
-                    if tid not in counts_by_provider:
-                        counts_by_provider[tid] = {}
-                    counts_by_provider[tid][prov] = counts_by_provider[tid].get(prov, 0) + 1
+                # Count unique canonical workflows per tenant
+                mappings_result = await db_service.client.table("workflow_env_map").select("tenant_id, canonical_id").execute()
+                counts_by_tenant = {}
+                for mapping in (mappings_result.data or []):
+                    tid = mapping.get("tenant_id")
+                    if tid:
+                        if tid not in counts_by_tenant:
+                            counts_by_tenant[tid] = set()
+                        counts_by_tenant[tid].add(mapping.get("canonical_id"))
                 
-                # Aggregate counts and include provider breakdown
-                for tid, prov_counts in counts_by_provider.items():
+                # Aggregate counts (default to n8n provider for compatibility)
+                for tid, canonical_ids in counts_by_tenant.items():
                     if tid in tenants:
                         t = tenants[tid]
                         plan = t.get("subscription_tier", "free") or "free"
                         limit_val = await get_limit(plan, "max_workflows")
-                        # For "all" providers, create separate entries per provider
-                        for prov, count in prov_counts.items():
-                            tenant_values.append({
-                                "tenant_id": tid,
-                                "tenant_name": t.get("name", "Unknown"),
-                                "plan": plan,
-                                "provider": prov,
-                                "value": count,
-                                "limit": limit_val if limit_val > 0 else None,
-                            })
+                        tenant_values.append({
+                            "tenant_id": tid,
+                            "tenant_name": t.get("name", "Unknown"),
+                            "plan": plan,
+                            "provider": "n8n",  # Default provider
+                            "value": len(canonical_ids),
+                            "limit": limit_val if limit_val > 0 else None,
+                        })
             else:
-                query = db_service.client.table("workflows").select("tenant_id")
-                query = apply_provider_filter(query, provider)
-                result = await query.execute()
-                counts = {}
-                for item in (result.data or []):
-                    tid = item.get("tenant_id")
-                    counts[tid] = counts.get(tid, 0) + 1
+                # Count unique canonical workflows per tenant (provider filter not applicable)
+                mappings_result = await db_service.client.table("workflow_env_map").select("tenant_id, canonical_id").execute()
+                counts_by_tenant = {}
+                for mapping in (mappings_result.data or []):
+                    tid = mapping.get("tenant_id")
+                    if tid:
+                        if tid not in counts_by_tenant:
+                            counts_by_tenant[tid] = set()
+                        counts_by_tenant[tid].add(mapping.get("canonical_id"))
+                counts = {tid: len(cids) for tid, cids in counts_by_tenant.items()}
 
                 for tid, count in counts.items():
                     if tid in tenants:
@@ -636,10 +646,19 @@ async def get_tenants_at_limit(
         tenants_result = await db_service.client.table("tenants").select("*").execute()
         tenants = tenants_result.data or []
 
-        # Get counts (with provider filter for provider-scoped resources)
-        workflows_query = db_service.client.table("workflows").select("id, tenant_id")
-        workflows_query = apply_provider_filter(workflows_query, provider)
-        workflows_result = await workflows_query.execute()
+        # Get counts from canonical system (with provider filter for provider-scoped resources)
+        # Count unique canonical workflows per tenant
+        workflows_result = await db_service.client.table("workflow_env_map").select("tenant_id, canonical_id").execute()
+        # Group by tenant and count unique canonical_ids
+        tenant_workflow_counts = {}
+        for mapping in (workflows_result.data or []):
+            tid = mapping.get("tenant_id")
+            if tid:
+                if tid not in tenant_workflow_counts:
+                    tenant_workflow_counts[tid] = set()
+                tenant_workflow_counts[tid].add(mapping.get("canonical_id"))
+        # Convert to list format for compatibility
+        workflows_result_data = [{"tenant_id": tid, "id": cid} for tid, cids in tenant_workflow_counts.items() for cid in cids]
 
         envs_query = db_service.client.table("environments").select("id, tenant_id")
         envs_query = apply_provider_filter(envs_query, provider)
@@ -797,11 +816,15 @@ async def get_tenant_usage(
                 return query
             return query.eq("provider", provider_filter)
 
-        # Get counts with provider filtering
-        workflow_query = db_service.client.table("workflows").select("id, provider", count="exact")
-        workflow_query = workflow_query.eq("tenant_id", tenant_id).eq("is_deleted", False)
-        workflow_query = apply_provider_filter_local(workflow_query)
-        workflow_response = await workflow_query.execute()
+        # Get counts from canonical system (count unique canonical workflows)
+        workflow_mappings = await db_service.client.table("workflow_env_map").select("canonical_id").eq("tenant_id", tenant_id).execute()
+        unique_canonical_ids = set()
+        for mapping in (workflow_mappings.data or []):
+            cid = mapping.get("canonical_id")
+            if cid:
+                unique_canonical_ids.add(cid)
+        workflow_count = len(unique_canonical_ids)
+        workflow_response = type('obj', (object,), {'count': workflow_count, 'data': []})()
         workflow_count = workflow_response.count or 0
 
         env_query = db_service.client.table("environments").select("id, provider", count="exact")

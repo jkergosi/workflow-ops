@@ -3834,6 +3834,98 @@ class ApiClient {
     const response = await this.client.post<DriftApproval>(`/drift-approvals/${approvalId}/cancel`);
     return { data: response.data };
   }
+
+  // Canonical Workflow Methods
+  async getOnboardingPreflight(): Promise<{ data: any }> {
+    const response = await this.client.get('/canonical/onboarding/preflight');
+    return { data: response.data };
+  }
+
+  async startOnboardingInventory(payload: any): Promise<{ data: any }> {
+    const response = await this.client.post('/canonical/onboarding/inventory', payload);
+    return { data: response.data };
+  }
+
+  async createMigrationPR(payload: { tenantSlug: string }): Promise<{ data: any }> {
+    const response = await this.client.post('/canonical/onboarding/migration-pr', payload);
+    return { data: response.data };
+  }
+
+  async checkOnboardingComplete(): Promise<{ data: any }> {
+    const response = await this.client.get('/canonical/onboarding/complete');
+    return { data: response.data };
+  }
+
+  async getCanonicalWorkflows(includeDeleted?: boolean): Promise<{ data: any[] }> {
+    const response = await this.client.get('/canonical/canonical-workflows', {
+      params: { include_deleted: includeDeleted }
+    });
+    return { data: response.data };
+  }
+
+  async getCanonicalWorkflow(canonicalId: string): Promise<{ data: any }> {
+    const response = await this.client.get(`/canonical/canonical-workflows/${canonicalId}`);
+    return { data: response.data };
+  }
+
+  async getWorkflowMappings(params?: {
+    environmentId?: string;
+    canonicalId?: string;
+    status?: string;
+  }): Promise<{ data: any[] }> {
+    const response = await this.client.get('/canonical/workflow-mappings', { params });
+    return { data: response.data };
+  }
+
+  async syncRepository(environmentId: string): Promise<{ data: { jobId: string } }> {
+    const response = await this.client.post(`/canonical/sync/repo/${environmentId}`);
+    return { data: response.data };
+  }
+
+  async syncEnvironment(environmentId: string): Promise<{ data: { jobId: string } }> {
+    const response = await this.client.post(`/canonical/sync/env/${environmentId}`);
+    return { data: response.data };
+  }
+
+  async reconcileEnvironments(
+    sourceEnvId: string,
+    targetEnvId: string,
+    force?: boolean
+  ): Promise<{ data: any }> {
+    const response = await this.client.post(
+      `/canonical/reconcile/${sourceEnvId}/${targetEnvId}`,
+      null,
+      { params: { force } }
+    );
+    return { data: response.data };
+  }
+
+  async getDiffStates(params?: {
+    sourceEnvId?: string;
+    targetEnvId?: string;
+    canonicalId?: string;
+  }): Promise<{ data: any[] }> {
+    const response = await this.client.get('/canonical/diff-states', { params });
+    return { data: response.data };
+  }
+
+  async getLinkSuggestions(params?: {
+    environmentId?: string;
+    status?: string;
+  }): Promise<{ data: any[] }> {
+    const response = await this.client.get('/canonical/link-suggestions', { params });
+    return { data: response.data };
+  }
+
+  async resolveLinkSuggestion(
+    suggestionId: string,
+    status: string
+  ): Promise<{ data: any }> {
+    const response = await this.client.post(`/canonical/link-suggestions/${suggestionId}/resolve`, {
+      status
+    });
+    return { data: response.data };
+  }
 }
 
 export const apiClient = new ApiClient();

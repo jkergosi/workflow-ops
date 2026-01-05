@@ -154,12 +154,16 @@ async def get_admin_overview(user_info: dict = Depends(get_current_user)):
         # Usage data
         usage = UsageData()
 
-        # Workflows count
+        # Workflows count from canonical system
         try:
-            workflows_response = db_service.client.table("workflows").select(
-                "id", count="exact"
-            ).eq("tenant_id", tenant_id).execute()
-            workflows_used = workflows_response.count or 0
+            # Count unique canonical workflows
+            mappings_response = await db_service.client.table("workflow_env_map").select("canonical_id").eq("tenant_id", tenant_id).execute()
+            unique_canonical_ids = set()
+            for mapping in (mappings_response.data or []):
+                cid = mapping.get("canonical_id")
+                if cid:
+                    unique_canonical_ids.add(cid)
+            workflows_used = len(unique_canonical_ids)
             workflows_limit = features.get("max_workflows")
             if workflows_limit == -1 or workflows_limit == "unlimited":
                 workflows_limit = None

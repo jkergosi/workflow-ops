@@ -326,7 +326,7 @@ class DatabaseService:
             query = query.eq("workflow_id", workflow_id)
         response = query.order("started_at", desc=True).execute()
 
-        # Enrich executions with workflow names from the workflows table
+        # Enrich executions with workflow names from canonical workflow system
         executions = response.data
         if executions:
             # Group executions by environment to fetch workflows efficiently
@@ -335,13 +335,46 @@ class DatabaseService:
             for execution in executions:
                 exec_env_id = execution.get("environment_id")
                 if exec_env_id and exec_env_id not in env_workflow_map:
-                    # Fetch all workflows for this environment
-                    workflows_response = self.client.table("workflows").select(
-                        "n8n_workflow_id, name"
-                    ).eq("tenant_id", tenant_id).eq("environment_id", exec_env_id).eq("is_deleted", False).execute()
+                    # Fetch all workflow mappings for this environment from canonical system
+                    mappings_response = (
+                        self.client.table("workflow_env_map")
+                        .select("n8n_workflow_id, workflow_data, canonical_id")
+                        .eq("tenant_id", tenant_id)
+                        .eq("environment_id", exec_env_id)
+                        .not_.is_("n8n_workflow_id", "null")
+                        .execute()
+                    )
+
+                    # Get canonical IDs to fetch display names
+                    canonical_ids = [m.get("canonical_id") for m in (mappings_response.data or []) if m.get("canonical_id")]
+                    canonical_map = {}
+                    if canonical_ids:
+                        canonical_response = (
+                            self.client.table("canonical_workflows")
+                            .select("canonical_id, display_name")
+                            .eq("tenant_id", tenant_id)
+                            .in_("canonical_id", canonical_ids)
+                            .execute()
+                        )
+                        for canonical in (canonical_response.data or []):
+                            canonical_map[canonical.get("canonical_id")] = canonical
 
                     # Create a mapping of workflow_id to workflow_name for this environment
-                    env_workflow_map[exec_env_id] = {wf["n8n_workflow_id"]: wf["name"] for wf in workflows_response.data if wf.get("n8n_workflow_id")}
+                    workflow_name_map = {}
+                    for mapping in (mappings_response.data or []):
+                        n8n_id = mapping.get("n8n_workflow_id")
+                        if n8n_id:
+                            workflow_data = mapping.get("workflow_data") or {}
+                            canonical_id = mapping.get("canonical_id")
+                            canonical = canonical_map.get(canonical_id, {}) if canonical_id else {}
+                            workflow_name = (
+                                workflow_data.get("name") or 
+                                canonical.get("display_name") or 
+                                "Unknown"
+                            )
+                            workflow_name_map[n8n_id] = workflow_name
+                    
+                    env_workflow_map[exec_env_id] = workflow_name_map
 
             # Enrich executions with workflow names
             for execution in executions:
@@ -358,14 +391,46 @@ class DatabaseService:
         response = self.client.table("executions").select("*").eq("id", execution_id).eq("tenant_id", tenant_id).single().execute()
         execution = response.data
 
-        # Enrich with workflow name from the workflows table
+        # Enrich with workflow name from canonical workflow system
         if execution and execution.get("workflow_id") and execution.get("environment_id"):
-            workflow_response = self.client.table("workflows").select(
-                "name"
-            ).eq("tenant_id", tenant_id).eq("environment_id", execution["environment_id"]).eq("n8n_workflow_id", execution["workflow_id"]).eq("is_deleted", False).execute()
-
-            if workflow_response.data and len(workflow_response.data) > 0:
-                execution["workflow_name"] = workflow_response.data[0].get("name")
+            # Get workflow name from canonical system
+            try:
+                mapping_response = (
+                    self.client.table("workflow_env_map")
+                    .select("workflow_data, canonical_id")
+                    .eq("tenant_id", tenant_id)
+                    .eq("environment_id", execution["environment_id"])
+                    .eq("n8n_workflow_id", execution["workflow_id"])
+                    .single()
+                    .execute()
+                )
+                
+                if mapping_response.data:
+                    workflow_data = mapping_response.data.get("workflow_data") or {}
+                    canonical_id = mapping_response.data.get("canonical_id")
+                    
+                    # Get canonical workflow display name if needed
+                    display_name = None
+                    if canonical_id:
+                        canonical_response = (
+                            self.client.table("canonical_workflows")
+                            .select("display_name")
+                            .eq("tenant_id", tenant_id)
+                            .eq("canonical_id", canonical_id)
+                            .single()
+                            .execute()
+                        )
+                        if canonical_response.data:
+                            display_name = canonical_response.data.get("display_name")
+                    
+                    execution["workflow_name"] = (
+                        workflow_data.get("name") or 
+                        display_name or 
+                        "Unknown"
+                    )
+            except Exception:
+                # If mapping not found, leave workflow_name as None
+                pass
 
         return execution
 
@@ -491,23 +556,83 @@ class DatabaseService:
 
     # Workflow cache operations
     async def get_workflows(self, tenant_id: str, environment_id: str, include_archived: bool = False) -> List[Dict[str, Any]]:
-        """Get all cached workflows for a tenant and environment.
+        """
+        DEPRECATED: Use get_workflows_from_canonical() instead.
+        This method is kept for backward compatibility and will be removed in a future version.
+        
+        Get all cached workflows for a tenant and environment.
 
         Args:
             tenant_id: The tenant ID
             environment_id: The environment ID
             include_archived: If True, include archived workflows. Default False.
         """
-        query = self.client.table("workflows").select("*").eq("tenant_id", tenant_id).eq("environment_id", environment_id).eq("is_deleted", False)
-        if not include_archived:
-            query = query.eq("is_archived", False)
-        response = query.order("name").execute()
-        return response.data
+        import logging
+        logging.warning("get_workflows() is deprecated. Use get_workflows_from_canonical() instead.")
+        return await self.get_workflows_from_canonical(
+            tenant_id=tenant_id,
+            environment_id=environment_id,
+            include_deleted=False,
+            include_ignored=False
+        )
 
     async def get_workflow(self, tenant_id: str, environment_id: str, n8n_workflow_id: str) -> Optional[Dict[str, Any]]:
-        """Get a specific cached workflow"""
-        response = self.client.table("workflows").select("*").eq("tenant_id", tenant_id).eq("environment_id", environment_id).eq("n8n_workflow_id", n8n_workflow_id).eq("is_deleted", False).single().execute()
-        return response.data if response.data else None
+        """
+        DEPRECATED: Use canonical workflow system instead.
+        Get workflow by n8n_workflow_id from canonical system.
+        """
+        # Query workflow_env_map
+        try:
+            mapping_response = (
+                self.client.table("workflow_env_map")
+                .select("*")
+                .eq("tenant_id", tenant_id)
+                .eq("environment_id", environment_id)
+                .eq("n8n_workflow_id", n8n_workflow_id)
+                .single()
+                .execute()
+            )
+        except Exception:
+            # If no mapping found, return None
+            return None
+        
+        if not mapping_response.data:
+            return None
+        
+        mapping = mapping_response.data
+        workflow_data = mapping.get("workflow_data") or {}
+        canonical_id = mapping.get("canonical_id")
+        
+        # Get canonical workflow display name if needed
+        display_name = None
+        if canonical_id:
+            try:
+                canonical_response = (
+                    self.client.table("canonical_workflows")
+                    .select("display_name")
+                    .eq("tenant_id", tenant_id)
+                    .eq("canonical_id", canonical_id)
+                    .single()
+                    .execute()
+                )
+                if canonical_response.data:
+                    display_name = canonical_response.data.get("display_name")
+            except Exception:
+                pass
+        
+        # Transform to legacy format for backward compatibility
+        return {
+            "n8n_workflow_id": n8n_workflow_id,
+            "name": workflow_data.get("name") or display_name or "Unknown",
+            "workflow_data": workflow_data,
+            "canonical_id": canonical_id,
+            "active": workflow_data.get("active", False),
+            "tags": workflow_data.get("tags", []),
+            "created_at": workflow_data.get("createdAt") or mapping.get("linked_at"),
+            "updated_at": workflow_data.get("updatedAt") or mapping.get("last_env_sync_at"),
+            "is_deleted": False,
+            "is_archived": False
+        }
 
     async def upsert_workflow(self, tenant_id: str, environment_id: str, workflow_data: Dict[str, Any], analysis: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """Insert or update a workflow in the cache"""
@@ -563,15 +688,14 @@ class DatabaseService:
         n8n_workflow_id: str,
         sync_status: str
     ) -> bool:
-        """Update sync_status for a workflow"""
-        try:
-            response = self.client.table("workflows").update({
-                "sync_status": sync_status
-            }).eq("tenant_id", tenant_id).eq("environment_id", environment_id).eq("n8n_workflow_id", n8n_workflow_id).execute()
-            return len(response.data) > 0
-        except Exception as e:
-            print(f"Failed to update sync status: {str(e)}")
-            return False
+        """
+        DEPRECATED: Sync status is managed automatically by canonical env sync.
+        This method is kept for backward compatibility but does nothing.
+        """
+        # Sync status is now managed by canonical env sync service
+        # The last_env_sync_at timestamp in workflow_env_map serves as sync status
+        logger.debug(f"update_workflow_sync_status called (deprecated) for workflow {n8n_workflow_id}")
+        return True
 
     async def sync_workflows_from_n8n(self, tenant_id: str, environment_id: str, n8n_workflows: List[Dict[str, Any]], workflows_with_analysis: Optional[Dict[str, Dict[str, Any]]] = None, provider: str = "n8n") -> List[Dict[str, Any]]:
         """Sync workflows from N8N API to database cache (batch operation)"""
@@ -611,15 +735,27 @@ class DatabaseService:
         return results
 
     async def delete_workflow_from_cache(self, tenant_id: str, environment_id: str, n8n_workflow_id: str) -> bool:
-        """Soft delete a workflow from cache"""
-        from datetime import datetime
-
-        response = self.client.table("workflows").update({
-            "is_deleted": True,
-            "last_synced_at": datetime.utcnow().isoformat()
-        }).eq("tenant_id", tenant_id).eq("environment_id", environment_id).eq("n8n_workflow_id", n8n_workflow_id).execute()
-
-        return bool(response.data)
+        """
+        DEPRECATED: Use canonical workflow system instead.
+        Mark workflow mapping as deleted in canonical system.
+        """
+        try:
+            # Find mapping by n8n_workflow_id and mark as deleted
+            response = (
+                self.client.table("workflow_env_map")
+                .update({
+                    "status": "deleted",
+                    "n8n_workflow_id": None  # Clear n8n_workflow_id since workflow is deleted
+                })
+                .eq("tenant_id", tenant_id)
+                .eq("environment_id", environment_id)
+                .eq("n8n_workflow_id", n8n_workflow_id)
+                .execute()
+            )
+            return bool(response.data)
+        except Exception as e:
+            logger.warning(f"Failed to delete workflow from cache: {str(e)}")
+            return False
 
     async def archive_workflow(
         self,
@@ -628,9 +764,11 @@ class DatabaseService:
         workflow_id: str,
         archived_by: str = None
     ) -> Optional[Dict[str, Any]]:
-        """Soft delete a workflow by marking it as archived.
-
-        This hides the workflow from the default list but does NOT remove it from N8N.
+        """
+        DEPRECATED: Use canonical workflow system instead.
+        Mark workflow mapping as ignored (archived) in canonical system.
+        
+        This hides the workflow from the default list but does NOT remove it from n8n.
 
         Args:
             tenant_id: The tenant ID
@@ -639,17 +777,34 @@ class DatabaseService:
             archived_by: User ID of who archived the workflow
 
         Returns:
-            The updated workflow record or None if not found
+            The updated workflow mapping or None if not found
         """
-        from datetime import datetime
-
-        response = self.client.table("workflows").update({
-            "is_archived": True,
-            "archived_at": datetime.utcnow().isoformat(),
-            "archived_by": archived_by
-        }).eq("tenant_id", tenant_id).eq("environment_id", environment_id).eq("n8n_workflow_id", workflow_id).execute()
-
-        return response.data[0] if response.data else None
+        try:
+            # Find mapping and mark as ignored (equivalent to archived)
+            response = (
+                self.client.table("workflow_env_map")
+                .update({
+                    "status": "ignored"
+                })
+                .eq("tenant_id", tenant_id)
+                .eq("environment_id", environment_id)
+                .eq("n8n_workflow_id", workflow_id)
+                .execute()
+            )
+            
+            if response.data:
+                mapping = response.data[0]
+                # Get workflow data for backward compatibility
+                workflow_data = mapping.get("workflow_data") or {}
+                return {
+                    "n8n_workflow_id": workflow_id,
+                    "name": workflow_data.get("name") or "Unknown",
+                    "workflow_data": workflow_data
+                }
+            return None
+        except Exception as e:
+            logger.warning(f"Failed to archive workflow: {str(e)}")
+            return None
 
     async def unarchive_workflow(
         self,
@@ -657,7 +812,9 @@ class DatabaseService:
         environment_id: str,
         workflow_id: str
     ) -> Optional[Dict[str, Any]]:
-        """Restore an archived workflow.
+        """
+        DEPRECATED: Use canonical workflow system instead.
+        Restore an archived workflow by marking mapping as linked.
 
         Args:
             tenant_id: The tenant ID
@@ -665,19 +822,85 @@ class DatabaseService:
             workflow_id: The N8N workflow ID
 
         Returns:
-            The updated workflow record or None if not found
+            The updated workflow mapping or None if not found
         """
-        response = self.client.table("workflows").update({
-            "is_archived": False,
-            "archived_at": None,
-            "archived_by": None
-        }).eq("tenant_id", tenant_id).eq("environment_id", environment_id).eq("n8n_workflow_id", workflow_id).execute()
-
-        return response.data[0] if response.data else None
+        try:
+            # Find mapping and mark as linked (unarchive)
+            response = (
+                self.client.table("workflow_env_map")
+                .update({
+                    "status": "linked"
+                })
+                .eq("tenant_id", tenant_id)
+                .eq("environment_id", environment_id)
+                .eq("n8n_workflow_id", workflow_id)
+                .execute()
+            )
+            
+            if response.data:
+                mapping = response.data[0]
+                # Get workflow data for backward compatibility
+                workflow_data = mapping.get("workflow_data") or {}
+                return {
+                    "n8n_workflow_id": workflow_id,
+                    "name": workflow_data.get("name") or "Unknown",
+                    "workflow_data": workflow_data
+                }
+            return None
+        except Exception as e:
+            logger.warning(f"Failed to unarchive workflow: {str(e)}")
+            return None
 
     async def update_workflow_in_cache(self, tenant_id: str, environment_id: str, n8n_workflow_id: str, workflow_data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-        """Update an existing workflow in cache with new data"""
-        return await self.upsert_workflow(tenant_id, environment_id, workflow_data)
+        """
+        DEPRECATED: Use canonical workflow system instead.
+        Update workflow mapping with new workflow data in canonical system.
+        """
+        try:
+            # Find mapping by n8n_workflow_id
+            mapping_response = (
+                self.client.table("workflow_env_map")
+                .select("canonical_id")
+                .eq("tenant_id", tenant_id)
+                .eq("environment_id", environment_id)
+                .eq("n8n_workflow_id", n8n_workflow_id)
+                .single()
+                .execute()
+            )
+            
+            if not mapping_response.data:
+                return None
+            
+            canonical_id = mapping_response.data.get("canonical_id")
+            
+            # Update workflow_data in mapping
+            from app.services.canonical_workflow_service import compute_workflow_hash
+            content_hash = compute_workflow_hash(workflow_data)
+            
+            update_response = (
+                self.client.table("workflow_env_map")
+                .update({
+                    "workflow_data": workflow_data,
+                    "env_content_hash": content_hash,
+                    "last_env_sync_at": datetime.utcnow().isoformat()
+                })
+                .eq("tenant_id", tenant_id)
+                .eq("environment_id", environment_id)
+                .eq("canonical_id", canonical_id)
+                .execute()
+            )
+            
+            if update_response.data:
+                mapping = update_response.data[0]
+                return {
+                    "n8n_workflow_id": n8n_workflow_id,
+                    "name": workflow_data.get("name") or "Unknown",
+                    "workflow_data": workflow_data
+                }
+            return None
+        except Exception as e:
+            logger.warning(f"Failed to update workflow in cache: {str(e)}")
+            return None
 
     async def refresh_workflow_dependencies_for_env(
         self,
@@ -686,18 +909,28 @@ class DatabaseService:
         provider: str,
     ) -> None:
         """
-        Refresh workflow credential dependencies for all workflows in an environment.
+        DEPRECATED: Refresh workflow credential dependencies for all workflows in an environment.
         Call this after sync workflows to keep dependency index fresh.
+        Uses canonical system.
         """
         from app.services.adapters.n8n_adapter import N8NProviderAdapter
 
-        workflows = await self.get_workflows(tenant_id, environment_id)
+        # Use canonical system to get workflows
+        workflows = await self.get_workflows_from_canonical(
+            tenant_id=tenant_id,
+            environment_id=environment_id,
+            include_deleted=False,
+            include_ignored=False
+        )
         for wf in workflows:
             wf_data = wf.get("workflow_data") or {}
+            if not wf_data:
+                # Try to get from workflow_data field in mapping
+                continue
             logical_keys = N8NProviderAdapter.extract_logical_credentials(wf_data)
             await self.upsert_workflow_dependencies(
                 tenant_id=tenant_id,
-                workflow_id=str(wf.get("n8n_workflow_id") or wf.get("id")),
+                workflow_id=str(wf.get("id") or wf.get("n8n_workflow_id")),
                 provider=provider,
                 logical_credential_ids=logical_keys,
             )
@@ -1244,20 +1477,51 @@ class DatabaseService:
             if e.get("execution_time") is not None:
                 stats["durations"].append(e["execution_time"])
 
-        # Look up workflow names from workflows table for any missing names
+        # Look up workflow names from canonical system for any missing names
         missing_name_ids = [wf_id for wf_id, stats in workflow_stats.items() if not stats["workflow_name"]]
         if missing_name_ids:
             try:
-                # Build query to get workflow names
-                workflows_query = self.client.table("workflows").select(
-                    "n8n_workflow_id, name"
-                ).eq("tenant_id", tenant_id).eq("is_deleted", False).in_("n8n_workflow_id", missing_name_ids)
-
+                # Build query to get workflow names from workflow_env_map
+                query = (
+                    self.client.table("workflow_env_map")
+                    .select("n8n_workflow_id, workflow_data, canonical_workflows(display_name)")
+                    .eq("tenant_id", tenant_id)
+                    .in_("n8n_workflow_id", missing_name_ids)
+                )
+                
                 if environment_id:
-                    workflows_query = workflows_query.eq("environment_id", environment_id)
+                    query = query.eq("environment_id", environment_id)
 
-                workflows_response = workflows_query.execute()
-                workflow_name_map = {w["n8n_workflow_id"]: w["name"] for w in workflows_response.data if w.get("n8n_workflow_id")}
+                mappings_response = query.execute()
+                
+                # Get canonical IDs to fetch display names separately (Supabase doesn't support nested joins)
+                canonical_ids = [m.get("canonical_id") for m in (mappings_response.data or []) if m.get("canonical_id")]
+                canonical_map = {}
+                if canonical_ids:
+                    canonical_response = (
+                        self.client.table("canonical_workflows")
+                        .select("canonical_id, display_name")
+                        .eq("tenant_id", tenant_id)
+                        .in_("canonical_id", canonical_ids)
+                        .execute()
+                    )
+                    for canonical in (canonical_response.data or []):
+                        canonical_map[canonical.get("canonical_id")] = canonical
+                
+                # Build workflow name map
+                workflow_name_map = {}
+                for mapping in (mappings_response.data or []):
+                    n8n_id = mapping.get("n8n_workflow_id")
+                    if n8n_id:
+                        workflow_data = mapping.get("workflow_data") or {}
+                        canonical_id = mapping.get("canonical_id")
+                        canonical = canonical_map.get(canonical_id, {}) if canonical_id else {}
+                        workflow_name = (
+                            workflow_data.get("name") or 
+                            canonical.get("display_name") or 
+                            n8n_id  # Fallback to ID
+                        )
+                        workflow_name_map[n8n_id] = workflow_name
 
                 # Update workflow_stats with looked-up names
                 for wf_id in missing_name_ids:
@@ -1810,6 +2074,229 @@ class DatabaseService:
     async def delete_provider_plan(self, plan_id: str) -> bool:
         """Delete a provider plan"""
         self.client.table("provider_plans").delete().eq("id", plan_id).execute()
+        return True
+
+    # Canonical Workflow Operations
+    
+    async def get_tenant(self, tenant_id: str) -> Optional[Dict[str, Any]]:
+        """Get tenant by ID"""
+        response = self.client.table("tenants").select("*").eq("id", tenant_id).single().execute()
+        return response.data if response.data else None
+    
+    async def update_tenant_onboarding(
+        self,
+        tenant_id: str,
+        anchor_environment_id: Optional[str] = None,
+        onboarded_at: Optional[datetime] = None,
+        onboarding_version: Optional[int] = None
+    ) -> Optional[Dict[str, Any]]:
+        """Update tenant onboarding status"""
+        update_data = {}
+        if anchor_environment_id is not None:
+            update_data["canonical_anchor_environment_id"] = anchor_environment_id
+        if onboarded_at is not None:
+            update_data["canonical_onboarded_at"] = onboarded_at.isoformat() if isinstance(onboarded_at, datetime) else onboarded_at
+        if onboarding_version is not None:
+            update_data["canonical_onboarding_version"] = onboarding_version
+        
+        if not update_data:
+            return None
+        
+        response = self.client.table("tenants").update(update_data).eq("id", tenant_id).execute()
+        return response.data[0] if response.data else None
+    
+    async def get_canonical_workflows(
+        self,
+        tenant_id: str,
+        include_deleted: bool = False
+    ) -> List[Dict[str, Any]]:
+        """Get all canonical workflows for a tenant"""
+        query = self.client.table("canonical_workflows").select("*").eq("tenant_id", tenant_id)
+        if not include_deleted:
+            query = query.is_("deleted_at", "null")
+        response = query.order("created_at", desc=True).execute()
+        return response.data or []
+    
+    async def get_workflow_mappings(
+        self,
+        tenant_id: str,
+        environment_id: Optional[str] = None,
+        canonical_id: Optional[str] = None,
+        status: Optional[str] = None
+    ) -> List[Dict[str, Any]]:
+        """Get workflow environment mappings"""
+        query = self.client.table("workflow_env_map").select("*").eq("tenant_id", tenant_id)
+        if environment_id:
+            query = query.eq("environment_id", environment_id)
+        if canonical_id:
+            query = query.eq("canonical_id", canonical_id)
+        if status:
+            query = query.eq("status", status)
+        response = query.execute()
+        return response.data or []
+    
+    async def get_workflows_from_canonical(
+        self,
+        tenant_id: str,
+        environment_id: str,
+        include_deleted: bool = False,
+        include_ignored: bool = False
+    ) -> List[Dict[str, Any]]:
+        """
+        Get workflows for an environment from canonical system.
+        
+        Returns workflows with full workflow_data from workflow_env_map,
+        joined with canonical_workflows for display names.
+        
+        This replaces the legacy get_workflows() method.
+        """
+        # Get workflow mappings for this environment
+        query = (
+            self.client.table("workflow_env_map")
+            .select("*")
+            .eq("tenant_id", tenant_id)
+            .eq("environment_id", environment_id)
+        )
+        
+        # Filter by status
+        if not include_deleted:
+            query = query.neq("status", "deleted").or_("status.is.null")
+        if not include_ignored:
+            query = query.neq("status", "ignored").or_("status.is.null")
+        
+        # Only get workflows that have n8n_workflow_id (exist in n8n)
+        query = query.not_.is_("n8n_workflow_id", "null")
+        
+        response = query.execute()
+        mappings = response.data or []
+        
+        # Get canonical workflows for display names (batch fetch)
+        canonical_ids = [m.get("canonical_id") for m in mappings if m.get("canonical_id")]
+        canonical_map = {}
+        if canonical_ids:
+            canonical_response = (
+                self.client.table("canonical_workflows")
+                .select("*")
+                .eq("tenant_id", tenant_id)
+                .in_("canonical_id", canonical_ids)
+                .execute()
+            )
+            for canonical in (canonical_response.data or []):
+                canonical_map[canonical.get("canonical_id")] = canonical
+        
+        # Transform to match legacy workflow format for backward compatibility
+        workflows = []
+        for mapping in mappings:
+            workflow_data = mapping.get("workflow_data") or {}
+            canonical_id = mapping.get("canonical_id")
+            canonical = canonical_map.get(canonical_id, {}) if canonical_id else {}
+            
+            # Build workflow object matching legacy format
+            workflow_obj = {
+                "id": mapping.get("n8n_workflow_id"),
+                "name": workflow_data.get("name") or canonical.get("display_name") or "Unknown",
+                "description": workflow_data.get("description") or "",
+                "active": workflow_data.get("active", False),
+                "tags": workflow_data.get("tags", []),
+                "createdAt": workflow_data.get("createdAt") or mapping.get("linked_at"),
+                "updatedAt": workflow_data.get("updatedAt") or mapping.get("last_env_sync_at"),
+                "nodes": workflow_data.get("nodes", []),
+                "connections": workflow_data.get("connections", {}),
+                "settings": workflow_data.get("settings", {}),
+                "lastSyncedAt": mapping.get("last_env_sync_at"),
+                "syncStatus": "synced" if mapping.get("status") == "linked" else "pending",
+                "canonical_id": canonical_id,
+                "canonical_display_name": canonical.get("display_name")
+            }
+            
+            workflows.append(workflow_obj)
+        
+        return workflows
+    
+    async def get_workflow_diff_states(
+        self,
+        tenant_id: str,
+        source_env_id: Optional[str] = None,
+        target_env_id: Optional[str] = None,
+        canonical_id: Optional[str] = None
+    ) -> List[Dict[str, Any]]:
+        """Get workflow diff states"""
+        query = self.client.table("workflow_diff_state").select("*").eq("tenant_id", tenant_id)
+        if source_env_id:
+            query = query.eq("source_env_id", source_env_id)
+        if target_env_id:
+            query = query.eq("target_env_id", target_env_id)
+        if canonical_id:
+            query = query.eq("canonical_id", canonical_id)
+        response = query.order("computed_at", desc=True).execute()
+        return response.data or []
+    
+    async def get_workflow_link_suggestions(
+        self,
+        tenant_id: str,
+        environment_id: Optional[str] = None,
+        status: Optional[str] = None
+    ) -> List[Dict[str, Any]]:
+        """Get workflow link suggestions"""
+        query = self.client.table("workflow_link_suggestions").select("*").eq("tenant_id", tenant_id)
+        if environment_id:
+            query = query.eq("environment_id", environment_id)
+        if status:
+            query = query.eq("status", status)
+        response = query.order("created_at", desc=True).execute()
+        return response.data or []
+    
+    async def update_workflow_link_suggestion(
+        self,
+        suggestion_id: str,
+        tenant_id: str,
+        status: str,
+        resolved_by_user_id: Optional[str] = None
+    ) -> Optional[Dict[str, Any]]:
+        """Update workflow link suggestion status"""
+        update_data = {
+            "status": status,
+            "resolved_at": datetime.utcnow().isoformat(),
+            "resolved_by_user_id": resolved_by_user_id
+        }
+        response = (
+            self.client.table("workflow_link_suggestions")
+            .update(update_data)
+            .eq("id", suggestion_id)
+            .eq("tenant_id", tenant_id)
+            .execute()
+        )
+        return response.data[0] if response.data else None
+    
+    async def check_onboarding_gate(self, tenant_id: str) -> bool:
+        """
+        Check if promotions are allowed (onboarding complete).
+        
+        Returns True if onboarding is complete, False otherwise.
+        """
+        tenant = await self.get_tenant(tenant_id)
+        if not tenant:
+            return False
+        
+        # Check if onboarded
+        if not tenant.get("canonical_onboarded_at"):
+            return False
+        
+        # Check for untracked workflows in anchor environment
+        anchor_env_id = tenant.get("canonical_anchor_environment_id")
+        if not anchor_env_id:
+            return False
+        
+        # Check for unresolved link suggestions
+        suggestions = await self.get_workflow_link_suggestions(
+            tenant_id=tenant_id,
+            status="open"
+        )
+        if suggestions:
+            return False
+        
+        # Additional checks can be added here (e.g., untracked workflows)
+        
         return True
 
 

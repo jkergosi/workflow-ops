@@ -385,15 +385,26 @@ async def execute_restore(
                     error=str(wf_err)
                 ))
 
-        # Sync workflows to database cache
+        # Sync workflows to database cache using canonical system
         try:
-            updated_workflows = await adapter.get_workflows()
-            await db_service.sync_workflows_from_n8n(tenant_id, environment_id, updated_workflows)
-
-            # Update workflow count
-            await db_service.update_environment_workflow_count(
-                environment_id, tenant_id, len(updated_workflows)
-            )
+            from app.services.canonical_env_sync_service import CanonicalEnvSyncService
+            env_config = await db_service.get_environment(environment_id, tenant_id)
+            if env_config:
+                # Trigger canonical env sync to update workflow mappings
+                await CanonicalEnvSyncService.sync_environment(
+                    tenant_id=tenant_id,
+                    environment_id=environment_id,
+                    environment=env_config
+                )
+                
+                # Update workflow count from canonical system
+                mappings = await db_service.get_workflow_mappings(
+                    tenant_id=tenant_id,
+                    environment_id=environment_id
+                )
+                await db_service.update_environment_workflow_count(
+                    environment_id, tenant_id, len([m for m in mappings if m.get("n8n_workflow_id")])
+                )
         except Exception as sync_err:
             errors.append(f"Failed to sync workflows to cache: {str(sync_err)}")
 
@@ -521,10 +532,17 @@ async def rollback_workflow(request: RollbackRequest, user_info: dict = Depends(
         # Perform the rollback
         await adapter.update_workflow(workflow_id, workflow_data)
 
-        # Update database cache
+        # Update database cache using canonical system
         if env_id:
-            updated_workflows = await adapter.get_workflows()
-            await db_service.sync_workflows_from_n8n(tenant_id, env_id, updated_workflows)
+            from app.services.canonical_env_sync_service import CanonicalEnvSyncService
+            env_config = await db_service.get_environment(env_id, tenant_id)
+            if env_config:
+                # Trigger canonical env sync to update workflow mappings
+                await CanonicalEnvSyncService.sync_environment(
+                    tenant_id=tenant_id,
+                    environment_id=env_id,
+                    environment=env_config
+                )
 
         return {
             "success": True,

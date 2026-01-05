@@ -712,8 +712,13 @@ async def get_credential_health(
         provider=provider
     )
     
-    # Get workflow dependencies
-    workflows = await db_service.get_workflows(tenant_id, environment_id)
+    # Get workflow dependencies (using canonical system)
+    workflows = await db_service.get_workflows_from_canonical(
+        tenant_id=tenant_id,
+        environment_id=environment_id,
+        include_deleted=False,
+        include_ignored=False
+    )
     all_required_logical_ids = set()
     workflows_with_missing_deps = []
     
@@ -814,7 +819,12 @@ async def discover_credentials_from_workflows(
     if not env:
         raise HTTPException(status_code=404, detail="Environment not found")
 
-    workflows = await db_service.get_workflows(tenant_id, environment_id)
+    workflows = await db_service.get_workflows_from_canonical(
+        tenant_id=tenant_id,
+        environment_id=environment_id,
+        include_deleted=False,
+        include_ignored=False
+    )
     logical_creds = await db_service.list_logical_credentials(tenant_id)
     all_mappings = await db_service.list_credential_mappings(tenant_id, environment_id=environment_id, provider=provider)
 

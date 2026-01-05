@@ -197,6 +197,115 @@ export interface Snapshot {
 // Snapshot comparison types
 export type WorkflowDiffStatus = 'added' | 'removed' | 'modified' | 'unchanged';
 
+// Canonical Workflow Types
+export type WorkflowMappingStatus = 'linked' | 'ignored' | 'deleted';
+export type LinkSuggestionStatus = 'open' | 'accepted' | 'rejected' | 'expired';
+export type CanonicalWorkflowDiffStatus = 'unchanged' | 'modified' | 'added' | 'target_only' | 'target_hotfix';
+
+export interface CanonicalWorkflow {
+  tenantId: string;
+  canonicalId: string;
+  createdAt: string;
+  createdByUserId?: string;
+  displayName?: string;
+  deletedAt?: string;
+}
+
+export interface CanonicalWorkflowGitState {
+  tenantId: string;
+  environmentId: string;
+  canonicalId: string;
+  gitPath: string;
+  gitCommitSha?: string;
+  gitContentHash: string;
+  lastRepoSyncAt: string;
+}
+
+export interface WorkflowEnvMap {
+  tenantId: string;
+  environmentId: string;
+  canonicalId: string;
+  n8nWorkflowId?: string;
+  envContentHash: string;
+  lastEnvSyncAt: string;
+  linkedAt?: string;
+  linkedByUserId?: string;
+  status?: WorkflowMappingStatus;
+}
+
+export interface WorkflowLinkSuggestion {
+  id: string;
+  tenantId: string;
+  environmentId: string;
+  n8nWorkflowId: string;
+  canonicalId: string;
+  score: number;
+  reason?: string;
+  status: LinkSuggestionStatus;
+  createdAt: string;
+  resolvedAt?: string;
+  resolvedByUserId?: string;
+}
+
+export interface WorkflowDiffState {
+  id: string;
+  tenantId: string;
+  sourceEnvId: string;
+  targetEnvId: string;
+  canonicalId: string;
+  diffStatus: CanonicalWorkflowDiffStatus;
+  computedAt: string;
+}
+
+// Onboarding Types
+export interface OnboardingPreflight {
+  isPreCanonical: boolean;
+  hasLegacyWorkflows: boolean;
+  hasLegacyGitLayout: boolean;
+  environments: Array<{
+    id: string;
+    name: string;
+    environmentType?: string;
+    gitRepoUrl?: string;
+    gitFolder?: string;
+  }>;
+}
+
+export interface OnboardingInventoryRequest {
+  anchorEnvironmentId: string;
+  environmentConfigs: Array<{
+    environmentId: string;
+    gitRepoUrl?: string;
+    gitFolder?: string;
+  }>;
+}
+
+export interface OnboardingInventoryResponse {
+  jobId: string;
+  status: string;
+  message: string;
+}
+
+export interface MigrationPRRequest {
+  tenantSlug: string;
+}
+
+export interface MigrationPRResponse {
+  prUrl?: string;
+  branchName: string;
+  commitSha?: string;
+  error?: string;
+}
+
+export interface OnboardingCompleteCheck {
+  isComplete: boolean;
+  missingRepoSyncs: string[];
+  missingEnvSyncs: string[];
+  untrackedWorkflows: number;
+  unresolvedSuggestions: number;
+  message: string;
+}
+
 export interface WorkflowDiff {
   workflowId: string;
   workflowName: string;

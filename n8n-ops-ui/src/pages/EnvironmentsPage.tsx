@@ -560,23 +560,57 @@ export function EnvironmentsPage() {
     };
   };
 
-  // Helper function to get drift status badge info
-  const getDriftBadgeInfo = (env: Environment): {
-    status: 'in_sync' | 'drift_detected' | 'unknown' | 'error';
+  // Helper function to get state badge info (role-based: DEV vs STAGING/PROD)
+  const getStateBadgeInfo = (env: Environment): {
+    status: 'in_sync' | 'pending_sync' | 'drift_detected' | 'unknown' | 'error';
     label: string;
     variant: 'default' | 'secondary' | 'destructive' | 'outline';
+    tooltip: string;
   } => {
     const driftStatus = env.driftStatus?.toUpperCase() || 'UNKNOWN';
+    const envClass = env.environmentClass?.toLowerCase() || 'dev';
+    const isDev = envClass === 'dev';
 
     switch (driftStatus) {
       case 'IN_SYNC':
-        return { status: 'in_sync', label: 'In Sync', variant: 'default' };
+        return {
+          status: 'in_sync',
+          label: 'In Sync',
+          variant: 'default',
+          tooltip: isDev
+            ? 'Dev matches the canonical Git version.'
+            : 'This environment matches the canonical Git version.',
+        };
       case 'DRIFT_DETECTED':
-        return { status: 'drift_detected', label: 'Drift Detected', variant: 'destructive' };
+        // DEV shows "Pending Sync" instead of "Drift Detected"
+        if (isDev) {
+          return {
+            status: 'pending_sync',
+            label: 'Pending Sync',
+            variant: 'secondary',
+            tooltip: 'Changes exist in dev that have not yet been committed to Git.',
+          };
+        }
+        return {
+          status: 'drift_detected',
+          label: 'Drift Detected',
+          variant: 'destructive',
+          tooltip: 'This environment differs from the canonical Git version.',
+        };
       case 'ERROR':
-        return { status: 'error', label: 'Error', variant: 'secondary' };
+        return {
+          status: 'error',
+          label: 'Error',
+          variant: 'secondary',
+          tooltip: 'An error occurred while checking state.',
+        };
       default:
-        return { status: 'unknown', label: 'Unknown', variant: 'outline' };
+        return {
+          status: 'unknown',
+          label: 'Unknown',
+          variant: 'outline',
+          tooltip: 'State has not been checked yet.',
+        };
     }
   };
 
@@ -631,7 +665,7 @@ export function EnvironmentsPage() {
                 <TableRow>
                   <TableHead>Environment</TableHead>
                   <TableHead>Status</TableHead>
-                  {planName?.toLowerCase() !== 'free' && <TableHead>Drift</TableHead>}
+                  {planName?.toLowerCase() !== 'free' && <TableHead>State</TableHead>}
                   <TableHead>Workflows</TableHead>
                   <TableHead>Last Sync</TableHead>
                   <TableHead className="sticky right-0 bg-background">Actions</TableHead>
@@ -640,7 +674,7 @@ export function EnvironmentsPage() {
               <TableBody>
                 {environments?.data?.map((env) => {
                   const envStatus = getEnvironmentStatus(env);
-                  const driftBadge = getDriftBadgeInfo(env);
+                  const stateBadge = getStateBadgeInfo(env);
                   const isProduction = env.type?.toLowerCase() === 'production';
                   
                   return (
@@ -692,14 +726,23 @@ export function EnvironmentsPage() {
                       </TableCell>
                       {planName?.toLowerCase() !== 'free' && (
                         <TableCell>
-                          <Link to={`/environments/${env.id}#drift`}>
-                            <Badge
-                              variant={driftBadge.variant}
-                              className="text-xs cursor-pointer hover:opacity-80"
-                            >
-                              {driftBadge.label}
-                            </Badge>
-                          </Link>
+                          <TooltipProvider>
+                            <Tooltip>
+                              <TooltipTrigger asChild>
+                                <Link to={`/environments/${env.id}#drift`}>
+                                  <Badge
+                                    variant={stateBadge.variant}
+                                    className="text-xs cursor-pointer hover:opacity-80"
+                                  >
+                                    {stateBadge.label}
+                                  </Badge>
+                                </Link>
+                              </TooltipTrigger>
+                              <TooltipContent>
+                                <p>{stateBadge.tooltip}</p>
+                              </TooltipContent>
+                            </Tooltip>
+                          </TooltipProvider>
                           {env.lastDriftDetectedAt && (
                             <p className="text-xs text-muted-foreground mt-0.5">
                               Checked {formatRelativeTime(env.lastDriftDetectedAt)}
@@ -731,18 +774,30 @@ export function EnvironmentsPage() {
                       </TableCell>
                       <TableCell className="sticky right-0 bg-background">
                         <div className="flex gap-2 items-center">
-                          <Button
-                            size="sm"
-                            variant="outline"
-                            onClick={() => handleSyncClick(env)}
-                            disabled={syncingEnvId === env.id || activeJobs[env.id]?.status === 'running'}
-                            title="Sync workflows, executions, and credentials from N8N"
-                          >
-                            <RefreshCcw
-                              className={`h-3 w-3 mr-1 ${syncingEnvId === env.id || activeJobs[env.id]?.status === 'running' ? 'animate-spin' : ''}`}
-                            />
-                            Sync
-                          </Button>
+                          <TooltipProvider>
+                            <Tooltip>
+                              <TooltipTrigger asChild>
+                                <Button
+                                  size="sm"
+                                  variant="outline"
+                                  onClick={() => handleSyncClick(env)}
+                                  disabled={syncingEnvId === env.id || activeJobs[env.id]?.status === 'running'}
+                                >
+                                  <RefreshCcw
+                                    className={`h-3 w-3 mr-1 ${syncingEnvId === env.id || activeJobs[env.id]?.status === 'running' ? 'animate-spin' : ''}`}
+                                  />
+                                  Sync
+                                </Button>
+                              </TooltipTrigger>
+                              <TooltipContent>
+                                <p>
+                                  {env.environmentClass?.toLowerCase() === 'dev'
+                                    ? 'Sync captures current dev workflows and commits them to Git.'
+                                    : 'Sync checks this environment against the canonical Git version.'}
+                                </p>
+                              </TooltipContent>
+                            </Tooltip>
+                          </TooltipProvider>
                           <DropdownMenu>
                             <DropdownMenuTrigger asChild>
                               <Button size="sm" variant="ghost" className="h-8 w-8 p-0">
@@ -991,12 +1046,16 @@ export function EnvironmentsPage() {
           <DialogHeader>
             <DialogTitle>Sync Environment</DialogTitle>
             <DialogDescription>
-              Sync workflows, executions, and credentials from {selectedEnvForAction?.name}
+              {selectedEnvForAction?.environmentClass?.toLowerCase() === 'dev'
+                ? `Capture and commit changes from ${selectedEnvForAction?.name}`
+                : `Check ${selectedEnvForAction?.name} against canonical Git version`}
             </DialogDescription>
           </DialogHeader>
           <div className="py-4">
             <p className="text-sm text-muted-foreground">
-              This will pull the latest data from the n8n instance. The sync will run in the background and you can track progress in the Activity Center.
+              {selectedEnvForAction?.environmentClass?.toLowerCase() === 'dev'
+                ? 'This will pull the latest workflows from the n8n instance and commit any changes to Git. The sync will run in the background.'
+                : 'This will pull the latest workflows from the n8n instance and compare against the canonical Git version. The sync will run in the background.'}
             </p>
           </div>
           <DialogFooter>

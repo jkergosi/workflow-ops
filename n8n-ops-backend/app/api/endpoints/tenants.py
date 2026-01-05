@@ -270,10 +270,15 @@ async def get_tenant(tenant_id: str, _: dict = Depends(require_platform_admin())
 
         tenant = response.data
 
-        # Get counts
-        workflow_response = db_service.client.table("workflows").select(
-            "id", count="exact"
-        ).eq("tenant_id", tenant_id).eq("is_deleted", False).execute()
+        # Get counts from canonical system (count unique canonical workflows)
+        workflow_mappings = await db_service.client.table("workflow_env_map").select("canonical_id").eq("tenant_id", tenant_id).execute()
+        unique_canonical_ids = set()
+        for mapping in (workflow_mappings.data or []):
+            cid = mapping.get("canonical_id")
+            if cid:
+                unique_canonical_ids.add(cid)
+        workflow_count = len(unique_canonical_ids)
+        workflow_response = type('obj', (object,), {'count': workflow_count})()
 
         env_response = db_service.client.table("environments").select(
             "id", count="exact"
@@ -515,8 +520,8 @@ async def delete_tenant(tenant_id: str, user_info: dict = Depends(require_platfo
         # Delete executions
         db_service.client.table("executions").delete().eq("tenant_id", tenant_id).execute()
 
-        # Delete workflows
-        db_service.client.table("workflows").delete().eq("tenant_id", tenant_id).execute()
+        # Delete canonical workflows (cascades to workflow_env_map, workflow_diff_state, etc. via foreign keys)
+        db_service.client.table("canonical_workflows").delete().eq("tenant_id", tenant_id).execute()
 
         # Delete credentials
         db_service.client.table("credentials").delete().eq("tenant_id", tenant_id).execute()
@@ -1291,12 +1296,15 @@ async def get_tenant_usage(
                 return query
             return query.eq("provider", provider_filter)
 
-        # Get counts with provider filtering
-        workflow_query = db_service.client.table("workflows").select("id, provider", count="exact")
-        workflow_query = workflow_query.eq("tenant_id", tenant_id).eq("is_deleted", False)
-        workflow_query = apply_provider_filter_local(workflow_query)
-        workflow_response = await workflow_query.execute()
-        workflow_count = workflow_response.count or 0
+        # Get counts from canonical system (count unique canonical workflows)
+        # Note: Provider filtering not directly supported in canonical system
+        workflow_mappings = await db_service.client.table("workflow_env_map").select("canonical_id").eq("tenant_id", tenant_id).execute()
+        unique_canonical_ids = set()
+        for mapping in (workflow_mappings.data or []):
+            cid = mapping.get("canonical_id")
+            if cid:
+                unique_canonical_ids.add(cid)
+        workflow_count = len(unique_canonical_ids)
 
         env_query = db_service.client.table("environments").select("id, provider", count="exact")
         env_query = env_query.eq("tenant_id", tenant_id)

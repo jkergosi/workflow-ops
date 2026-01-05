@@ -37,6 +37,8 @@ import { RestorePage } from '@/pages/RestorePage';
 import { ProfilePage } from '@/pages/ProfilePage';
 import { PipelineEditorPage } from '@/pages/PipelineEditorPage';
 import { PromotePage } from '@/pages/PromotePage';
+import { CanonicalOnboardingPage } from '@/pages/CanonicalOnboardingPage';
+import { CanonicalWorkflowsPage } from '@/pages/CanonicalWorkflowsPage';
 import {
   TenantsPage,
   TenantDetailPage,
@@ -314,6 +316,8 @@ function App() {
                 <Route path="/pipelines/:id" element={<RoleProtectedRoute><PipelineEditorPage /></RoleProtectedRoute>} />
                 <Route path="/promote" element={<RoleProtectedRoute><PromotePage /></RoleProtectedRoute>} />
                 <Route path="/deployments/new" element={<Navigate to="/promote" replace />} />
+                <Route path="/canonical/onboarding" element={<RoleProtectedRoute><CanonicalOnboardingPage /></RoleProtectedRoute>} />
+                <Route path="/canonical/workflows" element={<RoleProtectedRoute><CanonicalWorkflowsPage /></RoleProtectedRoute>} />
                 <Route path="/observability" element={<RoleProtectedRoute><ObservabilityPage /></RoleProtectedRoute>} />
                 <Route path="/alerts" element={<RoleProtectedRoute><AlertsPage /></RoleProtectedRoute>} />
                 <Route path="/activity" element={<RoleProtectedRoute><ActivityCenterPage /></RoleProtectedRoute>} />

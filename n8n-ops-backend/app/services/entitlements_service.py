@@ -327,12 +327,16 @@ class EntitlementsService:
             )
 
     async def get_workflow_count(self, tenant_id: str) -> int:
-        """Get current workflow count across all environments for a tenant."""
+        """Get current workflow count across all environments for a tenant (from canonical system)."""
         try:
-            response = db_service.client.table("workflows").select(
-                "id", count="exact"
-            ).eq("tenant_id", tenant_id).eq("is_deleted", False).execute()
-            return response.count or 0
+            # Count unique canonical workflows from workflow_env_map
+            mappings_response = await db_service.client.table("workflow_env_map").select("canonical_id").eq("tenant_id", tenant_id).execute()
+            unique_canonical_ids = set()
+            for mapping in (mappings_response.data or []):
+                cid = mapping.get("canonical_id")
+                if cid:
+                    unique_canonical_ids.add(cid)
+            return len(unique_canonical_ids)
         except Exception as e:
             logger.error(f"Failed to get workflow count: {e}")
             return 0

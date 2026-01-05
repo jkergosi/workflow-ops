@@ -483,20 +483,128 @@ async def _sync_environment_background(
                 except Exception as e:
                     logger.warning(f"Failed to analyze workflow {workflow.get('id', 'unknown')}: {str(e)}")
             
-            synced_workflows = await db_service.sync_workflows_from_n8n(
-                tenant_id,
-                environment_id,
-                workflows,
-                workflows_with_analysis=workflows_with_analysis if workflows_with_analysis else None
+            # Use canonical workflow system for syncing
+            from app.services.canonical_env_sync_service import CanonicalEnvSyncService
+            from app.services.canonical_reconciliation_service import CanonicalReconciliationService
+            
+            # Sync using canonical workflow system
+            env_sync_result = await CanonicalEnvSyncService.sync_environment(
+                tenant_id=tenant_id,
+                environment_id=environment_id,
+                environment=environment,
+                job_id=job_id
             )
-            sync_results["workflows"]["synced"] = len(synced_workflows)
-
+            
+            sync_results["workflows"]["synced"] = env_sync_result.get("workflows_synced", 0)
+            sync_results["workflows"]["errors"] = env_sync_result.get("errors", [])
+            
+            # Update workflow count (for backward compatibility)
             await db_service.update_environment_workflow_count(
                 environment_id,
                 tenant_id,
-                len(synced_workflows)
+                env_sync_result.get("workflows_synced", 0)
             )
             
+            # Trigger reconciliation after env sync
+            try:
+                await CanonicalReconciliationService.reconcile_all_pairs_for_environment(
+                    tenant_id=tenant_id,
+                    changed_env_id=environment_id
+                )
+            except Exception as recon_error:
+                logger.warning(f"Failed to trigger reconciliation after env sync: {str(recon_error)}")
+
+            # DEV environments: commit changed workflows to Git
+            env_class = environment.get("environment_class", "").lower()
+            if env_class == "dev":
+                try:
+                    from app.services.github_service import GitHubService
+                    from app.services.canonical_workflow_service import compute_workflow_hash
+
+                    git_repo_url = environment.get("git_repo_url")
+                    git_branch = environment.get("git_branch", "main")
+                    git_pat = environment.get("git_pat")
+
+                    if git_repo_url and git_pat:
+                        # Parse repo owner/name from URL
+                        import re
+                        match = re.match(r'https://github\.com/([^/]+)/([^/]+?)(?:\.git)?$', git_repo_url)
+                        if match:
+                            repo_owner, repo_name = match.groups()
+                            github = GitHubService(
+                                token=git_pat,
+                                repo_owner=repo_owner,
+                                repo_name=repo_name,
+                                branch=git_branch
+                            )
+
+                            # Get workflows with differences (n8n hash != git hash)
+                            env_map_result = db_service.client.table("workflow_env_map").select(
+                                "canonical_id, env_content_hash, workflow_data"
+                            ).eq("tenant_id", tenant_id).eq("environment_id", environment_id).execute()
+
+                            git_state_result = db_service.client.table("canonical_workflow_git_state").select(
+                                "canonical_id, git_content_hash"
+                            ).eq("tenant_id", tenant_id).eq("environment_id", environment_id).execute()
+
+                            # Build lookup for Git hashes
+                            git_hashes = {row["canonical_id"]: row["git_content_hash"] for row in (git_state_result.data or [])}
+
+                            # Find workflows with changes
+                            workflows_to_commit = []
+                            for mapping in (env_map_result.data or []):
+                                canonical_id = mapping["canonical_id"]
+                                env_hash = mapping.get("env_content_hash")
+                                git_hash = git_hashes.get(canonical_id)
+                                workflow_data = mapping.get("workflow_data")
+
+                                # If hashes differ or no Git hash exists, workflow has changes
+                                if workflow_data and env_hash and env_hash != git_hash:
+                                    workflows_to_commit.append({
+                                        "canonical_id": canonical_id,
+                                        "workflow_data": workflow_data,
+                                        "env_hash": env_hash
+                                    })
+
+                            # Commit changed workflows to Git
+                            if workflows_to_commit:
+                                git_folder = environment.get("git_folder") or "dev"
+                                committed_count = 0
+
+                                for wf in workflows_to_commit:
+                                    try:
+                                        workflow_name = wf["workflow_data"].get("name", "Unknown")
+                                        await github.write_workflow_file(
+                                            canonical_id=wf["canonical_id"],
+                                            workflow_data=wf["workflow_data"],
+                                            git_folder=git_folder,
+                                            commit_message=f"sync(dev): update {workflow_name}"
+                                        )
+
+                                        # Update git_state with new hash
+                                        db_service.client.table("canonical_workflow_git_state").upsert({
+                                            "tenant_id": tenant_id,
+                                            "environment_id": environment_id,
+                                            "canonical_id": wf["canonical_id"],
+                                            "git_content_hash": wf["env_hash"],
+                                            "last_git_sync_at": datetime.utcnow().isoformat()
+                                        }, on_conflict="tenant_id,environment_id,canonical_id").execute()
+
+                                        committed_count += 1
+                                    except Exception as commit_err:
+                                        logger.warning(f"Failed to commit workflow {wf['canonical_id']} to Git: {commit_err}")
+
+                                logger.info(f"DEV sync: committed {committed_count} workflows to Git")
+                            else:
+                                logger.info("DEV sync: no workflow changes to commit to Git")
+                        else:
+                            logger.warning(f"Could not parse Git repo URL: {git_repo_url}")
+                    else:
+                        logger.debug("DEV environment has no Git configuration, skipping Git commit")
+                except Exception as git_err:
+                    logger.warning(f"Failed to commit DEV changes to Git: {git_err}")
+                    # Don't fail sync if Git commit fails
+
             # Refresh workflow credential dependencies
             try:
                 provider = environment.get("provider", "n8n") or "n8n"

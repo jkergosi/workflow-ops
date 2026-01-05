@@ -100,44 +100,57 @@ async def get_workflows(
         env_config = await resolve_environment_config(environment_id, environment, tenant_id)
         env_id = env_config.get("id")
 
-        # Try to get workflows from cache first (unless force_refresh is requested)
+        # Use canonical workflow system (replaces legacy workflows table)
+        # Try to get workflows from canonical cache first (unless force_refresh is requested)
         if not force_refresh:
-            cached_workflows = await db_service.get_workflows(tenant_id, env_id)
+            try:
+                cached_workflows = await db_service.get_workflows_from_canonical(
+                    tenant_id=tenant_id,
+                    environment_id=env_id,
+                    include_deleted=False,
+                    include_ignored=False
+                )
+                
+                if cached_workflows:
+                    # Compute analysis for cached workflows if needed
+                    from app.services.workflow_analysis_service import analyze_workflow
+                    for workflow in cached_workflows:
+                        try:
+                            # Only analyze if workflow_data has nodes
+                            if workflow.get("nodes"):
+                                analysis = analyze_workflow(workflow)
+                                workflow["analysis"] = analysis
+                        except Exception as e:
+                            # Log error but continue - analysis is optional
+                            import logging
+                            logging.warning(f"Failed to analyze workflow {workflow.get('id', 'unknown')}: {str(e)}")
+                    
+                    return cached_workflows
+            except Exception as e:
+                # If canonical system fails, fall through to n8n fetch
+                import logging
+                logging.warning(f"Failed to get workflows from canonical system: {str(e)}, falling back to n8n")
 
-            if cached_workflows is not None:
-                # Transform cached workflows to match frontend expectations (including empty lists)
-                transformed_workflows = []
-                for cached in cached_workflows:
-                    # Extract data from workflow_data JSONB field
-                    workflow_data = cached.get("workflow_data", {})
-
-                    workflow_obj = {
-                        "id": cached.get("n8n_workflow_id"),
-                        "name": cached.get("name"),
-                        "description": "",
-                        "active": cached.get("active", False),
-                        "tags": cached.get("tags", []),
-                        "createdAt": cached.get("created_at"),
-                        "updatedAt": cached.get("updated_at"),
-                        "nodes": workflow_data.get("nodes", []),
-                        "connections": workflow_data.get("connections", {}),
-                        "settings": workflow_data.get("settings", {}),
-                        "lastSyncedAt": cached.get("last_synced_at"),  # Extra field for frontend to show cache status
-                        "syncStatus": cached.get("sync_status")  # Sync status field
-                    }
-                    # Include analysis if available
-                    if cached.get("analysis"):
-                        workflow_obj["analysis"] = cached.get("analysis")
-                    transformed_workflows.append(workflow_obj)
-
-                return transformed_workflows
-
-        # If no cache or force_refresh, fetch from N8N
+        # If no cache or force_refresh, fetch from N8N and trigger env sync
         # Create provider adapter for environment
         adapter = ProviderRegistry.get_adapter_for_environment(env_config)
 
         # Fetch workflows from provider
         workflows = await adapter.get_workflows()
+
+        # Trigger async env sync to update canonical cache (don't wait)
+        from app.services.background_job_service import background_job_service, BackgroundJobType
+        try:
+            await background_job_service.create_job(
+                tenant_id=tenant_id,
+                job_type=BackgroundJobType.CANONICAL_ENV_SYNC,
+                resource_id=env_id,
+                resource_type="environment",
+                metadata={"environment_id": env_id}
+            )
+        except Exception as e:
+            import logging
+            logging.warning(f"Failed to trigger env sync job: {str(e)}")
 
         # Compute analysis for each workflow
         from app.services.workflow_analysis_service import analyze_workflow
@@ -152,13 +165,29 @@ async def get_workflows(
                 logging.warning(f"Failed to analyze workflow {workflow.get('id', 'unknown')}: {str(e)}")
                 # Continue without analysis for this workflow
 
-        # Sync workflows to database cache with analysis
-        await db_service.sync_workflows_from_n8n(
-            tenant_id, 
-            env_id, 
-            workflows,
-            workflows_with_analysis=workflows_with_analysis if workflows_with_analysis else None
-        )
+        # Transform n8n workflows to match frontend format
+        transformed_workflows = []
+        for workflow in workflows:
+            workflow_obj = {
+                "id": workflow.get("id"),
+                "name": workflow.get("name", "Unknown"),
+                "description": workflow.get("description", ""),
+                "active": workflow.get("active", False),
+                "tags": workflow.get("tags", []),
+                "createdAt": workflow.get("createdAt"),
+                "updatedAt": workflow.get("updatedAt"),
+                "nodes": workflow.get("nodes", []),
+                "connections": workflow.get("connections", {}),
+                "settings": workflow.get("settings", {}),
+                "lastSyncedAt": None,  # Not synced yet
+                "syncStatus": "pending"
+            }
+            # Include analysis if available
+            if workflow.get("id") in workflows_with_analysis:
+                workflow_obj["analysis"] = workflows_with_analysis[workflow.get("id")]
+            transformed_workflows.append(workflow_obj)
+        
+        return transformed_workflows
 
         # Compute sync status for all workflows if GitHub is configured
         sync_status_map = {}
@@ -1525,26 +1554,37 @@ async def delete_workflow(
 
         await adapter.delete_workflow(workflow_id)
 
-        # Soft delete from cache
+        # Mark workflow mapping as deleted in canonical system
         try:
             await db_service.delete_workflow_from_cache(
                 tenant_id,
                 env_config.get("id"),
                 workflow_id
             )
+            
+            # Trigger env sync to update mappings
+            from app.services.canonical_env_sync_service import CanonicalEnvSyncService
+            await CanonicalEnvSyncService.sync_environment(
+                tenant_id=tenant_id,
+                environment_id=env_config.get("id"),
+                environment=env_config
+            )
         except Exception as cache_error:
-            print(f"Failed to delete workflow from cache: {str(cache_error)}")
+            logger.warning(f"Failed to delete workflow from cache: {str(cache_error)}")
 
         # Update workflow count after deletion
         try:
-            all_workflows = await adapter.get_workflows()
+            mappings = await db_service.get_workflow_mappings(
+                tenant_id=tenant_id,
+                environment_id=env_config.get("id")
+            )
             await db_service.update_environment_workflow_count(
                 environment_id=env_config.get("id"),
                 tenant_id=tenant_id,
-                count=len(all_workflows)
+                count=len([m for m in mappings if m.get("n8n_workflow_id")])
             )
         except Exception as count_error:
-            print(f"Failed to update workflow count: {str(count_error)}")
+            logger.warning(f"Failed to update workflow count: {str(count_error)}")
 
         # Create audit log with provider context
         try:

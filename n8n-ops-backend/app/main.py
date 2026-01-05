@@ -2,7 +2,7 @@ from fastapi import FastAPI, Request, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from app.core.config import settings
-from app.api.endpoints import environments, workflows, executions, tags, billing, teams, n8n_users, tenants, auth, restore, promotions, credentials, pipelines, deployments, snapshots, observability, notifications, admin_entitlements, admin_audit, admin_billing, admin_usage, admin_credentials, admin_providers, support, admin_support, admin_environment_types, sse, providers, background_jobs, health, incidents, drift_policies, drift_approvals, workflow_policy, environment_capabilities, drift_reports, admin_retention, security, platform_admins, platform_impersonation, platform_console, platform_overview, admin_overview
+from app.api.endpoints import environments, workflows, executions, tags, billing, teams, n8n_users, tenants, auth, restore, promotions, credentials, pipelines, deployments, snapshots, observability, notifications, admin_entitlements, admin_audit, admin_billing, admin_usage, admin_credentials, admin_providers, support, admin_support, admin_environment_types, sse, providers, background_jobs, health, incidents, drift_policies, drift_approvals, workflow_policy, environment_capabilities, drift_reports, admin_retention, security, platform_admins, platform_impersonation, platform_console, platform_overview, admin_overview, canonical_workflows, github_webhooks
 from app.services.background_job_service import background_job_service
 from app.services.database import db_service
 from app.api.endpoints.admin_audit import create_audit_log
@@ -349,6 +349,18 @@ app.include_router(
     tags=["drift-reports"]
 )
 
+app.include_router(
+    canonical_workflows.router,
+    prefix=f"{settings.API_V1_PREFIX}/canonical",
+    tags=["canonical-workflows"]
+)
+
+app.include_router(
+    github_webhooks.router,
+    prefix=f"{settings.API_V1_PREFIX}",
+    tags=["webhooks"]
+)
+
 
 @app.get("/")
 async def root():
@@ -388,6 +400,11 @@ async def startup_event():
         from app.services.drift_scheduler import start_all_drift_schedulers
         await start_all_drift_schedulers()
         logger.info("Drift detection scheduler started")
+        
+        # Start canonical workflow sync schedulers
+        from app.services.canonical_sync_scheduler import start_canonical_sync_schedulers
+        await start_canonical_sync_schedulers()
+        logger.info("Canonical workflow sync schedulers started")
         
         # Also cleanup stale deployments directly (in case job cleanup didn't catch them)
         try:
@@ -443,6 +460,11 @@ async def shutdown_event():
         from app.services.drift_scheduler import stop_all_drift_schedulers
         await stop_all_drift_schedulers()
         logger.info("Drift detection scheduler stopped")
+        
+        # Stop canonical workflow sync schedulers
+        from app.services.canonical_sync_scheduler import stop_canonical_sync_schedulers
+        await stop_canonical_sync_schedulers()
+        logger.info("Canonical workflow sync schedulers stopped")
     except Exception as e:
         logger.error(f"Error stopping drift scheduler: {str(e)}")
 

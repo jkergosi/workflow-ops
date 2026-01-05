@@ -27,6 +27,11 @@ class BackgroundJobType:
     GITHUB_SYNC_TO = "github_sync_to"
     RESTORE_EXECUTE = "restore_execute"
     SNAPSHOT_RESTORE = "snapshot_restore"
+    # Canonical workflow job types
+    CANONICAL_REPO_SYNC = "canonical_repo_sync"
+    CANONICAL_ENV_SYNC = "canonical_env_sync"
+    CANONICAL_RECONCILIATION = "canonical_reconciliation"
+    CANONICAL_ONBOARDING_INVENTORY = "canonical_onboarding_inventory"
 
 
 class BackgroundJobService:
@@ -39,7 +44,8 @@ class BackgroundJobService:
         resource_id: Optional[str] = None,
         resource_type: Optional[str] = None,
         created_by: Optional[str] = None,
-        initial_progress: Optional[Dict[str, Any]] = None
+        initial_progress: Optional[Dict[str, Any]] = None,
+        metadata: Optional[Dict[str, Any]] = None
     ) -> Dict[str, Any]:
         """
         Create a new background job record.
@@ -51,6 +57,7 @@ class BackgroundJobService:
             resource_type: Type of resource ('promotion', 'environment', etc.)
             created_by: User ID who created the job
             initial_progress: Initial progress data
+            metadata: Additional metadata for the job
             
         Returns:
             Job record dictionary
@@ -66,7 +73,8 @@ class BackgroundJobService:
             "created_by": created_by,
             "progress": initial_progress or {},
             "result": {},
-            "error_details": {}
+            "error_details": {},
+            "metadata": metadata or {}
         }
         
         try:

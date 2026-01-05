@@ -189,10 +189,14 @@ class PromotionService:
         if not github_service.is_configured():
             raise ValueError("GitHub is not properly configured")
 
-        # Export all workflows to GitHub (using environment type key for folder path)
+        # Export all workflows to GitHub
+        # For canonical workflows: use git_folder if available, otherwise fall back to environment_type
+        git_folder = env_config.get("git_folder")
         env_type = env_config.get("n8n_type")
-        if not env_type:
-            raise ValueError("Environment type is required for GitHub workflow operations")
+        
+        if not git_folder and not env_type:
+            raise ValueError("Either git_folder or environment type is required for GitHub workflow operations")
+        
         commit_sha = None
         workflows_synced = 0
 
@@ -201,23 +205,55 @@ class PromotionService:
                 workflow_id = workflow.get("id")
                 full_workflow = await adapter.get_workflow(workflow_id)
 
-                # Sync to GitHub with environment-specific path
-                await github_service.sync_workflow_to_github(
-                    workflow_id=workflow_id,
-                    workflow_name=full_workflow.get("name"),
-                    workflow_data=full_workflow,
-                    commit_message=f"Auto backup before promotion: {reason}",
-                    environment_type=env_type
-                )
+                # Sync to GitHub - use git_folder for canonical workflows, fallback to env_type for legacy
+                if git_folder:
+                    # For canonical workflows, we need to find the canonical_id
+                    # If not found, this is a legacy workflow - skip or handle differently
+                    from app.services.database import db_service
+                    mappings = await db_service.get_workflow_mappings(
+                        tenant_id=tenant_id,
+                        environment_id=environment_id
+                    )
+                    
+                    # Find mapping for this n8n_workflow_id
+                    mapping = next((m for m in mappings if m.get("n8n_workflow_id") == workflow_id), None)
+                    
+                    if mapping:
+                        # Use canonical workflow system
+                        canonical_id = mapping.get("canonical_id")
+                        await github_service.write_workflow_file(
+                            canonical_id=canonical_id,
+                            workflow_data=full_workflow,
+                            git_folder=git_folder,
+                            commit_message=f"Auto backup before promotion: {reason}"
+                        )
+                    else:
+                        # Legacy workflow - use old method
+                        await github_service.sync_workflow_to_github(
+                            workflow_id=workflow_id,
+                            workflow_name=full_workflow.get("name"),
+                            workflow_data=full_workflow,
+                            commit_message=f"Auto backup before promotion: {reason}",
+                            environment_type=env_type
+                        )
+                else:
+                    # Legacy mode - use environment_type
+                    await github_service.sync_workflow_to_github(
+                        workflow_id=workflow_id,
+                        workflow_name=full_workflow.get("name"),
+                        workflow_data=full_workflow,
+                        commit_message=f"Auto backup before promotion: {reason}",
+                        environment_type=env_type
+                    )
                 workflows_synced += 1
             except Exception as e:
                 logger.error(f"Failed to sync workflow {workflow.get('id')}: {str(e)}")
                 continue
 
-        # Get the latest commit SHA (use sanitized environment type folder)
-        sanitized_folder = github_service._sanitize_foldername(env_type)
+        # Get the latest commit SHA
         try:
-            commits = github_service.repo.get_commits(path=f"workflows/{sanitized_folder}", sha=github_service.branch)
+            folder_path = f"workflows/{git_folder}" if git_folder else f"workflows/{github_service._sanitize_foldername(env_type)}"
+            commits = github_service.repo.get_commits(path=folder_path, sha=github_service.branch)
             if commits:
                 commit_sha = commits[0].sha
         except Exception as e:
@@ -1217,11 +1253,74 @@ class PromotionService:
         warnings = []
         created_placeholders = []
 
-        # Get workflows from GitHub snapshot (using environment type folder path)
-        source_env_type = source_env.get("n8n_type")
-        if not source_env_type:
-            raise ValueError("Environment type is required for GitHub workflow operations")
-        source_workflow_map = await source_github.get_all_workflows_from_github(environment_type=source_env_type)
+        # Check onboarding gate
+        from app.services.database import db_service
+        onboarding_allowed = await db_service.check_onboarding_gate(tenant_id)
+        if not onboarding_allowed:
+            return PromotionExecutionResult(
+                promotion_id=promotion_id,
+                status=PromotionStatus.FAILED,
+                workflows_promoted=0,
+                workflows_failed=0,
+                workflows_skipped=0,
+                source_snapshot_id=source_snapshot_id,
+                errors=["Promotions are blocked until onboarding is complete. Please complete canonical workflow onboarding first."]
+            )
+        
+        # Load workflows from Git (canonical workflow system)
+        # Promotions ALWAYS load from Git, never from source environment
+        from app.services.canonical_workflow_service import CanonicalWorkflowService
+        from app.services.github_service import GitHubService
+        
+        source_git_folder = source_env.get("git_folder")
+        if not source_git_folder:
+            raise ValueError("Git folder is required for canonical workflow promotions")
+        
+        # Get GitHub service for source environment
+        source_github = self._get_github_service(source_env)
+        
+        # Load canonical workflows from Git
+        source_workflow_map = {}
+        
+        # Get all canonical workflows for this tenant
+        canonical_workflows = await CanonicalWorkflowService.list_canonical_workflows(tenant_id)
+        
+        for canonical in canonical_workflows:
+            canonical_id = canonical["canonical_id"]
+            
+            # Get Git state for source environment
+            git_state = await CanonicalWorkflowService.get_canonical_workflow_git_state(
+                tenant_id, source_env_id, canonical_id
+            )
+            
+            if not git_state:
+                continue
+            
+            # Load workflow from Git
+            workflow_data = await source_github.get_file_content(
+                git_state["git_path"],
+                git_state.get("git_commit_sha") or source_env.get("git_branch", "main")
+            )
+            
+            if workflow_data:
+                # Remove metadata (keep pure n8n format)
+                workflow_data.pop("_comment", None)
+                
+                # Get mapping to find n8n_workflow_id for matching
+                from app.services.database import db_service
+                mappings = await db_service.get_workflow_mappings(
+                    tenant_id=tenant_id,
+                    environment_id=source_env_id,
+                    canonical_id=canonical_id
+                )
+                
+                # Use n8n_workflow_id as key for compatibility with existing code
+                if mappings and mappings[0].get("n8n_workflow_id"):
+                    n8n_id = mappings[0]["n8n_workflow_id"]
+                    source_workflow_map[n8n_id] = workflow_data
+                else:
+                    # Fallback: use canonical_id as key
+                    source_workflow_map[canonical_id] = workflow_data
 
         # Track which workflows have placeholder credentials
         workflows_with_placeholders = set()
@@ -1347,6 +1446,98 @@ class PromotionService:
                             raise
                 
                 workflows_promoted += 1
+                
+                # Update sidecar file after successful promotion
+                try:
+                    # Find canonical_id for this workflow
+                    # Look up by n8n_workflow_id in source environment
+                    canonical_id = None
+                    source_mappings = await db_service.get_workflow_mappings(
+                        tenant_id=tenant_id,
+                        environment_id=source_env_id
+                    )
+                    for mapping in source_mappings:
+                        if mapping.get("n8n_workflow_id") == selection.workflow_id:
+                            canonical_id = mapping.get("canonical_id")
+                            break
+                    
+                    # If not found, try to find by matching workflow content hash
+                    if not canonical_id:
+                        from app.services.canonical_workflow_service import compute_workflow_hash
+                        workflow_hash = compute_workflow_hash(workflow_data)
+                        
+                        # Check all canonical workflows for matching hash
+                        for canonical in canonical_workflows:
+                            git_state = await CanonicalWorkflowService.get_canonical_workflow_git_state(
+                                tenant_id, source_env_id, canonical["canonical_id"]
+                            )
+                            if git_state and git_state.get("git_content_hash") == workflow_hash:
+                                canonical_id = canonical["canonical_id"]
+                                break
+                    
+                    if canonical_id:
+                        # Get target n8n_workflow_id (from the created/updated workflow)
+                        target_workflow = await target_adapter.get_workflow(workflow_id)
+                        target_n8n_id = target_workflow.get("id") if target_workflow else workflow_id
+                        
+                        # Compute content hash
+                        from app.services.canonical_workflow_service import compute_workflow_hash
+                        content_hash = compute_workflow_hash(workflow_data)
+                        
+                        # Update or create mapping
+                        from app.services.canonical_env_sync_service import CanonicalEnvSyncService
+                        from app.schemas.canonical_workflow import WorkflowMappingStatus
+                        await CanonicalEnvSyncService._create_workflow_mapping(
+                            tenant_id=tenant_id,
+                            environment_id=target_env_id,
+                            canonical_id=canonical_id,
+                            n8n_workflow_id=target_n8n_id,
+                            content_hash=content_hash,
+                            status=WorkflowMappingStatus.LINKED,
+                            linked_by_user_id=None  # TODO: Get from auth
+                        )
+                        
+                        # Update sidecar file in Git
+                        target_git_folder = target_env.get("git_folder")
+                        if target_git_folder:
+                            target_github = self._get_github_service(target_env)
+                            
+                            # Get existing sidecar or create new
+                            git_state = await CanonicalWorkflowService.get_canonical_workflow_git_state(
+                                tenant_id, target_env_id, canonical_id
+                            )
+                            
+                            if git_state:
+                                sidecar_path = git_state["git_path"].replace('.json', '.env-map.json')
+                                
+                                # Get existing sidecar or create new structure
+                                sidecar_data = await target_github.get_file_content(sidecar_path) or {
+                                    "canonical_workflow_id": canonical_id,
+                                    "workflow_name": workflow_data.get("name", "Unknown"),
+                                    "environments": {}
+                                }
+                                
+                                # Update target environment mapping
+                                if "environments" not in sidecar_data:
+                                    sidecar_data["environments"] = {}
+                                
+                                sidecar_data["environments"][target_env_id] = {
+                                    "n8n_workflow_id": target_n8n_id,
+                                    "content_hash": f"sha256:{content_hash}",
+                                    "last_seen_at": datetime.utcnow().isoformat()
+                                }
+                                
+                                # Write sidecar file
+                                await target_github.write_sidecar_file(
+                                    canonical_id=canonical_id,
+                                    sidecar_data=sidecar_data,
+                                    git_folder=target_git_folder,
+                                    commit_message=f"Update sidecar after promotion: {workflow_data.get('name', 'Unknown')}"
+                                )
+                except Exception as e:
+                    logger.warning(f"Failed to update sidecar for {selection.workflow_name}: {str(e)}")
+                    # Don't fail promotion if sidecar update fails
+            
             except Exception as e:
                 error_msg = f"Failed to promote {selection.workflow_name}: {str(e)}"
                 errors.append(error_msg)

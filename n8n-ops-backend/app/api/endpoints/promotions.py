@@ -266,22 +266,109 @@ async def compare_environments(
                 detail="Source or target environment not found"
             )
 
-        # Get workflows from GitHub for both environments
-        source_github = promotion_service._get_github_service(source_env)
-        target_github = promotion_service._get_github_service(target_env)
-
-        source_env_type = source_env.get("n8n_type")
-        target_env_type = target_env.get("n8n_type")
-
-        if not source_env_type or not target_env_type:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Environment type is required for comparison"
+        # Check if canonical workflow system is being used
+        # Use canonical workflow diff states from database (fast, cached)
+        from app.services.canonical_reconciliation_service import CanonicalReconciliationService
+        from app.services.canonical_workflow_service import CanonicalWorkflowService
+        from app.services.database import db_service
+        
+        # Check onboarding status
+        onboarding_allowed = await db_service.check_onboarding_gate(tenant_id)
+        
+        if onboarding_allowed:
+            # Use canonical workflow diff states from database
+            # Trigger reconciliation if needed (debounced)
+            try:
+                await CanonicalReconciliationService.reconcile_environment_pair(
+                    tenant_id=tenant_id,
+                    source_env_id=source_env_id,
+                    target_env_id=target_env_id,
+                    force=False
+                )
+            except Exception as recon_error:
+                logger.warning(f"Reconciliation failed, falling back to direct comparison: {str(recon_error)}")
+            
+            # Get diff states from database
+            diff_states = await db_service.get_workflow_diff_states(
+                tenant_id=tenant_id,
+                source_env_id=source_env_id,
+                target_env_id=target_env_id
             )
+            
+            # Get canonical workflows and mappings
+            canonical_workflows = await CanonicalWorkflowService.list_canonical_workflows(tenant_id)
+            source_mappings = await db_service.get_workflow_mappings(
+                tenant_id=tenant_id,
+                environment_id=source_env_id
+            )
+            target_mappings = await db_service.get_workflow_mappings(
+                tenant_id=tenant_id,
+                environment_id=target_env_id
+            )
+            
+            # Build source and target maps from canonical workflows
+            source_map = {}
+            target_map = {}
+            
+            # Get GitHub service for loading workflow content
+            source_github = promotion_service._get_github_service(source_env)
+            target_github = promotion_service._get_github_service(target_env)
+            
+            for canonical in canonical_workflows:
+                canonical_id = canonical["canonical_id"]
+                
+                # Get source workflow from Git
+                source_git_state = await CanonicalWorkflowService.get_canonical_workflow_git_state(
+                    tenant_id, source_env_id, canonical_id
+                )
+                if source_git_state:
+                    source_wf = await source_github.get_file_content(
+                        source_git_state["git_path"],
+                        source_git_state.get("git_commit_sha") or source_env.get("git_branch", "main")
+                    )
+                    if source_wf:
+                        source_wf.pop("_comment", None)
+                        # Use n8n_workflow_id as key for compatibility
+                        source_mapping = next((m for m in source_mappings if m.get("canonical_id") == canonical_id), None)
+                        if source_mapping and source_mapping.get("n8n_workflow_id"):
+                            source_map[source_mapping["n8n_workflow_id"]] = source_wf
+                        else:
+                            source_map[canonical_id] = source_wf
+                
+                # Get target workflow from Git
+                target_git_state = await CanonicalWorkflowService.get_canonical_workflow_git_state(
+                    tenant_id, target_env_id, canonical_id
+                )
+                if target_git_state:
+                    target_wf = await target_github.get_file_content(
+                        target_git_state["git_path"],
+                        target_git_state.get("git_commit_sha") or target_env.get("git_branch", "main")
+                    )
+                    if target_wf:
+                        target_wf.pop("_comment", None)
+                        # Use n8n_workflow_id as key for compatibility
+                        target_mapping = next((m for m in target_mappings if m.get("canonical_id") == canonical_id), None)
+                        if target_mapping and target_mapping.get("n8n_workflow_id"):
+                            target_map[target_mapping["n8n_workflow_id"]] = target_wf
+                        else:
+                            target_map[canonical_id] = target_wf
+        else:
+            # Legacy mode - load directly from GitHub
+            source_github = promotion_service._get_github_service(source_env)
+            target_github = promotion_service._get_github_service(target_env)
 
-        # Fetch workflows from GitHub
-        source_map = await source_github.get_all_workflows_from_github(environment_type=source_env_type)
-        target_map = await target_github.get_all_workflows_from_github(environment_type=target_env_type)
+            source_env_type = source_env.get("n8n_type")
+            target_env_type = target_env.get("n8n_type")
+
+            if not source_env_type or not target_env_type:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Environment type is required for comparison"
+                )
+
+            # Fetch workflows from GitHub
+            source_map = await source_github.get_all_workflows_from_github(environment_type=source_env_type)
+            target_map = await target_github.get_all_workflows_from_github(environment_type=target_env_type)
 
         # Build comparison results
         workflows: List[WorkflowCompareResult] = []
@@ -293,73 +380,120 @@ async def compare_environments(
             "target_hotfix": 0,
         }
 
+        # Use diff states from database if available (faster)
+        diff_states_map = {}
+        if onboarding_allowed:
+            diff_states = await db_service.get_workflow_diff_states(
+                tenant_id=tenant_id,
+                source_env_id=source_env_id,
+                target_env_id=target_env_id
+            )
+            # Build map of canonical_id -> diff_state
+            for diff_state in diff_states:
+                canonical_id = diff_state.get("canonical_id")
+                # Find n8n_workflow_id for this canonical_id
+                source_mapping = next((m for m in source_mappings if m.get("canonical_id") == canonical_id), None)
+                if source_mapping and source_mapping.get("n8n_workflow_id"):
+                    diff_states_map[source_mapping["n8n_workflow_id"]] = diff_state
+
         all_workflow_ids = set(source_map.keys()) | set(target_map.keys())
 
         for wf_id in all_workflow_ids:
             source_wf = source_map.get(wf_id)
             target_wf = target_map.get(wf_id)
 
-            # Determine DiffStatus
+            # Determine DiffStatus - use cached diff state if available
             diff_status: DiffStatus
             risk_level = RiskLevel.LOW
             change_categories: List[ChangeCategory] = []
             diff_hash = None
 
-            if source_wf and not target_wf:
-                # Exists only in source -> ADDED
-                diff_status = DiffStatus.ADDED
-                summary_counts["added"] += 1
-                diff_hash = compute_diff_hash(source_wf, None)
-
-            elif target_wf and not source_wf:
-                # Exists only in target -> DELETED (target-only)
-                diff_status = DiffStatus.DELETED
-                summary_counts["deleted"] += 1
-                diff_hash = compute_diff_hash(None, target_wf)
-
-            else:
-                # Exists in both - compare normalized content
-                source_normalized = normalize_workflow_for_comparison(source_wf)
-                target_normalized = normalize_workflow_for_comparison(target_wf)
-
-                import json
-                source_json = json.dumps(source_normalized, sort_keys=True)
-                target_json = json.dumps(target_normalized, sort_keys=True)
-
-                if source_json == target_json:
-                    # Content identical -> UNCHANGED
+            # Check if we have a cached diff state
+            cached_diff = diff_states_map.get(wf_id)
+            if cached_diff:
+                # Use cached diff status
+                diff_status_str = cached_diff.get("diff_status", "")
+                if diff_status_str == "added":
+                    diff_status = DiffStatus.ADDED
+                    summary_counts["added"] += 1
+                elif diff_status_str == "target_only":
+                    diff_status = DiffStatus.DELETED
+                    summary_counts["deleted"] += 1
+                elif diff_status_str == "unchanged":
                     diff_status = DiffStatus.UNCHANGED
                     summary_counts["unchanged"] += 1
-                    diff_hash = compute_diff_hash(source_wf, target_wf)
+                elif diff_status_str == "target_hotfix":
+                    diff_status = DiffStatus.TARGET_HOTFIX
+                    summary_counts["target_hotfix"] += 1
                 else:
-                    # Content differs - check timestamps to determine who's newer
-                    source_updated = source_wf.get("updatedAt")
-                    target_updated = target_wf.get("updatedAt")
-
-                    target_is_newer = False
-                    if source_updated and target_updated:
-                        try:
-                            source_dt = datetime.fromisoformat(source_updated.replace('Z', '+00:00'))
-                            target_dt = datetime.fromisoformat(target_updated.replace('Z', '+00:00'))
-                            target_is_newer = target_dt > source_dt
-                        except (ValueError, TypeError):
-                            pass
-
-                    if target_is_newer:
-                        # Target modified more recently -> TARGET_HOTFIX
-                        diff_status = DiffStatus.TARGET_HOTFIX
-                        summary_counts["target_hotfix"] += 1
-                    else:
-                        # Source newer or unknown -> MODIFIED
-                        diff_status = DiffStatus.MODIFIED
-                        summary_counts["modified"] += 1
-
-                    # Compute semantic categories and risk for modified workflows
+                    diff_status = DiffStatus.MODIFIED
+                    summary_counts["modified"] += 1
+                
+                # Still need to compute categories and risk from actual content
+                if source_wf and target_wf and diff_status in [DiffStatus.MODIFIED, DiffStatus.TARGET_HOTFIX]:
                     from app.services.diff_service import compare_workflows as diff_compare
                     drift_result = diff_compare(source_wf, target_wf)
                     change_categories = compute_change_categories(source_wf, target_wf, drift_result.differences)
                     risk_level = compute_risk_level(change_categories)
-                    diff_hash = compute_diff_hash(source_wf, target_wf)
+                
+                diff_hash = compute_diff_hash(source_wf, target_wf)
+            else:
+                # Compute diff status from workflow content
+                if source_wf and not target_wf:
+                    # Exists only in source -> ADDED
+                    diff_status = DiffStatus.ADDED
+                    summary_counts["added"] += 1
+                    diff_hash = compute_diff_hash(source_wf, None)
+
+                elif target_wf and not source_wf:
+                    # Exists only in target -> DELETED (target-only)
+                    diff_status = DiffStatus.DELETED
+                    summary_counts["deleted"] += 1
+                    diff_hash = compute_diff_hash(None, target_wf)
+
+                else:
+                    # Exists in both - compare normalized content
+                    source_normalized = normalize_workflow_for_comparison(source_wf)
+                    target_normalized = normalize_workflow_for_comparison(target_wf)
+
+                    import json
+                    source_json = json.dumps(source_normalized, sort_keys=True)
+                    target_json = json.dumps(target_normalized, sort_keys=True)
+
+                    if source_json == target_json:
+                        # Content identical -> UNCHANGED
+                        diff_status = DiffStatus.UNCHANGED
+                        summary_counts["unchanged"] += 1
+                        diff_hash = compute_diff_hash(source_wf, target_wf)
+                    else:
+                        # Content differs - check timestamps to determine who's newer
+                        source_updated = source_wf.get("updatedAt")
+                        target_updated = target_wf.get("updatedAt")
+
+                        target_is_newer = False
+                        if source_updated and target_updated:
+                            try:
+                                source_dt = datetime.fromisoformat(source_updated.replace('Z', '+00:00'))
+                                target_dt = datetime.fromisoformat(target_updated.replace('Z', '+00:00'))
+                                target_is_newer = target_dt > source_dt
+                            except (ValueError, TypeError):
+                                pass
+
+                        if target_is_newer:
+                            # Target modified more recently -> TARGET_HOTFIX
+                            diff_status = DiffStatus.TARGET_HOTFIX
+                            summary_counts["target_hotfix"] += 1
+                        else:
+                            # Source newer or unknown -> MODIFIED
+                            diff_status = DiffStatus.MODIFIED
+                            summary_counts["modified"] += 1
+
+                        # Compute semantic categories and risk for modified workflows
+                        from app.services.diff_service import compare_workflows as diff_compare
+                        drift_result = diff_compare(source_wf, target_wf)
+                        change_categories = compute_change_categories(source_wf, target_wf, drift_result.differences)
+                        risk_level = compute_risk_level(change_categories)
+                        diff_hash = compute_diff_hash(source_wf, target_wf)
 
             # Build result
             workflow_name = (source_wf or target_wf or {}).get("name", "Unknown")

@@ -98,6 +98,24 @@ export function PromotePage() {
     };
   }, []);
 
+  // Check onboarding status
+  const [onboardingComplete, setOnboardingComplete] = useState<boolean | null>(null);
+  const [onboardingCheck, setOnboardingCheck] = useState<any>(null);
+
+  useEffect(() => {
+    const checkOnboarding = async () => {
+      try {
+        const response = await apiClient.get('/canonical/onboarding/complete');
+        setOnboardingCheck(response.data);
+        setOnboardingComplete(response.data.isComplete);
+      } catch (error) {
+        // If endpoint doesn't exist or fails, assume not onboarded
+        setOnboardingComplete(false);
+      }
+    };
+    checkOnboarding();
+  }, []);
+
   const navigate = useNavigate();
   const queryClient = useQueryClient();
 
@@ -463,6 +481,42 @@ export function PromotePage() {
     if (selectable.length === 0) return false;
     return selectable.every(w => workflowSelections.get(w.workflowId));
   }, [compareResult, workflowSelections]);
+
+  // Show onboarding blocking message if not complete
+  if (onboardingComplete === false) {
+    return (
+      <div className="container mx-auto py-8">
+        <Alert className="mb-6">
+          <AlertTriangle className="h-4 w-4" />
+          <AlertDescription>
+            <div className="space-y-2">
+              <p className="font-medium">Canonical Workflow Onboarding Required</p>
+              <p>
+                Promotions are blocked until canonical workflow onboarding is complete.
+                {onboardingCheck && (
+                  <span className="block mt-2 text-sm">
+                    {onboardingCheck.message}
+                    {onboardingCheck.unresolvedSuggestions > 0 && (
+                      <span> • {onboardingCheck.unresolvedSuggestions} unresolved link suggestions</span>
+                    )}
+                    {onboardingCheck.untrackedWorkflows > 0 && (
+                      <span> • {onboardingCheck.untrackedWorkflows} untracked workflows</span>
+                    )}
+                  </span>
+                )}
+              </p>
+              <Button
+                onClick={() => navigate('/canonical/onboarding')}
+                className="mt-4"
+              >
+                Start Onboarding
+              </Button>
+            </div>
+          </AlertDescription>
+        </Alert>
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-6">
