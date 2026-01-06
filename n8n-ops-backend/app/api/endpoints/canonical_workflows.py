@@ -61,9 +61,9 @@ async def start_onboarding_inventory(
     request: OnboardingInventoryRequest,
     background_tasks: BackgroundTasks,
     user_info: dict = Depends(get_current_user),
-    _: dict = Depends(require_entitlement("workflow_write"))
+    _: dict = Depends(require_entitlement("environment_basic"))
 ):
-    """Start onboarding inventory phase"""
+    """Start onboarding inventory phase (read-only sync operation)"""
     tenant_id = get_tenant_id(user_info)
     
     # Create background job
@@ -136,7 +136,7 @@ async def _run_onboarding_inventory_background(
 async def create_migration_pr(
     request: MigrationPRRequest,
     user_info: dict = Depends(get_current_user),
-    _: dict = Depends(require_entitlement("workflow_write"))
+    _: dict = Depends(require_entitlement("workflow_push"))
 ):
     """Create migration PR for canonical workflows"""
     tenant_id = get_tenant_id(user_info)
@@ -230,38 +230,57 @@ async def sync_repository(
     environment_id: str,
     background_tasks: BackgroundTasks,
     user_info: dict = Depends(get_current_user),
-    _: dict = Depends(require_entitlement("workflow_write"))
+    _: dict = Depends(require_entitlement("environment_basic"))
 ):
-    """Sync workflows from Git repository to database"""
-    tenant_id = get_tenant_id(user_info)
-    
-    # Get environment
-    environment = await db_service.get_environment(environment_id, tenant_id)
-    if not environment:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Environment not found"
+    """Sync workflows from Git repository to database (read-only operation)"""
+    try:
+        tenant_id = get_tenant_id(user_info)
+        
+        # Get user ID from user_info
+        user = user_info.get("user", {})
+        user_id = user.get("id", "00000000-0000-0000-0000-000000000000")
+        
+        # Get environment
+        environment = await db_service.get_environment(environment_id, tenant_id)
+        if not environment:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Environment not found"
+            )
+        
+        # Create background job
+        job = await background_job_service.create_job(
+            tenant_id=tenant_id,
+            job_type=BackgroundJobType.CANONICAL_REPO_SYNC,
+            resource_id=environment_id,
+            resource_type="environment",
+            created_by=user_id
         )
-    
-    # Create background job
-    job = await background_job_service.create_job(
-        tenant_id=tenant_id,
-        job_type=BackgroundJobType.CANONICAL_REPO_SYNC,
-        resource_id=environment_id,
-        resource_type="environment",
-        created_by=user_info.get("user_id")
-    )
-    
-    # Enqueue background task
-    background_tasks.add_task(
-        _run_repo_sync_background,
-        job["id"],
-        tenant_id,
-        environment_id,
-        environment
-    )
-    
-    return {"job_id": job["id"], "status": "pending"}
+        
+        if not job or not job.get("id"):
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Failed to create background job"
+            )
+        
+        # Enqueue background task
+        background_tasks.add_task(
+            _run_repo_sync_background,
+            job["id"],
+            tenant_id,
+            environment_id,
+            environment
+        )
+        
+        return {"job_id": job["id"], "status": "pending"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to start repo sync: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to start sync: {str(e)}"
+        )
 
 
 async def _run_repo_sync_background(
@@ -308,38 +327,57 @@ async def sync_environment(
     environment_id: str,
     background_tasks: BackgroundTasks,
     user_info: dict = Depends(get_current_user),
-    _: dict = Depends(require_entitlement("workflow_write"))
+    _: dict = Depends(require_entitlement("environment_basic"))
 ):
-    """Sync workflows from n8n environment to database"""
-    tenant_id = get_tenant_id(user_info)
-    
-    # Get environment
-    environment = await db_service.get_environment(environment_id, tenant_id)
-    if not environment:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Environment not found"
+    """Sync workflows from n8n environment to database (read-only operation)"""
+    try:
+        tenant_id = get_tenant_id(user_info)
+        
+        # Get user ID from user_info
+        user = user_info.get("user", {})
+        user_id = user.get("id", "00000000-0000-0000-0000-000000000000")
+        
+        # Get environment
+        environment = await db_service.get_environment(environment_id, tenant_id)
+        if not environment:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Environment not found"
+            )
+        
+        # Create background job
+        job = await background_job_service.create_job(
+            tenant_id=tenant_id,
+            job_type=BackgroundJobType.CANONICAL_ENV_SYNC,
+            resource_id=environment_id,
+            resource_type="environment",
+            created_by=user_id
         )
-    
-    # Create background job
-    job = await background_job_service.create_job(
-        tenant_id=tenant_id,
-        job_type=BackgroundJobType.CANONICAL_ENV_SYNC,
-        resource_id=environment_id,
-        resource_type="environment",
-        created_by=user_info.get("user_id")
-    )
-    
-    # Enqueue background task
-    background_tasks.add_task(
-        _run_env_sync_background,
-        job["id"],
-        tenant_id,
-        environment_id,
-        environment
-    )
-    
-    return {"job_id": job["id"], "status": "pending"}
+        
+        if not job or not job.get("id"):
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Failed to create background job"
+            )
+        
+        # Enqueue background task
+        background_tasks.add_task(
+            _run_env_sync_background,
+            job["id"],
+            tenant_id,
+            environment_id,
+            environment
+        )
+        
+        return {"job_id": job["id"], "status": "pending"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to start env sync: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to start sync: {str(e)}"
+        )
 
 
 async def _run_env_sync_background(
@@ -355,6 +393,22 @@ async def _run_env_sync_background(
             status=BackgroundJobStatus.RUNNING
         )
         
+        # Emit initial SSE event
+        try:
+            from app.api.endpoints.sse import emit_sync_progress
+            await emit_sync_progress(
+                job_id=job_id,
+                environment_id=environment_id,
+                status="running",
+                current_step="initializing",
+                current=0,
+                total=1,
+                message="Starting sync...",
+                tenant_id=tenant_id
+            )
+        except Exception as sse_err:
+            logger.warning(f"Failed to emit initial SSE event: {str(sse_err)}")
+        
         # Get checkpoint from job progress if resuming
         job_data = await background_job_service.get_job(job_id)
         checkpoint = job_data.get("progress", {}).get("checkpoint")
@@ -364,14 +418,48 @@ async def _run_env_sync_background(
             environment_id=environment_id,
             environment=environment,
             job_id=job_id,
-            checkpoint=checkpoint
+            checkpoint=checkpoint,
+            tenant_id_for_sse=tenant_id
         )
+        
+        # Update last_connected and last_sync_at timestamps on successful sync
+        from datetime import datetime
+        now = datetime.utcnow().isoformat()
+        try:
+            await db_service.update_environment(
+                environment_id,
+                tenant_id,
+                {
+                    "last_connected": now,
+                    "last_sync_at": now
+                }
+            )
+        except Exception as conn_err:
+            logger.warning(f"Failed to update environment timestamps: {str(conn_err)}")
+        
+        workflows_synced = results.get("workflows_synced", 0)
         
         await background_job_service.update_job_status(
             job_id=job_id,
             status=BackgroundJobStatus.COMPLETED,
             result=results
         )
+        
+        # Emit completion SSE event
+        try:
+            from app.api.endpoints.sse import emit_sync_progress
+            await emit_sync_progress(
+                job_id=job_id,
+                environment_id=environment_id,
+                status="completed",
+                current_step="completed",
+                current=workflows_synced,
+                total=workflows_synced,
+                message=f"Sync completed: {workflows_synced} workflows synced",
+                tenant_id=tenant_id
+            )
+        except Exception as sse_err:
+            logger.warning(f"Failed to emit completion SSE event: {str(sse_err)}")
         
         # Trigger reconciliation for this environment
         await CanonicalReconciliationService.reconcile_all_pairs_for_environment(
@@ -385,6 +473,22 @@ async def _run_env_sync_background(
             status=BackgroundJobStatus.FAILED,
             error_message=str(e)
         )
+        
+        # Emit failure SSE event
+        try:
+            from app.api.endpoints.sse import emit_sync_progress
+            await emit_sync_progress(
+                job_id=job_id,
+                environment_id=environment_id,
+                status="failed",
+                current_step="failed",
+                current=0,
+                total=1,
+                message=f"Sync failed: {str(e)}",
+                tenant_id=tenant_id
+            )
+        except Exception as sse_err:
+            logger.warning(f"Failed to emit SSE failure event: {str(sse_err)}")
 
 
 @router.post("/reconcile/{source_env_id}/{target_env_id}")
@@ -511,7 +615,7 @@ async def resolve_link_suggestion(
     suggestion_id: str,
     status: str,
     user_info: dict = Depends(get_current_user),
-    _: dict = Depends(require_entitlement("workflow_write"))
+    _: dict = Depends(require_entitlement("workflow_push"))
 ):
     """Resolve a workflow link suggestion"""
     tenant_id = get_tenant_id(user_info)

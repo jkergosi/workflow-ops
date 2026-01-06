@@ -378,6 +378,9 @@ class ApiClient {
       allowUpload: env.allow_upload ?? false,
       lastConnected: env.last_connected,
       lastBackup: env.last_backup,
+      lastHeartbeatAt: env.last_heartbeat_at,
+      lastDriftCheckAt: env.last_drift_check_at,
+      lastSyncAt: env.last_sync_at,
       driftStatus: env.drift_status,
       lastDriftDetectedAt: env.last_drift_detected_at,
       activeDriftIncidentId: env.active_drift_incident_id,
@@ -410,6 +413,9 @@ class ApiClient {
       allowUpload: env.allow_upload ?? false,
       lastConnected: env.last_connected,
       lastBackup: env.last_backup,
+      lastHeartbeatAt: env.last_heartbeat_at,
+      lastDriftCheckAt: env.last_drift_check_at,
+      lastSyncAt: env.last_sync_at,
       driftStatus: env.drift_status,
       lastDriftDetectedAt: env.last_drift_detected_at,
       activeDriftIncidentId: env.active_drift_incident_id,
@@ -820,8 +826,15 @@ class ApiClient {
       message: string;
     };
   }> {
-    const response = await this.client.post(`/environments/${environmentId}/sync`);
-    return { data: response.data };
+    // Use canonical env sync endpoint (new canonical system)
+    const response = await this.client.post(`/canonical/sync/env/${environmentId}`);
+    return { 
+      data: {
+        job_id: response.data.job_id || response.data.jobId,
+        status: response.data.status || 'pending',
+        message: response.data.message || 'Sync started'
+      }
+    };
   }
 
   async getBackgroundJob(jobId: string): Promise<{
@@ -2613,7 +2626,8 @@ class ApiClient {
     precedence?: number;
     sort_order?: number;
   }): Promise<{ data: any }> {
-    const response = await this.client.patch(`/admin/entitlements/plan-configurations/metadata/${planName}`, data);
+    // Backend expects lowercase plan name in URL
+    const response = await this.client.patch(`/admin/entitlements/plan-configurations/metadata/${planName.toLowerCase()}`, data);
     return { data: response.data };
   }
 
@@ -3882,10 +3896,6 @@ class ApiClient {
     return { data: response.data };
   }
 
-  async syncEnvironment(environmentId: string): Promise<{ data: { jobId: string } }> {
-    const response = await this.client.post(`/canonical/sync/env/${environmentId}`);
-    return { data: response.data };
-  }
 
   async reconcileEnvironments(
     sourceEnvId: string,

@@ -4,9 +4,8 @@ import { ReactQueryDevtools } from '@tanstack/react-query-devtools';
 import { AuthProvider, useAuth } from '@/lib/auth';
 import { FeaturesProvider, useFeatures } from '@/lib/features';
 import { ThemeProvider } from '@/components/ThemeProvider';
-import { Toaster, toast } from 'sonner';
+import { Toaster } from 'sonner';
 import { ErrorBoundary } from '@/components/ErrorBoundary';
-import { ServiceStatusIndicator } from '@/components/ServiceStatusIndicator';
 import { RouteTracker } from '@/components/RouteTracker';
 import { useEffect, useState } from 'react';
 import { AppLayout } from '@/components/AppLayout';
@@ -156,21 +155,10 @@ function RoleProtectedRoute({ children }: { children: React.ReactNode }) {
       const role = (user as any)?.isPlatformAdmin ? 'platform_admin' : mapBackendRoleToFrontendRole(user.role);
       const pathname = location.pathname;
 
-      // #region agent log
-      fetch('http://127.0.0.1:7242/ingest/35363e7c-4fd6-4b04-adaf-3a3d3056abb3',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'App.tsx:142',message:'RoleProtectedRoute useEffect - checking access',data:{pathname,role,plan,userRole:user.role,isPlatformAdmin:(user as any)?.isPlatformAdmin},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'B'})}).catch(()=>{});
-      // #endregion
-
       const hasAccess = canAccessRoute(pathname, role, plan);
-      
-      // #region agent log
-      fetch('http://127.0.0.1:7242/ingest/35363e7c-4fd6-4b04-adaf-3a3d3056abb3',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'App.tsx:148',message:'canAccessRoute result',data:{pathname,role,plan,hasAccess},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A'})}).catch(()=>{});
-      // #endregion
 
       // Check if user can access this route
       if (!hasAccess) {
-        // #region agent log
-        fetch('http://127.0.0.1:7242/ingest/35363e7c-4fd6-4b04-adaf-3a3d3056abb3',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'App.tsx:151',message:'Redirecting to dashboard - unauthorized',data:{pathname,role,plan},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'B'})}).catch(()=>{});
-        // #endregion
         console.log('[RoleProtectedRoute] Redirecting to dashboard - unauthorized');
         // Redirect to dashboard if unauthorized
         navigate('/', { replace: true });
@@ -249,26 +237,6 @@ function PlanProtectedRoute({
 }
 
 function App() {
-  // Listen for service recovery notifications
-  useEffect(() => {
-    const handleServiceRecovery = (event: CustomEvent) => {
-      const { from, to } = event.detail;
-      if (from === 'unhealthy' && (to === 'healthy' || to === 'degraded')) {
-        toast.success('Service recovered', {
-          description: to === 'healthy' 
-            ? 'All systems are now operational' 
-            : 'Some services have recovered',
-          duration: 5000,
-        });
-      }
-    };
-
-    window.addEventListener('service-recovered', handleServiceRecovery as EventListener);
-    return () => {
-      window.removeEventListener('service-recovered', handleServiceRecovery as EventListener);
-    };
-  }, []);
-
   return (
     <ThemeProvider defaultTheme="system" storageKey="n8n-ops-theme">
       <QueryClientProvider client={queryClient}>
@@ -278,8 +246,6 @@ function App() {
               <BrowserRouter>
                 {/* Route Tracker - tracks lastRoute for navigation persistence */}
                 <RouteTracker />
-                {/* Service Status Indicator - shows when services are unhealthy */}
-                <ServiceStatusIndicator position="fixed" />
                 <Routes>
               <Route path="/login" element={<LoginPage />} />
               <Route

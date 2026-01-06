@@ -353,6 +353,35 @@ export function EnvironmentDetailPage() {
     },
   });
 
+  const syncMutation = useMutation({
+    mutationFn: (environmentId: string) => apiClient.syncEnvironment(environmentId),
+    onSuccess: (result, environmentId) => {
+      const { job_id, status, message } = result.data;
+
+      if (job_id && (status === 'running' || status === 'pending')) {
+        toast.success('Sync started in background');
+        setActiveJobs((prev) => ({
+          ...prev,
+          [environmentId]: {
+            jobId: job_id,
+            jobType: 'sync',
+            status: 'running',
+            current: 0,
+            total: 1,
+            message: 'Starting sync...',
+          },
+        }));
+        queryClient.invalidateQueries({ queryKey: ['environment', id] });
+        queryClient.invalidateQueries({ queryKey: ['environment-jobs', id] });
+      } else {
+        toast.error(message || 'Failed to start sync');
+      }
+    },
+    onError: (error: any) => {
+      toast.error(error.response?.data?.detail || 'Failed to sync environment');
+    },
+  });
+
   const downloadMutation = useMutation({
     mutationFn: (env: Environment) => apiClient.downloadWorkflows(env),
     onSuccess: () => {
@@ -871,7 +900,32 @@ export function EnvironmentDetailPage() {
             </div>
             <div className="space-y-1">
               <p className="text-sm font-medium text-muted-foreground">Last Sync</p>
-              <p className="text-sm">{formatRelativeTime(environment.lastConnected)}</p>
+              <div className="flex items-center gap-2">
+                <p className="text-sm">{formatRelativeTime(environment.lastConnected)}</p>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => {
+                    if (id) {
+                      syncMutation.mutate(id);
+                    }
+                  }}
+                  disabled={syncMutation.isPending || activeJob?.status === 'running'}
+                  className="h-7 text-xs"
+                >
+                  {syncMutation.isPending || activeJob?.status === 'running' ? (
+                    <>
+                      <Loader2 className="h-3 w-3 mr-1 animate-spin" />
+                      Syncing...
+                    </>
+                  ) : (
+                    <>
+                      <RefreshCw className="h-3 w-3 mr-1" />
+                      Sync
+                    </>
+                  )}
+                </Button>
+              </div>
             </div>
             <div className="space-y-1">
               <p className="text-sm font-medium text-muted-foreground">Last Drift Detected</p>

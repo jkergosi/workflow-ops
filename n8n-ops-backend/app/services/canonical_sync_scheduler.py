@@ -39,7 +39,7 @@ async def _process_repo_sync_scheduler():
     while _repo_sync_scheduler_running:
         try:
             # Get all environments with Git configured
-            all_environments = await db_service.client.table("environments").select("*").execute()
+            all_environments = db_service.client.table("environments").select("*").execute()
             
             for env in (all_environments.data or []):
                 if not env.get("git_repo_url") or not env.get("git_folder"):
@@ -99,7 +99,7 @@ async def _process_env_sync_scheduler():
     while _env_sync_scheduler_running:
         try:
             # Get all environments
-            all_environments = await db_service.client.table("environments").select("*").execute()
+            all_environments = db_service.client.table("environments").select("*").execute()
             
             for env in (all_environments.data or []):
                 tenant_id = env.get("tenant_id")
@@ -131,6 +131,16 @@ async def _process_env_sync_scheduler():
                             environment=env,
                             job_id=job["id"]
                         )
+                        
+                        # Update last_sync_at on successful sync
+                        try:
+                            await db_service.update_environment(
+                                environment_id,
+                                tenant_id,
+                                {"last_sync_at": datetime.utcnow().isoformat()}
+                            )
+                        except Exception as sync_err:
+                            logger.warning(f"Failed to update last_sync_at for scheduled sync: {str(sync_err)}")
                         
                         # Trigger reconciliation
                         await CanonicalReconciliationService.reconcile_all_pairs_for_environment(

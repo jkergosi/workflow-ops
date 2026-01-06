@@ -545,6 +545,76 @@ function ProviderPlansManagement() {
                                 <td className="p-3 text-right">
                                   <div className="flex justify-end gap-1">
                                     <Button
+                                      variant="outline"
+                                      size="icon"
+                                      onClick={async () => {
+                                        const sorted = [...(provider.plans || [])].sort((a: any, b: any) => (a.sort_order || 0) - (b.sort_order || 0));
+                                        const currentIdx = sorted.findIndex((p: any) => p.id === plan.id);
+                                        if (currentIdx > 0) {
+                                          const swap = sorted[currentIdx - 1];
+                                          const currentSortOrder = plan.sort_order || 0;
+                                          const swapSortOrder = swap.sort_order || 0;
+                                          try {
+                                            await Promise.all([
+                                              updatePlanMutation.mutateAsync({
+                                                planId: plan.id,
+                                                data: { sort_order: swapSortOrder }
+                                              }),
+                                              updatePlanMutation.mutateAsync({
+                                                planId: swap.id,
+                                                data: { sort_order: currentSortOrder }
+                                              })
+                                            ]);
+                                            toast.success('Plan order updated');
+                                          } catch (error: any) {
+                                            toast.error(error?.response?.data?.detail || 'Failed to move plan');
+                                          }
+                                        }
+                                      }}
+                                      disabled={(() => {
+                                        const sorted = [...(provider.plans || [])].sort((a: any, b: any) => (a.sort_order || 0) - (b.sort_order || 0));
+                                        return sorted.findIndex((p: any) => p.id === plan.id) === 0;
+                                      })()}
+                                      title="Move up"
+                                    >
+                                      <ArrowUp className="h-4 w-4" />
+                                    </Button>
+                                    <Button
+                                      variant="outline"
+                                      size="icon"
+                                      onClick={async () => {
+                                        const sorted = [...(provider.plans || [])].sort((a: any, b: any) => (a.sort_order || 0) - (b.sort_order || 0));
+                                        const currentIdx = sorted.findIndex((p: any) => p.id === plan.id);
+                                        if (currentIdx < sorted.length - 1) {
+                                          const swap = sorted[currentIdx + 1];
+                                          const currentSortOrder = plan.sort_order || 0;
+                                          const swapSortOrder = swap.sort_order || 0;
+                                          try {
+                                            await Promise.all([
+                                              updatePlanMutation.mutateAsync({
+                                                planId: plan.id,
+                                                data: { sort_order: swapSortOrder }
+                                              }),
+                                              updatePlanMutation.mutateAsync({
+                                                planId: swap.id,
+                                                data: { sort_order: currentSortOrder }
+                                              })
+                                            ]);
+                                            toast.success('Plan order updated');
+                                          } catch (error: any) {
+                                            toast.error(error?.response?.data?.detail || 'Failed to move plan');
+                                          }
+                                        }
+                                      }}
+                                      disabled={(() => {
+                                        const sorted = [...(provider.plans || [])].sort((a: any, b: any) => (a.sort_order || 0) - (b.sort_order || 0));
+                                        return sorted.findIndex((p: any) => p.id === plan.id) === sorted.length - 1;
+                                      })()}
+                                      title="Move down"
+                                    >
+                                      <ArrowDown className="h-4 w-4" />
+                                    </Button>
+                                    <Button
                                       size="sm"
                                       variant="ghost"
                                       onClick={() => setEditingPlan({ ...plan })}
@@ -2035,6 +2105,48 @@ function PlanConfigurationsManagement() {
     return <div className="text-center py-8">Loading plan configurations...</div>;
   }
 
+  const sortedMetadata = [...configs.metadata].sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0));
+
+  const movePlanMetadata = async (planName: string, direction: 'up' | 'down') => {
+    const sorted = [...configs.metadata].sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0));
+    const currentIdx = sorted.findIndex((m) => m.name === planName);
+    if (currentIdx < 0) {
+      toast.error(`Plan ${planName} not found`);
+      return;
+    }
+    const swapIdx = direction === 'up' ? currentIdx - 1 : currentIdx + 1;
+    if (swapIdx < 0 || swapIdx >= sorted.length) return;
+    
+    const current = sorted[currentIdx];
+    const swap = sorted[swapIdx];
+    const currentSortOrder = current.sort_order || 0;
+    const swapSortOrder = swap.sort_order || 0;
+    
+    // Swap sort orders - update both plans sequentially to avoid race conditions
+    try {
+      await updateMetadataMutation.mutateAsync({
+        planName: current.name,
+        data: { 
+          icon: current.icon, 
+          color_class: current.color_class, 
+          sort_order: swapSortOrder 
+        },
+      });
+      await updateMetadataMutation.mutateAsync({
+        planName: swap.name,
+        data: { 
+          icon: swap.icon, 
+          color_class: swap.color_class, 
+          sort_order: currentSortOrder 
+        },
+      });
+      toast.success('Plan order updated');
+    } catch (error: any) {
+      console.error('Move plan error:', error);
+      toast.error(error?.response?.data?.detail || error?.message || 'Failed to update plan order');
+    }
+  };
+
   return (
     <div className="space-y-6">
       {/* Plan Metadata */}
@@ -2045,41 +2157,48 @@ function PlanConfigurationsManagement() {
         </CardHeader>
         <CardContent>
           <div className="space-y-4">
-            {configs.metadata.map((meta) => (
+            {sortedMetadata.map((meta, idx) => (
               <div key={meta.name} className="border rounded-lg p-4 space-y-3">
                 <div className="flex items-center justify-between">
-                  <div>
-                    <h4 className="font-medium">{meta.display_name}</h4>
-                    <p className="text-sm text-muted-foreground">Plan: {meta.name}</p>
-                  </div>
-                  {editingMetadata === meta.name ? (
-                    <div className="flex gap-2">
-                      <Button
-                        size="sm"
-                        onClick={() => {
-                          const icon = (document.getElementById(`icon-${meta.name}`) as HTMLInputElement)?.value;
-                          const color = (document.getElementById(`color-${meta.name}`) as HTMLInputElement)?.value;
-                          const precedence = parseInt((document.getElementById(`precedence-${meta.name}`) as HTMLInputElement)?.value || '0');
-                          const sortOrder = parseInt((document.getElementById(`sort-${meta.name}`) as HTMLInputElement)?.value || '0');
-                          updateMetadataMutation.mutate({
-                            planName: meta.name,
-                            data: { icon, color_class: color, precedence, sort_order: sortOrder },
-                          });
-                        }}
-                        disabled={updateMetadataMutation.isPending}
-                      >
-                        {updateMetadataMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Check className="h-4 w-4" />}
-                      </Button>
-                      <Button size="sm" variant="ghost" onClick={() => setEditingMetadata(null)}>
-                        <X className="h-4 w-4" />
-                      </Button>
+                      <div>
+                        <h4 className="font-medium">{meta.display_name}</h4>
+                        <p className="text-sm text-muted-foreground">Plan: {meta.name}</p>
+                      </div>
+                      {editingMetadata === meta.name ? (
+                        <div className="flex gap-2">
+                          <Button
+                            size="sm"
+                            onClick={() => {
+                              const icon = (document.getElementById(`icon-${meta.name}`) as HTMLInputElement)?.value;
+                              const color = (document.getElementById(`color-${meta.name}`) as HTMLInputElement)?.value;
+                              const sortOrder = parseInt((document.getElementById(`sort-${meta.name}`) as HTMLInputElement)?.value || '0');
+                              updateMetadataMutation.mutate({
+                                planName: meta.name,
+                                data: { icon, color_class: color, sort_order: sortOrder },
+                              });
+                            }}
+                            disabled={updateMetadataMutation.isPending}
+                          >
+                            {updateMetadataMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Check className="h-4 w-4" />}
+                          </Button>
+                          <Button size="sm" variant="ghost" onClick={() => setEditingMetadata(null)}>
+                            <X className="h-4 w-4" />
+                          </Button>
+                        </div>
+                      ) : (
+                        <div className="flex gap-2">
+                          <Button variant="outline" size="icon" onClick={() => movePlanMetadata(meta.name, 'up')} title="Move up" disabled={idx === 0}>
+                            <ArrowUp className="h-4 w-4" />
+                          </Button>
+                          <Button variant="outline" size="icon" onClick={() => movePlanMetadata(meta.name, 'down')} title="Move down" disabled={idx === sortedMetadata.length - 1}>
+                            <ArrowDown className="h-4 w-4" />
+                          </Button>
+                          <Button size="sm" variant="outline" onClick={() => setEditingMetadata(meta.name)}>
+                            <Pencil className="h-4 w-4" />
+                          </Button>
+                        </div>
+                      )}
                     </div>
-                  ) : (
-                    <Button size="sm" variant="outline" onClick={() => setEditingMetadata(meta.name)}>
-                      <Pencil className="h-4 w-4" />
-                    </Button>
-                  )}
-                </div>
                 {editingMetadata === meta.name ? (
                   <div className="grid grid-cols-2 gap-3">
                     <div>
@@ -2091,27 +2210,17 @@ function PlanConfigurationsManagement() {
                       <Input id={`color-${meta.name}`} defaultValue={meta.color_class || ''} placeholder="text-blue-600" />
                     </div>
                     <div>
-                      <Label htmlFor={`precedence-${meta.name}`}>Precedence</Label>
-                      <Input id={`precedence-${meta.name}`} type="number" defaultValue={meta.precedence} />
-                    </div>
-                    <div>
                       <Label htmlFor={`sort-${meta.name}`}>Sort Order</Label>
                       <Input id={`sort-${meta.name}`} type="number" defaultValue={meta.sort_order} />
                     </div>
                   </div>
                 ) : (
-                  <div className="grid grid-cols-4 gap-4 text-sm">
+                  <div className="grid grid-cols-2 gap-4 text-sm">
                     <div>
                       <span className="text-muted-foreground">Icon:</span> {meta.icon || '-'}
                     </div>
                     <div>
                       <span className="text-muted-foreground">Color:</span> {meta.color_class || '-'}
-                    </div>
-                    <div>
-                      <span className="text-muted-foreground">Precedence:</span> {meta.precedence}
-                    </div>
-                    <div>
-                      <span className="text-muted-foreground">Sort:</span> {meta.sort_order}
                     </div>
                   </div>
                 )}

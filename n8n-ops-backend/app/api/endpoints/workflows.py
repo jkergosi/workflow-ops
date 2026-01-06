@@ -1116,9 +1116,10 @@ async def upload_workflows(
     files: List[UploadFile] = File(...),
     environment: str = "dev",
     sync_to_github: bool = True,
-    user_info: dict = Depends(require_workflow_limit())
+    user_info: dict = Depends(get_current_user),
+    _: dict = Depends(require_entitlement("workflow_push"))
 ):
-    """Upload workflow files (.json or .zip) to N8N. Requires workflow_limits entitlement."""
+    """Upload workflow files (.json or .zip) to N8N. Requires workflow_push entitlement (Pro+)."""
     tenant_id = user_info["tenant"]["id"]
 
     try:

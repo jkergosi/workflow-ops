@@ -41,7 +41,7 @@ import { api } from '@/lib/api';
 import { apiClient } from '@/lib/api-client';
 import { useAppStore } from '@/store/use-app-store';
 import { useAuth } from '@/lib/auth';
-import { cn } from '@/lib/utils';
+import { cn, getErrorMessage } from '@/lib/utils';
 import { Plus, Server, RefreshCw, Edit, RefreshCcw, CheckCircle2, AlertCircle, Loader2, XCircle, MoreVertical, Clock } from 'lucide-react';
 import { toast } from 'sonner';
 import type { Environment, EnvironmentType, EnvironmentTypeConfig } from '@/types';
@@ -286,8 +286,7 @@ export function EnvironmentsPage() {
       handleClose();
     },
     onError: (error: any) => {
-      const message = error.response?.data?.detail || 'Failed to update environment';
-      toast.error(message);
+      toast.error(getErrorMessage(error, 'Failed to update environment'));
     },
   });
 
@@ -300,8 +299,7 @@ export function EnvironmentsPage() {
       handleClose();
     },
     onError: (error: any) => {
-      const message = error.response?.data?.detail || 'Failed to create environment';
-      toast.error(message);
+      toast.error(getErrorMessage(error, 'Failed to create environment'));
     },
   });
 
@@ -310,8 +308,9 @@ export function EnvironmentsPage() {
     onSuccess: (result, environmentId) => {
       setSyncingEnvId(null);
       const { job_id, status, message } = result.data;
-      
-      if (job_id && status === 'running') {
+
+      // Accept both 'pending' and 'running' as valid statuses
+      if (job_id && (status === 'running' || status === 'pending')) {
         toast.success('Sync started in background');
         // Job progress will be updated via SSE
         setActiveJobs((prev) => ({
@@ -319,7 +318,7 @@ export function EnvironmentsPage() {
           [environmentId]: {
             jobId: job_id,
             jobType: 'sync',
-            status: 'running',
+            status: 'running', // Always set to 'running' for UI consistency
             current: 0,
             total: 5, // workflows, executions, credentials, users, tags
             message: 'Starting sync...',
@@ -333,8 +332,7 @@ export function EnvironmentsPage() {
     },
     onError: (error: any) => {
       setSyncingEnvId(null);
-      const message = error.response?.data?.detail || 'Failed to sync environment';
-      toast.error(message);
+      toast.error(getErrorMessage(error, 'Failed to sync environment'));
     },
   });
 
@@ -515,7 +513,7 @@ export function EnvironmentsPage() {
   };
 
 
-  // Helper function to format relative time
+  // Helper function to format relative time (returns time without "ago" suffix)
   const formatRelativeTime = (dateString?: string): string => {
     if (!dateString) return 'Never';
     const date = new Date(dateString);
@@ -525,51 +523,46 @@ export function EnvironmentsPage() {
     const diffHours = Math.floor(diffMs / 3600000);
     const diffDays = Math.floor(diffMs / 86400000);
 
-    if (diffMins < 1) return 'Just now';
-    if (diffMins < 60) return `${diffMins}m ago`;
-    if (diffHours < 24) return `${diffHours}h ago`;
-    if (diffDays < 7) return `${diffDays}d ago`;
+    if (diffMins < 1) return 'just now';
+    if (diffMins < 60) return `${diffMins}m`;
+    if (diffHours < 24) return `${diffHours}h`;
+    if (diffDays < 7) return `${diffDays}d`;
     return date.toLocaleDateString();
   };
 
   // Helper function to get environment status
-  const getEnvironmentStatus = (env: Environment): { status: 'connected' | 'degraded' | 'offline'; lastHeartbeat?: string } => {
-    const health = healthData?.data?.find(h => h.environmentId === env.id);
-    if (!health) {
-      // If no health data, check lastConnected
-      if (env.lastConnected) {
-        const lastConnected = new Date(env.lastConnected);
-        const now = new Date();
-        const diffMins = Math.floor((now.getTime() - lastConnected.getTime()) / 60000);
-        if (diffMins < 5) return { status: 'connected', lastHeartbeat: env.lastConnected };
-        if (diffMins < 30) return { status: 'degraded', lastHeartbeat: env.lastConnected };
-        return { status: 'offline', lastHeartbeat: env.lastConnected };
-      }
-      return { status: 'offline' };
+  const getEnvironmentStatus = (env: Environment): { status: 'connected' | 'degraded' | 'disconnected'; lastHeartbeat?: string } => {
+    // STATUS = connectivity from heartbeat only
+    if (!env.lastHeartbeatAt) {
+      return { status: 'disconnected' };
     }
 
-    const statusMap: Record<string, 'connected' | 'degraded' | 'offline'> = {
-      'healthy': 'connected',
-      'degraded': 'degraded',
-      'unreachable': 'offline',
-    };
+    const lastHeartbeat = new Date(env.lastHeartbeatAt);
+    const now = new Date();
+    const diffMins = Math.floor((now.getTime() - lastHeartbeat.getTime()) / 60000);
 
-    return {
-      status: statusMap[health.status] || 'offline',
-      lastHeartbeat: health.lastCheckedAt || env.lastConnected,
-    };
+    // Compute enum:
+    // - connected if now - lastHeartbeatAt <= 5 minutes
+    // - degraded if 5 minutes < age <= 60 minutes
+    // - disconnected if age > 60 minutes OR lastHeartbeatAt is null
+    if (diffMins <= 5) {
+      return { status: 'connected', lastHeartbeat: env.lastHeartbeatAt };
+    } else if (diffMins <= 60) {
+      return { status: 'degraded', lastHeartbeat: env.lastHeartbeatAt };
+    } else {
+      return { status: 'disconnected', lastHeartbeat: env.lastHeartbeatAt };
+    }
   };
 
-  // Helper function to get state badge info (role-based: DEV vs STAGING/PROD)
+  // Helper function to get state badge info (STATE = drift/tracking status only)
   const getStateBadgeInfo = (env: Environment): {
-    status: 'in_sync' | 'pending_sync' | 'drift_detected' | 'unknown' | 'error';
+    status: 'in_sync' | 'drift_detected' | 'untracked' | 'unknown' | 'error';
     label: string;
     variant: 'default' | 'secondary' | 'destructive' | 'outline';
     tooltip: string;
   } => {
-    const driftStatus = env.driftStatus?.toUpperCase() || 'UNKNOWN';
-    const envClass = env.environmentClass?.toLowerCase() || 'dev';
-    const isDev = envClass === 'dev';
+    // Use case-insensitive comparison for drift_status
+    const driftStatus = (env.driftStatus || 'UNKNOWN').toUpperCase();
 
     switch (driftStatus) {
       case 'IN_SYNC':
@@ -577,25 +570,21 @@ export function EnvironmentsPage() {
           status: 'in_sync',
           label: 'In Sync',
           variant: 'default',
-          tooltip: isDev
-            ? 'Dev matches the canonical Git version.'
-            : 'This environment matches the canonical Git version.',
+          tooltip: 'This environment matches the canonical Git version.',
         };
       case 'DRIFT_DETECTED':
-        // DEV shows "Pending Sync" instead of "Drift Detected"
-        if (isDev) {
-          return {
-            status: 'pending_sync',
-            label: 'Pending Sync',
-            variant: 'secondary',
-            tooltip: 'Changes exist in dev that have not yet been committed to Git.',
-          };
-        }
         return {
           status: 'drift_detected',
           label: 'Drift Detected',
           variant: 'destructive',
           tooltip: 'This environment differs from the canonical Git version.',
+        };
+      case 'UNTRACKED':
+        return {
+          status: 'untracked',
+          label: 'Untracked',
+          variant: 'outline',
+          tooltip: 'No workflows are linked/tracked for this environment.',
         };
       case 'ERROR':
         return {
@@ -715,11 +704,11 @@ export function EnvironmentsPage() {
                           >
                             {envStatus.status === 'connected' ? 'Connected' : 
                              envStatus.status === 'degraded' ? 'Degraded' : 
-                             'Offline'}
+                             'Disconnected'}
                           </Badge>
                           {envStatus.lastHeartbeat && (
                             <p className="text-xs text-muted-foreground">
-                              Last heartbeat: {formatRelativeTime(envStatus.lastHeartbeat)}
+                              Last heartbeat: {formatRelativeTime(envStatus.lastHeartbeat)} ago
                             </p>
                           )}
                         </div>
@@ -743,9 +732,9 @@ export function EnvironmentsPage() {
                               </TooltipContent>
                             </Tooltip>
                           </TooltipProvider>
-                          {env.lastDriftDetectedAt && (
+                          {env.lastDriftCheckAt && (
                             <p className="text-xs text-muted-foreground mt-0.5">
-                              Checked {formatRelativeTime(env.lastDriftDetectedAt)}
+                              Checked {formatRelativeTime(env.lastDriftCheckAt)} ago
                             </p>
                           )}
                         </TableCell>
@@ -763,11 +752,11 @@ export function EnvironmentsPage() {
                           <Tooltip>
                             <TooltipTrigger asChild>
                               <span className="text-sm text-muted-foreground cursor-help">
-                                {formatRelativeTime(env.lastConnected)}
+                                {env.lastSyncAt ? `${formatRelativeTime(env.lastSyncAt)} ago` : 'Never'}
                               </span>
                             </TooltipTrigger>
                             <TooltipContent>
-                              <p>{env.lastConnected ? new Date(env.lastConnected).toLocaleString() : 'Never synced'}</p>
+                              <p>{env.lastSyncAt ? new Date(env.lastSyncAt).toLocaleString() : 'Never synced'}</p>
                             </TooltipContent>
                           </Tooltip>
                         </TooltipProvider>

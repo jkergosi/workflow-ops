@@ -406,6 +406,11 @@ async def startup_event():
         await start_canonical_sync_schedulers()
         logger.info("Canonical workflow sync schedulers started")
         
+        # Start health check scheduler
+        from app.services.health_check_scheduler import start_health_check_scheduler
+        await start_health_check_scheduler()
+        logger.info("Health check scheduler started")
+        
         # Also cleanup stale deployments directly (in case job cleanup didn't catch them)
         try:
             from app.services.database import db_service
@@ -465,8 +470,13 @@ async def shutdown_event():
         from app.services.canonical_sync_scheduler import stop_canonical_sync_schedulers
         await stop_canonical_sync_schedulers()
         logger.info("Canonical workflow sync schedulers stopped")
+        
+        # Stop health check scheduler
+        from app.services.health_check_scheduler import stop_health_check_scheduler
+        await stop_health_check_scheduler()
+        logger.info("Health check scheduler stopped")
     except Exception as e:
-        logger.error(f"Error stopping drift scheduler: {str(e)}")
+        logger.error(f"Error stopping schedulers: {str(e)}")
 
 
 @app.exception_handler(Exception)

@@ -22,6 +22,7 @@ class DriftStatus:
     UNKNOWN = "UNKNOWN"
     IN_SYNC = "IN_SYNC"
     DRIFT_DETECTED = "DRIFT_DETECTED"
+    UNTRACKED = "UNTRACKED"
     ERROR = "ERROR"
 
 
@@ -278,9 +279,21 @@ class DriftDetectionService:
                     else:
                         in_sync_count += 1
 
-            # Determine overall status
-            has_drift = with_drift_count > 0 or not_in_git_count > 0
-            drift_status = DriftStatus.DRIFT_DETECTED if has_drift else DriftStatus.IN_SYNC
+            # Check if any workflows are tracked/linked for this environment
+            tracked_workflows = await db_service.get_workflows_from_canonical(
+                tenant_id=tenant_id,
+                environment_id=environment_id,
+                include_deleted=False,
+                include_ignored=False
+            )
+            
+            # If no workflows are tracked, set status to untracked
+            if len(tracked_workflows) == 0:
+                drift_status = DriftStatus.UNTRACKED
+            else:
+                # Determine overall status based on drift detection
+                has_drift = with_drift_count > 0 or not_in_git_count > 0
+                drift_status = DriftStatus.DRIFT_DETECTED if has_drift else DriftStatus.IN_SYNC
 
             # Sort affected workflows: drift first, then not in git
             affected_workflows.sort(key=lambda x: (
@@ -359,10 +372,15 @@ class DriftDetectionService:
     ) -> None:
         """Update the environment's drift status in the database"""
         try:
+            now = datetime.utcnow().isoformat()
             update_data = {
                 "drift_status": drift_status,
-                "last_drift_detected_at": datetime.utcnow().isoformat()
+                "last_drift_check_at": now
             }
+            
+            # Only update last_drift_detected_at if drift was actually detected
+            if drift_status == DriftStatus.DRIFT_DETECTED:
+                update_data["last_drift_detected_at"] = now
 
             await db_service.update_environment(environment_id, tenant_id, update_data)
 

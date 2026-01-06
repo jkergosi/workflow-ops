@@ -23,11 +23,11 @@ export interface UseHealthCheckResult {
 /**
  * Hook to monitor backend service health
  * @param autoCheck Whether to start automatic polling (default: true)
- * @param pollInterval Polling interval in ms (default: 30000)
+ * @param pollInterval Polling interval in ms (default: 60000)
  */
 export function useHealthCheck(
   autoCheck = true,
-  pollInterval = 30000
+  pollInterval = 60000
 ): UseHealthCheckResult {
   const [status, setStatus] = useState<ServiceStatus>('healthy');
   const [healthStatus, setHealthStatus] = useState<HealthStatus | null>(
@@ -57,15 +57,13 @@ export function useHealthCheck(
       setIsChecking(false);
     });
 
-    // Start polling if autoCheck is enabled
-    if (autoCheck) {
-      healthService.startPolling(pollInterval);
-    }
+    // Polling is now managed automatically by subscribe/unsubscribe
+    // The service starts polling when first subscriber joins and stops when last leaves
 
     return () => {
       unsubscribe();
     };
-  }, [autoCheck, pollInterval, previousStatus]);
+  }, [previousStatus]);
 
   const checkHealth = useCallback(async (): Promise<HealthStatus> => {
     setIsChecking(true);

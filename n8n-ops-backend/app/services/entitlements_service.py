@@ -28,7 +28,7 @@ FEATURE_DISPLAY_NAMES = {
     "environment_limits": "Environment Limits",
     # Workflow features
     "workflow_read": "View Workflows",
-    "workflow_push": "Push Workflows",
+    "workflow_push": "Deploy / Apply Workflows to Environment",
     "workflow_dirty_check": "Dirty State Detection",
     "workflow_ci_cd_approval": "CI/CD Approvals",
     # Snapshot features
@@ -183,6 +183,10 @@ class EntitlementsService:
             # This ensures consistent limits (1 for free, 3 for pro, unlimited for agency/enterprise)
             plan_name = tenant_plan.get("plan_name", "free")
             features["environment_limits"] = PLAN_ENVIRONMENT_LIMITS.get(plan_name, 1)
+            
+            # Ensure environment_basic is always enabled for all plans (required for sync operations)
+            # This is a read-only operation that should be available to all users
+            features["environment_basic"] = True
 
             result = {
                 "plan_id": plan_id,
@@ -330,7 +334,7 @@ class EntitlementsService:
         """Get current workflow count across all environments for a tenant (from canonical system)."""
         try:
             # Count unique canonical workflows from workflow_env_map
-            mappings_response = await db_service.client.table("workflow_env_map").select("canonical_id").eq("tenant_id", tenant_id).execute()
+            mappings_response = db_service.client.table("workflow_env_map").select("canonical_id").eq("tenant_id", tenant_id).execute()
             unique_canonical_ids = set()
             for mapping in (mappings_response.data or []):
                 cid = mapping.get("canonical_id")

@@ -75,6 +75,9 @@ class EnvironmentResponse(BaseModel):
     git_pat: Optional[str] = None
     last_connected: Optional[datetime] = None
     last_backup: Optional[datetime] = None
+    last_heartbeat_at: Optional[datetime] = None
+    last_drift_check_at: Optional[datetime] = None
+    last_sync_at: Optional[datetime] = None
     drift_status: str = "IN_SYNC"
     last_drift_detected_at: Optional[datetime] = None
     active_drift_incident_id: Optional[str] = None

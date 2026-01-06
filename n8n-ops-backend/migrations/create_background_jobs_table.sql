@@ -13,6 +13,7 @@ CREATE TABLE IF NOT EXISTS background_jobs (
     result JSONB DEFAULT '{}'::jsonb, -- Final results when completed
     error_message TEXT,
     error_details JSONB DEFAULT '{}'::jsonb,
+    metadata JSONB DEFAULT '{}'::jsonb, -- Additional metadata for the job
     created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );

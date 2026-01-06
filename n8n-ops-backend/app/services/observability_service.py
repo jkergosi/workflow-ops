@@ -725,6 +725,27 @@ class ObservabilityService:
         }
         result = await db_service.create_health_check(health_check_data)
 
+        # Update last_heartbeat_at timestamp on environment
+        from datetime import datetime
+        heartbeat_timestamp = datetime.utcnow().isoformat()
+        try:
+            update_result = await db_service.update_environment(
+                environment_id,
+                tenant_id,
+                {"last_heartbeat_at": heartbeat_timestamp}
+            )
+            logger.info(
+                f"Updated last_heartbeat_at: env_id={environment_id}, "
+                f"tenant_id={tenant_id}, timestamp={heartbeat_timestamp}, "
+                f"status={status.value}, latency_ms={latency_ms}, "
+                f"url={env.get('n8n_base_url', 'N/A')}"
+            )
+        except Exception as heartbeat_err:
+            logger.warning(
+                f"Failed to update last_heartbeat_at: env_id={environment_id}, "
+                f"tenant_id={tenant_id}, error={str(heartbeat_err)}"
+            )
+
         # Emit environment health events
         try:
             # Check for status changes and emit appropriate events

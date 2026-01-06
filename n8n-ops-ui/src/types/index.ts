@@ -124,7 +124,10 @@ export interface Environment {
   allowUpload: boolean;  // Feature flag: true if workflows can be uploaded from this environment
   lastConnected?: string;
   lastBackup?: string;
-  driftStatus?: 'IN_SYNC' | 'DRIFT_DETECTED' | 'DRIFT_INCIDENT_ACTIVE' | string;
+  lastHeartbeatAt?: string;
+  lastDriftCheckAt?: string;
+  lastSyncAt?: string;
+  driftStatus?: 'IN_SYNC' | 'DRIFT_DETECTED' | 'DRIFT_INCIDENT_ACTIVE' | 'UNTRACKED' | string;
   lastDriftDetectedAt?: string;
   activeDriftIncidentId?: string;
   driftHandlingMode?: 'warn_only' | 'manual_override' | 'require_attestation' | string;

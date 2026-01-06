@@ -1,94 +1,80 @@
 <#
 kill-ports.ps1
 
-Quick script to kill processes on ports 3000 and/or 4000.
-Use this when you need to manually stop dev servers.
-
-Usage:
-  .\scripts\kill-ports.ps1              # Kills both 3000 and 4000
-  .\scripts\kill-ports.ps1 -Port 3000  # Kills only port 3000
-  .\scripts\kill-ports.ps1 -Port 4000   # Kills only port 4000
-  .\scripts\kill-ports.ps1 -Ports @(3000, 4000)  # Kills specific ports
+Fast, non-hanging port killer for dev servers.
+Handles respawning parents.
+Compatible with Windows PowerShell 5.1.
 #>
 
 param(
-    [Parameter(Mandatory = $false)]
     [int[]]$Ports = @(3000, 4000),
-
-    [Parameter(Mandatory = $false)]
     [int]$Port = 0
 )
 
 $ErrorActionPreference = "Stop"
+$MAX_RETRIES = 5
+$WAIT_MS = 300
 
-function Assert-NetTcpAvailable {
-    if (-not (Get-Command Get-NetTCPConnection -ErrorAction SilentlyContinue)) {
-        throw "Get-NetTCPConnection is required. This script requires Windows PowerShell with networking cmdlets."
+function Get-ListeningPids {
+    param([int]$PortNumber)
+
+    Get-NetTCPConnection -LocalPort $PortNumber -State Listen -ErrorAction SilentlyContinue |
+        Select-Object -ExpandProperty OwningProcess -Unique
+}
+
+function Kill-PidTree {
+    param([int]$ProcessId)
+
+    $proc = Get-CimInstance Win32_Process -Filter "ProcessId=$ProcessId" -ErrorAction SilentlyContinue
+    if (-not $proc) { return }
+
+    $parentPid = $proc.ParentProcessId
+
+    Stop-Process -Id $ProcessId -Force -ErrorAction SilentlyContinue
+    Start-Sleep -Milliseconds 200
+
+    if ($parentPid -and $parentPid -ne 0) {
+        $parent = Get-CimInstance Win32_Process -Filter "ProcessId=$parentPid" -ErrorAction SilentlyContinue
+        if ($parent -and $parent.Name -match '^(node|npm|pnpm|yarn|nodemon|pm2|docker|python|uvicorn|gunicorn)') {
+            Stop-Process -Id $parentPid -Force -ErrorAction SilentlyContinue
+            Start-Sleep -Milliseconds 200
+        }
     }
 }
 
 function Kill-Port {
     param([int]$PortNumber)
-    
-    Assert-NetTcpAvailable
-    
-    $listeners = Get-NetTCPConnection -LocalPort $PortNumber -State Listen -ErrorAction SilentlyContinue
-    
-    if ($listeners.Count -eq 0) {
-        Write-Host "[Port $PortNumber] No process found - port is already free" -ForegroundColor Green
-        return
-    }
-    
-    $pids = $listeners | Select-Object -ExpandProperty OwningProcess -Unique
-    
-    Write-Host "[Port $PortNumber] Found process(es): $($pids -join ', ')" -ForegroundColor Yellow
-    
-    foreach ($procId in $pids) {
-        try {
-            $proc = Get-Process -Id $procId -ErrorAction SilentlyContinue
-            if ($proc) {
-                Write-Host "  Killing PID $procId ($($proc.ProcessName))..." -ForegroundColor Yellow
-                taskkill /PID $procId /F /T 2>&1 | Out-Null
-            }
-        } catch {
-            Write-Host "  Failed to kill PID ${procId}: $_" -ForegroundColor Red
+
+    Write-Host "[Port $PortNumber] Releasing..." -ForegroundColor Cyan
+
+    for ($i = 1; $i -le $MAX_RETRIES; $i++) {
+        $pids = Get-ListeningPids -PortNumber $PortNumber
+        if (-not $pids) {
+            Write-Host "[Port $PortNumber] Free" -ForegroundColor Green
+            return
         }
+
+        foreach ($processId in $pids) {
+            Kill-PidTree -ProcessId $processId
+        }
+
+        Start-Sleep -Milliseconds $WAIT_MS
     }
-    
-    Start-Sleep -Milliseconds 500
-    
-    $remaining = Get-NetTCPConnection -LocalPort $PortNumber -State Listen -ErrorAction SilentlyContinue
-    if ($remaining.Count -eq 0) {
-        Write-Host "[Port $PortNumber] Port is now free" -ForegroundColor Green
+
+    $still = Get-ListeningPids -PortNumber $PortNumber
+    if ($still) {
+        Write-Host "[Port $PortNumber] FAILED – still held by PID(s): $($still -join ', ')" -ForegroundColor Red
     } else {
-        $stillRunning = $remaining | Select-Object -ExpandProperty OwningProcess -Unique
-        Write-Host "[Port $PortNumber] Port still in use by PID(s): $($stillRunning -join ', ')" -ForegroundColor Red
+        Write-Host "[Port $PortNumber] Free" -ForegroundColor Green
     }
 }
 
 function Main {
-    $portsToKill = @()
-    
-    if ($Port -gt 0) {
-        $portsToKill = @($Port)
-    } elseif ($Ports.Count -gt 0) {
-        $portsToKill = $Ports
-    } else {
-        $portsToKill = @(3000, 4000)
+    $portsToKill = if ($Port -gt 0) { @($Port) } else { $Ports }
+
+    foreach ($p in ($portsToKill | Sort-Object -Unique)) {
+        Kill-Port -PortNumber $p
     }
-    
-    Write-Host "=" * 60 -ForegroundColor Cyan
-    Write-Host "Killing processes on ports: $($portsToKill -join ', ')" -ForegroundColor Cyan
-    Write-Host "=" * 60 -ForegroundColor Cyan
-    Write-Host ""
-    
-    foreach ($port in $portsToKill) {
-        Kill-Port -PortNumber $port
-        Write-Host ""
-    }
-    
-    Write-Host "Done." -ForegroundColor Green
 }
 
 Main
-

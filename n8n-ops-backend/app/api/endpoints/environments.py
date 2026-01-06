@@ -732,13 +732,6 @@ async def _sync_environment_background(
         except Exception as e:
             sync_results["tags"]["errors"].append(str(e))
 
-        # Update last_connected timestamp
-        await db_service.update_environment(
-            environment_id,
-            tenant_id,
-            {"last_connected": datetime.utcnow().isoformat()}
-        )
-
         # Check if all syncs were successful
         has_errors = any(
             sync_results[key]["errors"]
@@ -747,6 +740,21 @@ async def _sync_environment_background(
 
         # Update job status
         final_status = BackgroundJobStatus.COMPLETED if not has_errors else BackgroundJobStatus.FAILED
+        
+        # Update last_connected and last_sync_at timestamps only on successful completion
+        if final_status == BackgroundJobStatus.COMPLETED:
+            now = datetime.utcnow().isoformat()
+            try:
+                await db_service.update_environment(
+                    environment_id,
+                    tenant_id,
+                    {
+                        "last_connected": now,
+                        "last_sync_at": now
+                    }
+                )
+            except Exception as conn_err:
+                logger.warning(f"Failed to update environment timestamps: {str(conn_err)}")
         await background_job_service.update_job_status(
             job_id=job_id,
             status=final_status,

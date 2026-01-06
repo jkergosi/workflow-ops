@@ -31,11 +31,34 @@ class HealthService {
   private listeners: Set<HealthListener> = new Set();
   private pollingInterval: number | null = null;
   private isPolling = false;
+  private subscriberCount = 0;
+  private isPageVisible = true;
+  private consecutiveErrors = 0;
+  private currentCheckPromise: Promise<HealthStatus> | null = null;
+  private baseInterval = 60000; // 60 seconds base interval
+  private maxInterval = 300000; // 5 minutes max interval
 
   /**
    * Perform a health check against the backend
+   * Uses request deduplication to prevent concurrent duplicate requests
    */
   async checkHealth(): Promise<HealthStatus> {
+    // If a check is already in progress, return the same promise
+    if (this.currentCheckPromise) {
+      return this.currentCheckPromise;
+    }
+
+    this.currentCheckPromise = this._performCheck();
+    
+    try {
+      const result = await this.currentCheckPromise;
+      return result;
+    } finally {
+      this.currentCheckPromise = null;
+    }
+  }
+
+  private async _performCheck(): Promise<HealthStatus> {
     try {
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), 5000);
@@ -52,11 +75,13 @@ class HealthService {
       const data: HealthStatus = await response.json();
       this.status = data.status;
       this.lastCheck = data;
+      this.consecutiveErrors = 0; // Reset error count on success
       this.notifyListeners();
       return data;
     } catch (error) {
+      this.consecutiveErrors++;
+      
       // Network error or timeout - service is likely down
-      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
       const unhealthyStatus: HealthStatus = {
         status: 'unhealthy',
         timestamp: new Date().toISOString(),
@@ -81,37 +106,116 @@ class HealthService {
 
   /**
    * Start polling for health status
-   * @param interval Polling interval in milliseconds (default: 30000ms)
+   * @param interval Polling interval in milliseconds (default: 60000ms)
    */
-  startPolling(interval = 30000): void {
+  startPolling(interval = 60000): void {
     if (this.isPolling) return;
 
+    this.baseInterval = interval;
     this.isPolling = true;
-    // Do initial check
-    this.checkHealth();
-
-    // Set up interval
-    this.pollingInterval = window.setInterval(() => {
-      this.checkHealth();
-    }, interval);
+    
+    // Set up page visibility listener
+    this._setupVisibilityListener();
+    
+    // Do initial check, then schedule next check
+    this.checkHealth().finally(() => {
+      this._scheduleNextCheck();
+    });
   }
+
+  private _scheduleNextCheck(): void {
+    if (!this.isPolling) return;
+
+    // Calculate interval with exponential backoff on errors
+    // Formula: baseInterval * (2 ^ min(consecutiveErrors, 3))
+    // This gives us: 60s, 120s, 240s, 480s (capped at maxInterval)
+    const backoffMultiplier = Math.min(Math.pow(2, this.consecutiveErrors), 4);
+    const dynamicInterval = Math.min(
+      this.baseInterval * backoffMultiplier,
+      this.maxInterval
+    );
+
+    // Clear existing timeout
+    if (this.pollingInterval !== null) {
+      clearTimeout(this.pollingInterval);
+    }
+
+    // Set up new interval with dynamic timing
+    this.pollingInterval = window.setTimeout(() => {
+      // Only check if page is visible
+      if (this.isPageVisible) {
+        this.checkHealth().finally(() => {
+          // Schedule next check after current one completes
+          this._scheduleNextCheck();
+        });
+      } else {
+        // If page not visible, reschedule without checking
+        this._scheduleNextCheck();
+      }
+    }, dynamicInterval);
+  }
+
+  private _setupVisibilityListener(): void {
+    if (typeof document === 'undefined') return;
+
+    const handleVisibilityChange = () => {
+      this.isPageVisible = !document.hidden;
+      
+      // If page becomes visible and we haven't checked recently, do a check
+      if (this.isPageVisible && this.isPolling) {
+        const lastCheckTime = this.lastCheck 
+          ? new Date(this.lastCheck.timestamp).getTime() 
+          : 0;
+        const timeSinceLastCheck = Date.now() - lastCheckTime;
+        
+        // If last check was more than 30 seconds ago, check now
+        if (timeSinceLastCheck > 30000) {
+          this.checkHealth();
+        }
+      }
+    };
+
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    
+    // Store cleanup function
+    this._visibilityCleanup = () => {
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+    };
+  }
+
+  private _visibilityCleanup: (() => void) | null = null;
 
   /**
    * Stop polling for health status
    */
   stopPolling(): void {
     if (this.pollingInterval !== null) {
-      clearInterval(this.pollingInterval);
+      clearTimeout(this.pollingInterval);
       this.pollingInterval = null;
     }
+    
+    if (this._visibilityCleanup) {
+      this._visibilityCleanup();
+      this._visibilityCleanup = null;
+    }
+    
     this.isPolling = false;
+    this.consecutiveErrors = 0; // Reset error count when stopping
   }
 
   /**
    * Subscribe to health status changes
+   * Automatically manages polling based on subscriber count
    */
   subscribe(listener: HealthListener): () => void {
+    const wasEmpty = this.listeners.size === 0;
     this.listeners.add(listener);
+    this.subscriberCount++;
+
+    // Start polling when first subscriber joins
+    if (wasEmpty && this.subscriberCount === 1) {
+      this.startPolling();
+    }
 
     // Immediately notify with current status if available
     if (this.lastCheck) {
@@ -121,6 +225,12 @@ class HealthService {
     // Return unsubscribe function
     return () => {
       this.listeners.delete(listener);
+      this.subscriberCount = Math.max(0, this.subscriberCount - 1);
+      
+      // Stop polling when last subscriber leaves
+      if (this.subscriberCount === 0) {
+        this.stopPolling();
+      }
     };
   }
 
@@ -163,9 +273,4 @@ class HealthService {
 // Export singleton instance
 export const healthService = new HealthService();
 
-// Auto-start polling when module is imported
-// This can be disabled by calling healthService.stopPolling()
-if (typeof window !== 'undefined') {
-  // Only start in browser environment
-  healthService.startPolling();
-}
+// No auto-start - polling will start when first subscriber joins

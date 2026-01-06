@@ -466,11 +466,6 @@ export function AppLayout() {
                           <Link 
                             to="/admin/settings" 
                             className="cursor-pointer"
-                            onClick={() => {
-                              // #region agent log
-                              fetch('http://127.0.0.1:7242/ingest/35363e7c-4fd6-4b04-adaf-3a3d3056abb3',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'AppLayout.tsx:452',message:'Settings link clicked',data:{userRole:user?.role},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'D'})}).catch(()=>{});
-                              // #endregion
-                            }}
                           >
                             <Settings className="mr-2 h-4 w-4" />
                             Settings

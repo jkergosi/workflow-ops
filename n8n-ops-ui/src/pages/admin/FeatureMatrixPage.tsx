@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -6,6 +6,13 @@ import { Badge } from '@/components/ui/badge';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Switch } from '@/components/ui/switch';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
 import {
   Table,
   TableBody,
@@ -36,6 +43,10 @@ import {
   Edit,
   Info,
   Trash2,
+  Search,
+  ArrowUpDown,
+  ArrowUp,
+  ArrowDown,
 } from 'lucide-react';
 import { apiClient } from '@/lib/api-client';
 import { toast } from 'sonner';
@@ -56,6 +67,13 @@ export function FeatureMatrixPage() {
   const [editValue, setEditValue] = useState<boolean | number>(false);
   const [editReason, setEditReason] = useState('');
 
+  // Filter and sort state
+  const [searchQuery, setSearchQuery] = useState('');
+  const [typeFilter, setTypeFilter] = useState<string>('all');
+  const [planFilter, setPlanFilter] = useState<string>('all');
+  const [sortBy, setSortBy] = useState<'name' | 'type' | 'status'>('name');
+  const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('asc');
+
   // Fetch feature matrix
   const { data: matrixData, isLoading, refetch } = useQuery({
     queryKey: ['feature-matrix'],
@@ -63,6 +81,92 @@ export function FeatureMatrixPage() {
   });
 
   const matrix = matrixData?.data;
+
+  // Filtered and sorted features
+  const filteredAndSortedFeatures = useMemo(() => {
+    if (!matrix?.features) return [];
+
+    let filtered = [...matrix.features];
+
+    // Apply search filter
+    if (searchQuery.trim()) {
+      const query = searchQuery.toLowerCase();
+      filtered = filtered.filter(
+        (f) =>
+          f.featureDisplayName.toLowerCase().includes(query) ||
+          f.featureKey.toLowerCase().includes(query) ||
+          f.description?.toLowerCase().includes(query)
+      );
+    }
+
+    // Apply type filter
+    if (typeFilter !== 'all') {
+      filtered = filtered.filter((f) => f.featureType === typeFilter);
+    }
+
+    // Apply plan filter - show features enabled/available for selected plan
+    if (planFilter !== 'all') {
+      filtered = filtered.filter((f) => {
+        const planValue = f.planValues[planFilter];
+        // For flags, show if enabled (true)
+        // For limits, show if value exists and > 0
+        if (f.featureType === 'flag') {
+          return planValue === true;
+        } else {
+          return typeof planValue === 'number' && planValue !== 0;
+        }
+      });
+    }
+
+    // Apply sorting
+    filtered.sort((a, b) => {
+      let compareA: string;
+      let compareB: string;
+
+      switch (sortBy) {
+        case 'type':
+          compareA = a.featureType;
+          compareB = b.featureType;
+          break;
+        case 'status':
+          compareA = a.status;
+          compareB = b.status;
+          break;
+        case 'name':
+        default:
+          compareA = a.featureDisplayName;
+          compareB = b.featureDisplayName;
+          break;
+      }
+
+      const result = compareA.localeCompare(compareB);
+      return sortOrder === 'asc' ? result : -result;
+    });
+
+    return filtered;
+  }, [matrix?.features, searchQuery, typeFilter, planFilter, sortBy, sortOrder]);
+
+  const handleSort = (column: 'name' | 'type' | 'status') => {
+    if (sortBy === column) {
+      // Toggle sort order
+      setSortOrder(sortOrder === 'asc' ? 'desc' : 'asc');
+    } else {
+      // New column, default to ascending
+      setSortBy(column);
+      setSortOrder('asc');
+    }
+  };
+
+  const getSortIcon = (column: 'name' | 'type' | 'status') => {
+    if (sortBy !== column) {
+      return <ArrowUpDown className="h-3 w-3 ml-1 inline" />;
+    }
+    return sortOrder === 'asc' ? (
+      <ArrowUp className="h-3 w-3 ml-1 inline" />
+    ) : (
+      <ArrowDown className="h-3 w-3 ml-1 inline" />
+    );
+  };
 
   // Update mutation
   const updateMutation = useMutation({
@@ -207,60 +311,99 @@ export function FeatureMatrixPage() {
         </div>
       </div>
 
-      {/* Stats Cards */}
-      <div className="grid gap-4 md:grid-cols-4">
-        <Card>
-          <CardContent className="pt-6">
-            <div className="flex items-center gap-3">
-              <LayoutGrid className="h-8 w-8 text-muted-foreground" />
-              <div>
-                <p className="text-2xl font-bold">{matrix?.totalFeatures || 0}</p>
-                <p className="text-sm text-muted-foreground">Total Features</p>
-              </div>
-            </div>
-          </CardContent>
-        </Card>
-        {[...(matrix?.plans || [])].sort((a, b) => (a.sortOrder || 0) - (b.sortOrder || 0)).map((plan) => (
-          <Card key={plan.id}>
-            <CardContent className="pt-6">
-              <div className="flex items-center gap-3">
-                <Badge variant="outline" className="h-8 px-3 uppercase">
-                  {plan.name.slice(0, 3)}
-                </Badge>
-                <div>
-                  <p className="text-2xl font-bold">{plan.displayName}</p>
-                  <p className="text-sm text-muted-foreground">Plan</p>
-                </div>
-              </div>
-            </CardContent>
-          </Card>
-        ))}
-      </div>
-
       {/* Feature Matrix Table */}
       <Card>
         <CardHeader>
-          <CardTitle className="flex items-center gap-2">
-            <LayoutGrid className="h-5 w-5" />
-            Feature Entitlements
-          </CardTitle>
-          <CardDescription>
-            Click on any cell to edit the feature value for that plan
-          </CardDescription>
+          <div className="flex items-center justify-between">
+            <div>
+              <CardTitle className="flex items-center gap-2">
+                <LayoutGrid className="h-5 w-5" />
+                Feature Entitlements
+              </CardTitle>
+              <CardDescription>
+                Click on any cell to edit the feature value for that plan
+              </CardDescription>
+            </div>
+            <div className="text-sm text-muted-foreground">
+              Showing {filteredAndSortedFeatures.length} of {matrix?.features?.length || 0} features
+            </div>
+          </div>
+
+          {/* Filters */}
+          <div className="flex flex-wrap gap-3 mt-4">
+            <div className="relative flex-1 min-w-[200px]">
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+              <Input
+                placeholder="Search features..."
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                className="pl-9"
+              />
+            </div>
+            <Select value={typeFilter} onValueChange={setTypeFilter}>
+              <SelectTrigger className="w-[150px]">
+                <SelectValue placeholder="All Types" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">All Types</SelectItem>
+                <SelectItem value="flag">Flag</SelectItem>
+                <SelectItem value="limit">Limit</SelectItem>
+              </SelectContent>
+            </Select>
+            <Select value={planFilter} onValueChange={setPlanFilter}>
+              <SelectTrigger className="w-[150px]">
+                <SelectValue placeholder="All Plans" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">All Plans</SelectItem>
+                {[...(matrix?.plans || [])].sort((a, b) => (a.sortOrder || 0) - (b.sortOrder || 0)).map((plan) => (
+                  <SelectItem key={plan.id} value={plan.name}>
+                    {plan.displayName}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
         </CardHeader>
         <CardContent>
-          {!matrix || matrix.features.length === 0 ? (
+          {!matrix || filteredAndSortedFeatures.length === 0 ? (
             <div className="text-center py-8 text-muted-foreground">
-              No features found. Add features to the database to see them here.
+              {matrix?.features?.length === 0
+                ? 'No features found. Add features to the database to see them here.'
+                : 'No features match your filters. Try adjusting your search or filters.'}
             </div>
           ) : (
             <div className="overflow-x-auto">
               <Table>
                 <TableHeader>
                   <TableRow>
-                    <TableHead className="w-[250px]">Feature</TableHead>
-                    <TableHead className="w-[80px]">Type</TableHead>
-                    <TableHead className="w-[80px]">Status</TableHead>
+                    <TableHead
+                      className="w-[250px] cursor-pointer hover:bg-muted/50"
+                      onClick={() => handleSort('name')}
+                    >
+                      <div className="flex items-center">
+                        Feature
+                        {getSortIcon('name')}
+                      </div>
+                    </TableHead>
+                    <TableHead
+                      className="w-[80px] cursor-pointer hover:bg-muted/50"
+                      onClick={() => handleSort('type')}
+                    >
+                      <div className="flex items-center">
+                        Type
+                        {getSortIcon('type')}
+                      </div>
+                    </TableHead>
+                    <TableHead
+                      className="w-[80px] cursor-pointer hover:bg-muted/50"
+                      onClick={() => handleSort('status')}
+                    >
+                      <div className="flex items-center">
+                        Status
+                        {getSortIcon('status')}
+                      </div>
+                    </TableHead>
                     {[...(matrix.plans || [])].sort((a, b) => (a.sortOrder || 0) - (b.sortOrder || 0)).map((plan) => (
                       <TableHead key={plan.id} className="text-center min-w-[100px]">
                         {plan.displayName}
@@ -269,7 +412,7 @@ export function FeatureMatrixPage() {
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {matrix.features.map((feature) => (
+                  {filteredAndSortedFeatures.map((feature) => (
                     <TableRow key={feature.featureId}>
                       <TableCell>
                         <TooltipProvider>

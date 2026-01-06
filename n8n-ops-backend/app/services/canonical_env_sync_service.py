@@ -27,7 +27,8 @@ class CanonicalEnvSyncService:
         environment_id: str,
         environment: Dict[str, Any],
         job_id: Optional[str] = None,
-        checkpoint: Optional[Dict[str, Any]] = None
+        checkpoint: Optional[Dict[str, Any]] = None,
+        tenant_id_for_sse: Optional[str] = None
     ) -> Dict[str, Any]:
         """
         Sync workflows from n8n environment to database.
@@ -95,6 +96,23 @@ class CanonicalEnvSyncService:
                             "message": f"Processing batch {batch_start // BATCH_SIZE + 1}: workflows {batch_start + 1}-{batch_end}"
                         }
                     )
+                    
+                    # Emit SSE event for real-time updates
+                    if tenant_id_for_sse:
+                        try:
+                            from app.api.endpoints.sse import emit_sync_progress
+                            await emit_sync_progress(
+                                job_id=job_id,
+                                environment_id=environment_id,
+                                status="running",
+                                current_step="syncing_workflows",
+                                current=batch_start,
+                                total=total_workflows,
+                                message=f"Processing batch {batch_start // BATCH_SIZE + 1}: workflows {batch_start + 1}-{batch_end}",
+                                tenant_id=tenant_id_for_sse
+                            )
+                        except Exception as sse_err:
+                            logger.warning(f"Failed to emit SSE progress event: {str(sse_err)}")
                 
                 # Process batch
                 batch_results = await CanonicalEnvSyncService._process_workflow_batch(
@@ -127,6 +145,23 @@ class CanonicalEnvSyncService:
                             "checkpoint": checkpoint_data
                         }
                     )
+                    
+                    # Emit SSE event after batch completion
+                    if tenant_id_for_sse:
+                        try:
+                            from app.api.endpoints.sse import emit_sync_progress
+                            await emit_sync_progress(
+                                job_id=job_id,
+                                environment_id=environment_id,
+                                status="running",
+                                current_step="syncing_workflows",
+                                current=batch_end,
+                                total=total_workflows,
+                                message=f"Completed batch {batch_start // BATCH_SIZE + 1}: {batch_end}/{total_workflows} workflows processed",
+                                tenant_id=tenant_id_for_sse
+                            )
+                        except Exception as sse_err:
+                            logger.warning(f"Failed to emit SSE progress event: {str(sse_err)}")
             
             # Mark workflows as deleted if they no longer exist in n8n
             n8n_workflow_ids = {w.get("id") for w in n8n_workflow_summaries}
