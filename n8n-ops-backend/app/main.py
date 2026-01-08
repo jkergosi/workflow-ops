@@ -2,7 +2,7 @@ from fastapi import FastAPI, Request, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from app.core.config import settings
-from app.api.endpoints import environments, workflows, executions, tags, billing, teams, n8n_users, tenants, auth, restore, promotions, credentials, pipelines, deployments, snapshots, observability, notifications, admin_entitlements, admin_audit, admin_billing, admin_usage, admin_credentials, admin_providers, support, admin_support, admin_environment_types, sse, providers, background_jobs, health, incidents, drift_policies, drift_approvals, workflow_policy, environment_capabilities, drift_reports, admin_retention, security, platform_admins, platform_impersonation, platform_console, platform_overview, admin_overview, canonical_workflows, github_webhooks, workflow_matrix, untracked_workflows, bulk_operations
+from app.api.endpoints import environments, workflows, executions, tags, billing, teams, n8n_users, tenants, auth, restore, promotions, credentials, pipelines, deployments, snapshots, observability, notifications, admin_entitlements, admin_audit, admin_billing, admin_usage, admin_credentials, admin_providers, support, admin_support, admin_environment_types, sse, providers, background_jobs, health, incidents, drift_policies, drift_approvals, workflow_policy, environment_capabilities, drift_reports, admin_retention, retention, security, platform_admins, platform_impersonation, platform_console, platform_overview, admin_overview, canonical_workflows, github_webhooks, workflow_matrix, untracked_workflows, bulk_operations
 from app.services.background_job_service import background_job_service
 from app.services.database import db_service
 from app.api.endpoints.admin_audit import create_audit_log
@@ -209,6 +209,12 @@ app.include_router(
     observability.router,
     prefix=f"{settings.API_V1_PREFIX}/observability",
     tags=["observability"]
+)
+
+app.include_router(
+    retention.router,
+    prefix=f"{settings.API_V1_PREFIX}/retention",
+    tags=["retention"]
 )
 
 app.include_router(
@@ -429,6 +435,21 @@ async def startup_event():
         await start_health_check_scheduler()
         logger.info("Health check scheduler started")
         
+        # Start rollup pre-computation scheduler
+        from app.services.rollup_scheduler import start_rollup_scheduler
+        start_rollup_scheduler()
+        logger.info("Rollup scheduler started")
+
+        # Start retention enforcement scheduler
+        from app.services.background_jobs.retention_job import start_retention_scheduler
+        start_retention_scheduler()
+        logger.info("Retention scheduler started")
+
+        # Start downgrade enforcement scheduler
+        from app.services.background_jobs.downgrade_enforcement_job import start_downgrade_enforcement_scheduler
+        start_downgrade_enforcement_scheduler()
+        logger.info("Downgrade enforcement scheduler started")
+
         # Also cleanup stale deployments directly (in case job cleanup didn't catch them)
         try:
             from app.services.database import db_service
@@ -493,6 +514,16 @@ async def shutdown_event():
         from app.services.health_check_scheduler import stop_health_check_scheduler
         await stop_health_check_scheduler()
         logger.info("Health check scheduler stopped")
+
+        # Stop retention scheduler
+        from app.services.background_jobs.retention_job import stop_retention_scheduler
+        await stop_retention_scheduler()
+        logger.info("Retention scheduler stopped")
+
+        # Stop downgrade enforcement scheduler
+        from app.services.background_jobs.downgrade_enforcement_job import stop_downgrade_enforcement_scheduler
+        await stop_downgrade_enforcement_scheduler()
+        logger.info("Downgrade enforcement scheduler stopped")
     except Exception as e:
         logger.error(f"Error stopping schedulers: {str(e)}")
 

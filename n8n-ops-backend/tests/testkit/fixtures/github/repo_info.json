@@ -1,0 +1,18 @@
+{
+  "id": 12345678,
+  "name": "n8n-workflows",
+  "full_name": "testorg/n8n-workflows",
+  "private": true,
+  "owner": {
+    "login": "testorg",
+    "id": 1234,
+    "type": "Organization"
+  },
+  "html_url": "https://github.com/testorg/n8n-workflows",
+  "description": "Workflow repository for n8n",
+  "default_branch": "main",
+  "created_at": "2024-01-01T00:00:00Z",
+  "updated_at": "2024-01-05T10:30:00Z",
+  "pushed_at": "2024-01-05T10:30:00Z"
+}
+

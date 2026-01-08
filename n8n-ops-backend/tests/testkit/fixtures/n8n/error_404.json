@@ -1,0 +1,6 @@
+{
+  "code": 404,
+  "message": "Workflow with ID '123' could not be found.",
+  "hint": "Make sure the workflow exists and you have access to it"
+}
+

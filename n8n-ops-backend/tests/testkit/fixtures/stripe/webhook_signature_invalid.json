@@ -1,0 +1,8 @@
+{
+  "error": {
+    "type": "invalid_request_error",
+    "message": "No signatures found matching the expected signature for payload",
+    "code": "signature_verification_failed"
+  }
+}
+

@@ -4,11 +4,24 @@ API endpoint for workflow × environment matrix (read-only).
 This endpoint provides a single read-only API that returns the full workflow × environment
 matrix with backend-computed status for each cell. The UI must not infer or compute status logic.
 
-Status Semantics (MVP):
-- Linked: Canonical workflow is mapped to the environment and in sync
-- Untracked: Workflow exists in the environment but has no canonical mapping
-- Drift: Canonical mapping exists, but the environment version differs from canonical
-- Out-of-date: Canonical version is newer than the version deployed to the environment
+Status Computation:
+------------------
+Cell status is computed using a two-tier approach:
+
+1. Persisted Status (from workflow_env_map.status) - Follows precedence rules:
+   - DELETED: Takes precedence over all (not shown in matrix)
+   - IGNORED: User explicitly ignored (not shown in matrix)
+   - MISSING: Workflow disappeared from n8n (not shown in matrix)
+   - UNTRACKED: Exists in n8n but no canonical_id
+   - LINKED: Normal operational state
+
+2. Display Status (computed for matrix cells):
+   - LINKED: Mapped and in sync (env_content_hash == git_content_hash)
+   - UNTRACKED: Exists in n8n but no canonical mapping
+   - DRIFT: Linked but env has local changes not in git (env updated after git sync)
+   - OUT_OF_DATE: Linked but git is ahead of env (git updated after env sync)
+
+The UI must not compute or override these statuses - all logic is server-side.
 """
 from fastapi import APIRouter, HTTPException, status, Depends
 from typing import List, Dict, Any, Optional
@@ -21,6 +34,8 @@ from app.services.database import db_service
 from app.core.entitlements_gate import require_entitlement
 from app.services.auth_service import get_current_user
 from app.schemas.environment import EnvironmentClass
+from app.services.canonical_workflow_service import compute_workflow_mapping_status
+from app.schemas.canonical_workflow import WorkflowMappingStatus
 
 logger = logging.getLogger(__name__)
 
@@ -30,7 +45,21 @@ router = APIRouter()
 # Response Models
 
 class WorkflowEnvironmentStatus(str, Enum):
-    """Status of a canonical workflow in a specific environment."""
+    """
+    Display status of a canonical workflow in a specific environment.
+
+    These statuses are computed for the workflow matrix UI based on:
+    1. The persisted mapping status (from WorkflowMappingStatus with precedence rules)
+    2. Content hash comparisons to detect drift/out-of-date conditions
+
+    Display Statuses:
+    - LINKED: Workflow is canonically mapped and in sync (env hash == git hash)
+    - UNTRACKED: Workflow exists in n8n but has no canonical mapping
+    - DRIFT: Workflow is linked but has local changes not yet pushed to git
+    - OUT_OF_DATE: Workflow is linked but git has newer version not deployed to env
+
+    Note: Workflows with DELETED, IGNORED, or MISSING status are not shown in the matrix.
+    """
     LINKED = "linked"
     UNTRACKED = "untracked"
     DRIFT = "drift"
@@ -90,56 +119,99 @@ async def _compute_cell_status(
     git_state: Optional[Dict[str, Any]]
 ) -> tuple[WorkflowEnvironmentStatus, bool]:
     """
-    Compute the status for a workflow in an environment.
+    Compute the display status for a workflow in an environment.
 
     Returns tuple of (status, can_sync).
 
-    Status logic:
-    - linked: Mapping exists, status is "linked", and hashes match
-    - untracked: Mapping status is "untracked" (workflow exists but not canonically mapped)
-    - drift: Mapping exists but env_content_hash differs from git_content_hash
-    - out_of_date: Like drift, but specifically when we know git has a newer version
+    This function computes display statuses for the workflow matrix UI based on:
+    1. The persisted mapping status (using precedence rules from compute_workflow_mapping_status)
+    2. Content hash comparisons to determine DRIFT or OUT_OF_DATE display states
+
+    Status Precedence (from WorkflowMappingStatus):
+    1. DELETED - Workflow/mapping is soft-deleted (not shown in matrix)
+    2. IGNORED - User explicitly ignored (not shown in matrix)
+    3. MISSING - Was mapped but disappeared from n8n (not shown in matrix)
+    4. UNTRACKED - Exists in n8n but no canonical_id (shown as "untracked")
+    5. LINKED - Normal operational state (shown as "linked", "drift", or "out_of_date")
+
+    Display Status Logic:
+    - UNTRACKED: Workflow exists but no canonical mapping (mapping status = "untracked")
+    - LINKED: Mapping status is "linked" and env_content_hash == git_content_hash
+    - DRIFT: Mapping status is "linked" but env has changes not in git
+    - OUT_OF_DATE: Mapping status is "linked" but git is ahead of env
+
+    Args:
+        mapping: The workflow_env_map record for this workflow in this environment
+        git_state: The canonical_workflow_git_state record (if exists)
+
+    Returns:
+        Tuple of (WorkflowEnvironmentStatus | None, can_sync: bool)
+        Returns (None, False) if workflow should not be displayed in matrix
     """
     if not mapping:
         # No mapping means the workflow doesn't exist in this environment
         return None, False
 
+    # Get the persisted mapping status
     mapping_status = mapping.get("status")
-    env_content_hash = mapping.get("env_content_hash")
-    git_content_hash = git_state.get("git_content_hash") if git_state else None
 
-    # Untracked: workflow exists but no canonical mapping
+    # Apply status precedence rules: DELETED, IGNORED, and MISSING are not shown in matrix
+    # These statuses indicate the workflow should not be displayed as an active cell
+    if mapping_status in ("deleted", "ignored", "missing"):
+        return None, False
+
+    # UNTRACKED: workflow exists in n8n but has no canonical mapping
     if mapping_status == "untracked":
         return WorkflowEnvironmentStatus.UNTRACKED, False
 
-    # For linked workflows, check if in sync
+    # LINKED: workflow has canonical mapping - now check for drift/out-of-date
     if mapping_status == "linked":
-        if git_content_hash and env_content_hash:
+        env_content_hash = mapping.get("env_content_hash")
+        git_content_hash = git_state.get("git_content_hash") if git_state else None
+
+        # If no git state exists yet, the workflow is linked but not synced to git
+        if not git_content_hash:
+            return WorkflowEnvironmentStatus.LINKED, False
+
+        # Compare content hashes to determine if in sync, drifted, or out-of-date
+        if env_content_hash and git_content_hash:
             if env_content_hash == git_content_hash:
                 # Fully in sync
                 return WorkflowEnvironmentStatus.LINKED, False
             else:
-                # Hashes differ - this is either drift or out-of-date
-                # Drift: local n8n changes not pushed to git
-                # Out-of-date: git has newer version not pulled to n8n
+                # Hashes differ - determine if drift or out-of-date
+                # DRIFT: Environment has local changes not yet pushed to git
+                # OUT_OF_DATE: Git has newer version not yet deployed to environment
                 #
-                # For MVP, we can determine this based on timestamps or context.
-                # If env was modified after git sync, it's drift.
-                # If git was updated after env sync, it's out-of-date.
+                # For MVP, we use a simplified heuristic:
+                # - Compare timestamps: if env was updated after git sync, it's DRIFT
+                # - Otherwise, if git is different, it's OUT_OF_DATE
                 #
-                # Simplified approach for now: if git_content_hash exists and differs,
-                # we consider it out_of_date (canonical is ahead).
-                # True drift detection would require more sophisticated comparison.
+                # Future enhancement: Track bidirectional sync timestamps for precise detection
+                env_updated_at = mapping.get("n8n_updated_at")
+                git_synced_at = git_state.get("last_repo_sync_at")
+
+                if env_updated_at and git_synced_at:
+                    # Parse timestamps for comparison
+                    try:
+                        from dateutil import parser
+                        env_dt = parser.parse(env_updated_at) if isinstance(env_updated_at, str) else env_updated_at
+                        git_dt = parser.parse(git_synced_at) if isinstance(git_synced_at, str) else git_synced_at
+
+                        if env_dt > git_dt:
+                            # Environment was updated after git sync - local changes (DRIFT)
+                            return WorkflowEnvironmentStatus.DRIFT, True
+                    except Exception as e:
+                        logger.warning(f"Error comparing timestamps: {e}")
+
+                # Default: git is ahead of environment (OUT_OF_DATE)
                 return WorkflowEnvironmentStatus.OUT_OF_DATE, True
-        elif not git_content_hash:
-            # No git state yet - consider it linked (just not synced to git)
-            return WorkflowEnvironmentStatus.LINKED, False
         else:
-            # Has git state but env_content_hash is missing/different
+            # Missing hash - treat as out of date
             return WorkflowEnvironmentStatus.OUT_OF_DATE, True
 
-    # For other mapping statuses (ignored, deleted, missing), treat as not present
-    # These shouldn't typically appear in the matrix view
+    # Fallback for unknown status - should not happen with proper data
+    logger.warning(f"Unexpected mapping status in matrix: {mapping_status}")
     return None, False
 
 

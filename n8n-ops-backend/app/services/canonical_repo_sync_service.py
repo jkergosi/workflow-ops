@@ -32,15 +32,21 @@ class CanonicalRepoSyncService:
     ) -> Dict[str, Any]:
         """
         Sync workflows from Git repository to database.
-        
+
         Args:
             tenant_id: Tenant ID
             environment_id: Environment ID
             environment: Environment configuration dict
             commit_sha: Optional specific commit to sync from
-            
+
         Returns:
             Sync result with counts and errors
+
+        Transaction Safety:
+        - Each workflow file is processed independently within a try-catch block
+        - Individual workflow failures don't halt entire sync operation
+        - Database operations use upsert for idempotency
+        - Per-workflow errors are collected and returned for reporting
         """
         git_repo_url = environment.get("git_repo_url")
         git_branch = environment.get("git_branch", "main")

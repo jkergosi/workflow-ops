@@ -222,11 +222,36 @@ async def get_environment(
 async def create_environment(
     environment: EnvironmentCreate,
     user_info: dict = Depends(get_current_user),
-    _: dict = Depends(require_environment_limit())
+    limit_check: dict = Depends(require_environment_limit())
 ):
-    """Create a new environment"""
+    """
+    Create a new environment.
+
+    This endpoint enforces plan-based environment limits server-side.
+    The require_environment_limit() dependency ensures tenants cannot exceed
+    their plan's environment quota (e.g., 1 for Free, 3 for Pro).
+    """
     try:
         tenant_id = get_tenant_id(user_info)
+
+        # Double-check environment limit as an additional safety measure
+        # The decorator already checked, but we verify again before DB write
+        can_add, message, current, limit = await entitlements_service.can_add_environment(tenant_id)
+        if not can_add:
+            logger.warning(
+                f"Environment creation blocked for tenant {tenant_id}: "
+                f"{current}/{limit} environments (limit reached)"
+            )
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail={
+                    "error": "environment_limit_reached",
+                    "current_count": current,
+                    "limit": limit,
+                    "message": message,
+                }
+            )
+
         # Type is now optional metadata - no uniqueness check needed
         # Multiple environments can have the same type
 
@@ -245,6 +270,11 @@ async def create_environment(
         }
 
         created_environment = await db_service.create_environment(environment_data)
+
+        logger.info(
+            f"Environment '{environment.n8n_name}' created for tenant {tenant_id}. "
+            f"Usage: {current + 1}/{limit}"
+        )
 
         # Create audit log with provider context
         try:

@@ -29,6 +29,12 @@ class Settings(BaseSettings):
     # Bulk Operations Configuration
     MAX_BULK_WORKFLOWS: int = 50
 
+    # Execution Retention Configuration
+    EXECUTION_RETENTION_ENABLED: bool = True
+    EXECUTION_RETENTION_DAYS: int = 90
+    RETENTION_JOB_BATCH_SIZE: int = 1000
+    RETENTION_JOB_SCHEDULE_CRON: str = "0 2 * * *"  # Daily at 2 AM
+
     # Security
     SECRET_KEY: str
     ALGORITHM: str = "HS256"

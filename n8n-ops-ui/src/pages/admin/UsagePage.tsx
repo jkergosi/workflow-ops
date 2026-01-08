@@ -1,6 +1,6 @@
 // @ts-nocheck
 // TODO: Fix TypeScript errors in this file
-import { useState, useMemo, useEffect } from 'react';
+import { useState, useMemo, useEffect, memo } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
@@ -44,30 +44,37 @@ import { exportToCSV } from '@/lib/export-utils';
 import { toast } from 'sonner';
 import type { GlobalUsageStats, TopTenant, TenantAtLimit, GlobalUsageMetric, Provider } from '@/types';
 
-// Simple bar chart component for usage history
-function UsageHistoryChart({ data, label }: { data: number[]; label: string }) {
-  const max = Math.max(...data, 1);
-  const _barWidth = 100 / data.length;
+// Optimized bar chart component for usage history
+// Uses React.memo to prevent unnecessary re-renders
+const UsageHistoryChart = memo(function UsageHistoryChart({ data, label }: { data: number[]; label: string }) {
+  // Pre-compute max value outside of render loop
+  const max = useMemo(() => Math.max(...data, 1), [data]);
+  
+  // Pre-compute bar heights to avoid recalculation on each render
+  const bars = useMemo(() => 
+    data.map((value) => ({
+      value,
+      height: Math.max((value / max) * 100, 2)
+    })),
+    [data, max]
+  );
 
   return (
     <div className="h-32 flex items-end gap-1">
-      {data.map((value, i) => {
-        const height = (value / max) * 100;
-        return (
-          <div
-            key={i}
-            className="flex-1 bg-primary/20 hover:bg-primary/30 rounded-t transition-all relative group"
-            style={{ height: `${Math.max(height, 2)}%` }}
-          >
-            <div className="absolute -top-8 left-1/2 -translate-x-1/2 bg-popover border rounded px-2 py-1 text-xs opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap z-10">
-              {value.toLocaleString()} {label}
-            </div>
+      {bars.map(({ value, height }, i) => (
+        <div
+          key={i}
+          className="flex-1 bg-primary/20 hover:bg-primary/30 rounded-t transition-all relative group"
+          style={{ height: `${height}%` }}
+        >
+          <div className="absolute -top-8 left-1/2 -translate-x-1/2 bg-popover border rounded px-2 py-1 text-xs opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap z-10">
+            {value.toLocaleString()} {label}
           </div>
-        );
-      })}
+        </div>
+      ))}
     </div>
   );
-}
+});
 
 export function UsagePage() {
   useEffect(() => {

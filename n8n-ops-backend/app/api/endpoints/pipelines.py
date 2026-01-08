@@ -13,6 +13,7 @@ from app.core.entitlements_gate import require_entitlement
 from app.services.database import db_service
 from app.schemas.pipeline import PipelineCreate, PipelineUpdate, PipelineResponse
 from app.services.auth_service import get_current_user
+from app.core.rbac import require_tenant_admin
 
 logger = logging.getLogger(__name__)
 
@@ -125,6 +126,7 @@ async def get_pipeline(
 async def create_pipeline(
     pipeline: PipelineCreate,
     user_info: dict = Depends(get_current_user),
+    _admin_guard: dict = Depends(require_tenant_admin()),
     _: None = Depends(require_entitlement("workflow_ci_cd"))
 ):
     """
@@ -224,6 +226,7 @@ async def update_pipeline(
     pipeline_id: str,
     pipeline: PipelineUpdate,
     user_info: dict = Depends(get_current_user),
+    _admin_guard: dict = Depends(require_tenant_admin()),
     _: None = Depends(require_entitlement("workflow_ci_cd"))
 ):
     """
@@ -332,6 +335,7 @@ async def update_pipeline(
 async def delete_pipeline(
     pipeline_id: str,
     user_info: dict = Depends(get_current_user),
+    _admin_guard: dict = Depends(require_tenant_admin()),
     _: None = Depends(require_entitlement("workflow_ci_cd"))
 ):
     """

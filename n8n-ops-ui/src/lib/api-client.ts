@@ -79,6 +79,11 @@ import type {
   WorkflowMatrixResponse,
   WorkflowAnalytics,
   ExecutionAnalyticsEnvelope,
+  RetentionPolicy,
+  CreateRetentionPolicyRequest,
+  UpdateRetentionPolicyRequest,
+  CleanupResult,
+  CleanupPreview,
 } from '@/types';
 
 // Helper function to determine if a string is a UUID
@@ -993,6 +998,70 @@ class ApiClient {
     return { data: response.data };
   }
 
+  async getWorkflowsPaginated(
+    environmentId: string,
+    page: number = 1,
+    pageSize: number = 50,
+    options?: {
+      search?: string;
+      tags?: string[];
+      statusFilter?: string;
+      sortField?: string;
+      sortDirection?: string;
+    }
+  ): Promise<{
+    data: {
+      workflows: Workflow[];
+      total: number;
+      page: number;
+      page_size: number;
+      total_pages: number;
+    };
+  }> {
+    const params: Record<string, any> = {
+      environment_id: environmentId,
+      page,
+      page_size: pageSize,
+    };
+
+    if (options?.search) {
+      params.search = options.search;
+    }
+    if (options?.tags && options.tags.length > 0) {
+      params.tags = options.tags.join(',');
+    }
+    if (options?.statusFilter) {
+      params.status_filter = options.statusFilter;
+    }
+    if (options?.sortField) {
+      params.sort_field = options.sortField;
+    }
+    if (options?.sortDirection) {
+      params.sort_direction = options.sortDirection;
+    }
+
+    const response = await this.client.get<{
+      workflows: any[];
+      total: number;
+      page: number;
+      page_size: number;
+      total_pages: number;
+    }>('/workflows/paginated', { params });
+
+    // Add provider field for backward compatibility
+    const workflows = (response.data.workflows || []).map((wf: any) => ({
+      ...wf,
+      provider: wf.provider || 'n8n',
+    }));
+
+    return {
+      data: {
+        ...response.data,
+        workflows,
+      },
+    };
+  }
+
   async uploadWorkflows(
     files: File[],
     environment: EnvironmentType,
@@ -1165,6 +1234,59 @@ class ApiClient {
     if (workflowId) params.workflow_id = workflowId;
     // Backend is configured with redirect_slashes=False, so list endpoints must include trailing slash.
     const response = await this.client.get<Execution[]>('/executions/', { params });
+    return { data: response.data };
+  }
+
+  async getExecutionsPaginated(
+    environmentId: string,
+    page: number = 1,
+    pageSize: number = 50,
+    options?: {
+      workflowId?: string;
+      statusFilter?: string;
+      search?: string;
+      sortField?: string;
+      sortDirection?: string;
+    }
+  ): Promise<{
+    data: {
+      executions: Execution[];
+      total: number;
+      page: number;
+      page_size: number;
+      total_pages: number;
+    };
+  }> {
+    const params: Record<string, any> = {
+      environment_id: environmentId,
+      page,
+      page_size: pageSize,
+    };
+
+    if (options?.workflowId) {
+      params.workflow_id = options.workflowId;
+    }
+    if (options?.statusFilter) {
+      params.status_filter = options.statusFilter;
+    }
+    if (options?.search) {
+      params.search = options.search;
+    }
+    if (options?.sortField) {
+      params.sort_field = options.sortField;
+    }
+    if (options?.sortDirection) {
+      params.sort_direction = options.sortDirection;
+    }
+
+    const response = await this.client.get<{
+      executions: Execution[];
+      total: number;
+      page: number;
+      page_size: number;
+      total_pages: number;
+    }>('/executions/paginated', { params });
+
     return { data: response.data };
   }
 
@@ -4080,6 +4202,120 @@ class ApiClient {
   async getWorkflowMatrix(): Promise<{ data: WorkflowMatrixResponse }> {
     const response = await this.client.get<WorkflowMatrixResponse>('/workflows/matrix');
     return { data: response.data };
+  }
+
+  // Retention Management Methods
+
+  /**
+   * Get the current execution retention policy for the authenticated tenant.
+   */
+  async getRetentionPolicy(): Promise<{ data: RetentionPolicy }> {
+    const response = await this.client.get('/retention/policy');
+    return {
+      data: {
+        retentionDays: response.data.retention_days,
+        isEnabled: response.data.is_enabled,
+        minExecutionsToKeep: response.data.min_executions_to_keep,
+        lastCleanupAt: response.data.last_cleanup_at,
+        lastCleanupDeletedCount: response.data.last_cleanup_deleted_count || 0,
+      },
+    };
+  }
+
+  /**
+   * Create or update the execution retention policy for the authenticated tenant.
+   */
+  async createRetentionPolicy(request: CreateRetentionPolicyRequest): Promise<{ data: RetentionPolicy }> {
+    const payload: any = {};
+    if (request.retentionDays !== undefined) {
+      payload.retention_days = request.retentionDays;
+    }
+    if (request.isEnabled !== undefined) {
+      payload.is_enabled = request.isEnabled;
+    }
+    if (request.minExecutionsToKeep !== undefined) {
+      payload.min_executions_to_keep = request.minExecutionsToKeep;
+    }
+
+    const response = await this.client.post('/retention/policy', payload);
+    return {
+      data: {
+        retentionDays: response.data.retention_days,
+        isEnabled: response.data.is_enabled,
+        minExecutionsToKeep: response.data.min_executions_to_keep,
+        lastCleanupAt: response.data.last_cleanup_at,
+        lastCleanupDeletedCount: response.data.last_cleanup_deleted_count || 0,
+      },
+    };
+  }
+
+  /**
+   * Update specific fields of the execution retention policy (partial update).
+   */
+  async updateRetentionPolicy(request: UpdateRetentionPolicyRequest): Promise<{ data: RetentionPolicy }> {
+    const payload: any = {};
+    if (request.retentionDays !== undefined) {
+      payload.retention_days = request.retentionDays;
+    }
+    if (request.isEnabled !== undefined) {
+      payload.is_enabled = request.isEnabled;
+    }
+    if (request.minExecutionsToKeep !== undefined) {
+      payload.min_executions_to_keep = request.minExecutionsToKeep;
+    }
+
+    const response = await this.client.patch('/retention/policy', payload);
+    return {
+      data: {
+        retentionDays: response.data.retention_days,
+        isEnabled: response.data.is_enabled,
+        minExecutionsToKeep: response.data.min_executions_to_keep,
+        lastCleanupAt: response.data.last_cleanup_at,
+        lastCleanupDeletedCount: response.data.last_cleanup_deleted_count || 0,
+      },
+    };
+  }
+
+  /**
+   * Preview what would be deleted by a retention cleanup operation without actually deleting.
+   */
+  async getCleanupPreview(): Promise<{ data: CleanupPreview }> {
+    const response = await this.client.get('/retention/preview');
+    return {
+      data: {
+        tenantId: response.data.tenant_id,
+        totalExecutions: response.data.total_executions,
+        oldExecutionsCount: response.data.old_executions_count,
+        executionsToDelete: response.data.executions_to_delete,
+        cutoffDate: response.data.cutoff_date,
+        retentionDays: response.data.retention_days,
+        minExecutionsToKeep: response.data.min_executions_to_keep,
+        wouldDelete: response.data.would_delete,
+        isEnabled: response.data.is_enabled,
+      },
+    };
+  }
+
+  /**
+   * Manually trigger execution retention cleanup for the authenticated tenant.
+   * Warning: This permanently deletes old execution data.
+   */
+  async triggerRetentionCleanup(force: boolean = false): Promise<{ data: CleanupResult }> {
+    const response = await this.client.post('/retention/cleanup', null, {
+      params: { force },
+    });
+    return {
+      data: {
+        tenantId: response.data.tenant_id,
+        deletedCount: response.data.deleted_count,
+        retentionDays: response.data.retention_days,
+        isEnabled: response.data.is_enabled,
+        timestamp: response.data.timestamp,
+        summary: response.data.summary,
+        skipped: response.data.skipped,
+        reason: response.data.reason,
+      },
+    };
   }
 }
 

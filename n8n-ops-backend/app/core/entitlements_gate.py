@@ -81,6 +81,15 @@ def require_environment_limit():
     """
     FastAPI dependency to enforce environment limit before creation.
 
+    This decorator implements server-side enforcement of plan-based
+    environment limits, preventing tenants from creating more environments
+    than allowed by their subscription plan.
+
+    Enforcement includes:
+    - Pre-creation limit check (before any DB writes)
+    - Clear error messages with upgrade guidance
+    - Audit logging of limit exceeded attempts
+
     Usage:
         @router.post("/")
         async def create_environment(
@@ -98,22 +107,84 @@ def require_environment_limit():
             )
 
         tenant_id = tenant["id"]
+        user = user_info.get("user", {})
+        user_id = user.get("id")
+
         can_add, message, current, limit = await entitlements_service.can_add_environment(tenant_id)
 
         if not can_add:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail={
-                    "error": "environment_limit_reached",
-                    "current_count": current,
-                    "limit": limit,
-                    "message": message,
-                }
+            # Use the enforce_limit method which includes audit logging
+            await entitlements_service.enforce_limit(
+                tenant_id=tenant_id,
+                feature_name="environment_limits",
+                current_count=current,
+                user_id=user_id,
+                endpoint="/api/environments",
+                resource_type="environment",
+                log_limit_exceeded=True
             )
+            # The above will raise HTTPException, this line won't be reached
+            # but kept for clarity
 
         return {
             **user_info,
             "environment_limit": {
+                "current": current,
+                "limit": limit,
+            }
+        }
+
+    return limit_dependency
+
+
+def require_team_member_limit():
+    """
+    FastAPI dependency to enforce team member limit before adding new members.
+
+    This decorator implements server-side enforcement of plan-based
+    team member limits, preventing tenants from adding more team members
+    than allowed by their subscription plan.
+
+    Enforcement includes:
+    - Pre-creation limit check (before any DB writes)
+    - Clear error messages with upgrade guidance
+    - Audit logging of limit exceeded attempts
+
+    Usage:
+        @router.post("/")
+        async def invite_team_member(
+            ...,
+            user_info: dict = Depends(require_team_member_limit())
+        ):
+            ...
+    """
+    async def limit_dependency(user_info: dict = Depends(get_current_user)):
+        tenant = user_info.get("tenant")
+        if not tenant:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Authentication required"
+            )
+
+        tenant_id = tenant["id"]
+        user = user_info.get("user", {})
+        user_id = user.get("id")
+
+        can_add, message, current, limit = await entitlements_service.can_add_team_member(tenant_id)
+
+        if not can_add:
+            # Use the enforce_team_member_limit method which includes audit logging
+            await entitlements_service.enforce_team_member_limit(
+                tenant_id=tenant_id,
+                user_id=user_id,
+                endpoint="/api/teams"
+            )
+            # The above will raise HTTPException, this line won't be reached
+            # but kept for clarity
+
+        return {
+            **user_info,
+            "team_member_limit": {
                 "current": current,
                 "limit": limit,
             }

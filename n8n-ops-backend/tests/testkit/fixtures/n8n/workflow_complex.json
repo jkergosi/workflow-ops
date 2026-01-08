@@ -1,0 +1,146 @@
+{
+  "id": "complex-1",
+  "name": "Customer Onboarding Flow",
+  "active": true,
+  "createdAt": "2024-01-01T00:00:00.000Z",
+  "updatedAt": "2024-01-02T10:30:00.000Z",
+  "versionId": "v3",
+  "nodes": [
+    {
+      "id": "webhook",
+      "type": "n8n-nodes-base.webhook",
+      "name": "Webhook",
+      "position": [250, 300],
+      "parameters": {
+        "path": "customer-onboard",
+        "method": "POST"
+      },
+      "webhookId": "abc123"
+    },
+    {
+      "id": "validate",
+      "type": "n8n-nodes-base.function",
+      "name": "Validate Data",
+      "position": [450, 300],
+      "parameters": {
+        "functionCode": "return items;"
+      }
+    },
+    {
+      "id": "create-customer",
+      "type": "n8n-nodes-base.httpRequest",
+      "name": "Create Customer",
+      "position": [650, 300],
+      "parameters": {
+        "url": "https://api.crm.com/customers",
+        "method": "POST",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "crmApi"
+      },
+      "credentials": {
+        "crmApi": {
+          "id": "cred-1",
+          "name": "CRM API"
+        }
+      }
+    },
+    {
+      "id": "send-email",
+      "type": "n8n-nodes-base.emailSend",
+      "name": "Send Welcome Email",
+      "position": [850, 300],
+      "parameters": {
+        "fromEmail": "welcome@example.com",
+        "toEmail": "={{ $json.email }}",
+        "subject": "Welcome!",
+        "text": "Welcome to our service"
+      }
+    },
+    {
+      "id": "slack-notify",
+      "type": "n8n-nodes-base.slack",
+      "name": "Notify Team",
+      "position": [1050, 300],
+      "parameters": {
+        "channel": "#sales",
+        "text": "New customer onboarded"
+      }
+    },
+    {
+      "id": "error-handler",
+      "type": "n8n-nodes-base.httpRequest",
+      "name": "Log Error",
+      "position": [650, 500],
+      "parameters": {
+        "url": "https://api.logger.com/errors",
+        "method": "POST"
+      }
+    }
+  ],
+  "connections": {
+    "Webhook": {
+      "main": [
+        [
+          {
+            "node": "Validate Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate Data": {
+      "main": [
+        [
+          {
+            "node": "Create Customer",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create Customer": {
+      "main": [
+        [
+          {
+            "node": "Send Welcome Email",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Welcome Email": {
+      "main": [
+        [
+          {
+            "node": "Notify Team",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveDataErrorExecution": "all",
+    "saveDataSuccessExecution": "all",
+    "saveExecutionProgress": true,
+    "saveManualExecutions": true,
+    "callerPolicy": "workflowsFromSameOwner"
+  },
+  "staticData": {},
+  "tags": [
+    {
+      "id": "tag-1",
+      "name": "customer"
+    },
+    {
+      "id": "tag-2",
+      "name": "onboarding"
+    }
+  ]
+}
+

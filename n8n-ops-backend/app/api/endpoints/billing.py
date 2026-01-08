@@ -1,6 +1,7 @@
 from fastapi import APIRouter, HTTPException, status, Request, Depends
 from typing import List, Any, Optional, Dict
 from datetime import datetime
+import logging
 
 from app.schemas.billing import (
     SubscriptionPlanResponse,
@@ -27,8 +28,12 @@ from app.services.agency_billing_service import upsert_subscription_items
 from app.services.entitlements_service import entitlements_service
 from app.services.feature_service import feature_service
 from app.services.plan_resolver import resolve_effective_plan
+from app.services.webhook_lock_service import webhook_lock_service
+from app.services.downgrade_service import downgrade_service
+from app.core.rbac import require_tenant_admin
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 
 def _obj_get(obj: Any, key: str, default: Any = None) -> Any:
@@ -78,6 +83,32 @@ def _plan_from_status(status_value: Optional[str], cancel_at_period_end: bool, p
     if cancel_at_period_end:
         return paid_plan
     return "free"
+
+
+async def _get_plan_precedence(plan_name: str) -> int:
+    """
+    Get the precedence/rank for a plan name.
+    Higher values indicate higher-tier plans.
+
+    Args:
+        plan_name: The plan name (normalized to lowercase)
+
+    Returns:
+        Precedence value (0 for free, higher for paid plans)
+    """
+    try:
+        normalized = (plan_name or "free").lower().strip()
+        response = db_service.client.table("plans").select("precedence").eq(
+            "name", normalized
+        ).maybe_single().execute()
+
+        if response and response.data:
+            return response.data.get("precedence", 0)
+    except Exception as e:
+        logger.warning(f"Failed to get precedence for plan {plan_name}: {e}")
+
+    # Fallback defaults
+    return 0 if plan_name == "free" else 0
 
 
 @router.get("/plans", response_model=List[SubscriptionPlanResponse])
@@ -238,7 +269,10 @@ async def get_plan_configurations():
 
 
 @router.get("/subscription", response_model=SubscriptionResponse)
-async def get_current_subscription(user_info: dict = Depends(get_current_user)):
+async def get_current_subscription(
+    user_info: dict = Depends(get_current_user),
+    _admin_guard: dict = Depends(require_tenant_admin()),
+):
     """Get current subscription for tenant"""
     try:
         tenant_id = user_info["tenant"]["id"]
@@ -326,7 +360,11 @@ async def get_current_subscription(user_info: dict = Depends(get_current_user)):
 
 
 @router.post("/checkout", response_model=CheckoutSessionResponse)
-async def create_checkout_session(checkout: CheckoutSessionCreate, user_info: dict = Depends(get_current_user)):
+async def create_checkout_session(
+    checkout: CheckoutSessionCreate,
+    user_info: dict = Depends(get_current_user),
+    _admin_guard: dict = Depends(require_tenant_admin()),
+):
     """Create a Stripe checkout session for subscription"""
     try:
         tenant_id = user_info["tenant"]["id"]
@@ -378,7 +416,11 @@ async def create_checkout_session(checkout: CheckoutSessionCreate, user_info: di
 
 
 @router.post("/portal", response_model=PortalSessionResponse)
-async def create_portal_session(return_url: str, user_info: dict = Depends(get_current_user)):
+async def create_portal_session(
+    return_url: str,
+    user_info: dict = Depends(get_current_user),
+    _admin_guard: dict = Depends(require_tenant_admin()),
+):
     """Create a Stripe customer portal session (on-demand, short-lived)"""
     try:
         tenant_id = user_info["tenant"]["id"]
@@ -411,7 +453,11 @@ async def create_portal_session(return_url: str, user_info: dict = Depends(get_c
 
 
 @router.post("/cancel")
-async def cancel_subscription(at_period_end: bool = True, user_info: dict = Depends(get_current_user)):
+async def cancel_subscription(
+    at_period_end: bool = True,
+    user_info: dict = Depends(get_current_user),
+    _admin_guard: dict = Depends(require_tenant_admin()),
+):
     """Cancel current subscription"""
     try:
         tenant_id = user_info["tenant"]["id"]
@@ -451,7 +497,10 @@ async def cancel_subscription(at_period_end: bool = True, user_info: dict = Depe
 
 
 @router.post("/reactivate")
-async def reactivate_subscription(user_info: dict = Depends(get_current_user)):
+async def reactivate_subscription(
+    user_info: dict = Depends(get_current_user),
+    _admin_guard: dict = Depends(require_tenant_admin()),
+):
     """Reactivate a canceled subscription"""
     try:
         tenant_id = user_info["tenant"]["id"]
@@ -487,7 +536,11 @@ async def reactivate_subscription(user_info: dict = Depends(get_current_user)):
 
 
 @router.get("/invoices", response_model=List[InvoiceResponse])
-async def get_invoices(limit: int = 10, user_info: dict = Depends(get_current_user)):
+async def get_invoices(
+    limit: int = 10,
+    user_info: dict = Depends(get_current_user),
+    _admin_guard: dict = Depends(require_tenant_admin()),
+):
     """Get invoices for current tenant"""
     try:
         tenant_id = user_info["tenant"]["id"]
@@ -511,7 +564,10 @@ async def get_invoices(limit: int = 10, user_info: dict = Depends(get_current_us
 
 
 @router.get("/upcoming-invoice", response_model=UpcomingInvoiceResponse)
-async def get_upcoming_invoice(user_info: dict = Depends(get_current_user)):
+async def get_upcoming_invoice(
+    user_info: dict = Depends(get_current_user),
+    _admin_guard: dict = Depends(require_tenant_admin()),
+):
     """Get upcoming invoice for current tenant"""
     try:
         tenant_id = user_info["tenant"]["id"]
@@ -547,7 +603,11 @@ async def get_upcoming_invoice(user_info: dict = Depends(get_current_user)):
 
 
 @router.get("/payment-history", response_model=List[PaymentHistoryResponse])
-async def get_payment_history(limit: int = 10, user_info: dict = Depends(get_current_user)):
+async def get_payment_history(
+    limit: int = 10,
+    user_info: dict = Depends(get_current_user),
+    _admin_guard: dict = Depends(require_tenant_admin()),
+):
     """Get payment history from database"""
     try:
         tenant_id = user_info["tenant"]["id"]
@@ -565,7 +625,10 @@ async def get_payment_history(limit: int = 10, user_info: dict = Depends(get_cur
 
 
 @router.get("/overview", response_model=BillingOverviewResponse)
-async def get_billing_overview(user_info: dict = Depends(get_current_user)):
+async def get_billing_overview(
+    user_info: dict = Depends(get_current_user),
+    _admin_guard: dict = Depends(require_tenant_admin()),
+):
     """Get complete billing overview for the billing page"""
     try:
         tenant = user_info.get("tenant")
@@ -813,53 +876,69 @@ async def handle_checkout_completed(session):
     tenant_id = md.get("tenant_id")
     billing_cycle = md.get("billing_cycle", "monthly")
     if not tenant_id:
+        logger.warning("Checkout completed webhook received without tenant_id")
         return
 
-    # Get subscription from Stripe
-    stripe_subscription_id = _obj_get(session, "subscription")
-    subscription = await stripe_service.get_subscription(stripe_subscription_id)
+    # Acquire webhook lock to prevent race conditions
+    async with webhook_lock_service.acquire_webhook_lock(tenant_id, "checkout") as locked:
+        if not locked:
+            logger.error(f"Failed to acquire webhook lock for tenant {tenant_id} in checkout.session.completed")
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Another webhook is currently processing for this tenant. Please retry."
+            )
 
-    # Get plan ID from price
-    price_id = _extract_first_price_id(subscription)
-    if not price_id:
-        return
+        logger.info(f"Processing checkout.session.completed for tenant {tenant_id}")
 
-    plan_response = db_service.client.table("subscription_plans").select("id, name").or_(
-        f"stripe_price_id_monthly.eq.{price_id},stripe_price_id_yearly.eq.{price_id}"
-    ).single().execute()
-    if not plan_response.data:
-        return
+        # Get subscription from Stripe
+        stripe_subscription_id = _obj_get(session, "subscription")
+        subscription = await stripe_service.get_subscription(stripe_subscription_id)
 
-    # Update or create subscription in database
-    db_service.client.table("subscriptions").upsert({
-        "tenant_id": tenant_id,
-        "plan_id": plan_response.data["id"],
-        "stripe_customer_id": _obj_get(session, "customer"),
-        "stripe_subscription_id": stripe_subscription_id,
-        "status": subscription["status"],
-        "billing_cycle": billing_cycle,
-        "current_period_start": datetime.fromtimestamp(subscription["current_period_start"]).isoformat(),
-        "current_period_end": datetime.fromtimestamp(subscription["current_period_end"]).isoformat(),
-        "cancel_at_period_end": bool(subscription.get("cancel_at_period_end", False)),
-        "canceled_at": datetime.fromtimestamp(subscription["canceled_at"]).isoformat() if subscription.get("canceled_at") else None,
-    }).execute()
+        # Get plan ID from price
+        price_id = _extract_first_price_id(subscription)
+        if not price_id:
+            logger.warning(f"No price_id found in subscription for tenant {tenant_id}")
+            return
 
-    await upsert_subscription_items(tenant_id, stripe_subscription_id, subscription)
+        plan_response = db_service.client.table("subscription_plans").select("id, name").or_(
+            f"stripe_price_id_monthly.eq.{price_id},stripe_price_id_yearly.eq.{price_id}"
+        ).single().execute()
+        if not plan_response.data:
+            logger.warning(f"No plan found for price_id {price_id} for tenant {tenant_id}")
+            return
 
-    paid_plan_name = (plan_response.data.get("name") or "free").lower()
-    next_plan = _plan_from_status(
-        subscription.get("status"),
-        bool(subscription.get("cancel_at_period_end", False)),
-        paid_plan_name,
-    )
-    await set_tenant_plan(tenant_id, next_plan)  # type: ignore[arg-type]
-    
-    # Activate tenant if it's still pending (important for onboarding flow)
-    tenant_response = db_service.client.table("tenants").select("status").eq("id", tenant_id).single().execute()
-    if tenant_response.data and tenant_response.data.get("status") == "pending":
-        db_service.client.table("tenants").update({
-            "status": "active"
-        }).eq("id", tenant_id).execute()
+        # Update or create subscription in database
+        db_service.client.table("subscriptions").upsert({
+            "tenant_id": tenant_id,
+            "plan_id": plan_response.data["id"],
+            "stripe_customer_id": _obj_get(session, "customer"),
+            "stripe_subscription_id": stripe_subscription_id,
+            "status": subscription["status"],
+            "billing_cycle": billing_cycle,
+            "current_period_start": datetime.fromtimestamp(subscription["current_period_start"]).isoformat(),
+            "current_period_end": datetime.fromtimestamp(subscription["current_period_end"]).isoformat(),
+            "cancel_at_period_end": bool(subscription.get("cancel_at_period_end", False)),
+            "canceled_at": datetime.fromtimestamp(subscription["canceled_at"]).isoformat() if subscription.get("canceled_at") else None,
+        }).execute()
+
+        await upsert_subscription_items(tenant_id, stripe_subscription_id, subscription)
+
+        paid_plan_name = (plan_response.data.get("name") or "free").lower()
+        next_plan = _plan_from_status(
+            subscription.get("status"),
+            bool(subscription.get("cancel_at_period_end", False)),
+            paid_plan_name,
+        )
+        await set_tenant_plan(tenant_id, next_plan)  # type: ignore[arg-type]
+
+        # Activate tenant if it's still pending (important for onboarding flow)
+        tenant_response = db_service.client.table("tenants").select("status").eq("id", tenant_id).single().execute()
+        if tenant_response.data and tenant_response.data.get("status") == "pending":
+            db_service.client.table("tenants").update({
+                "status": "active"
+            }).eq("id", tenant_id).execute()
+
+        logger.info(f"Successfully processed checkout.session.completed for tenant {tenant_id}, plan: {next_plan}")
 
 
 async def handle_subscription_updated(subscription):
@@ -877,46 +956,122 @@ async def handle_subscription_updated(subscription):
         )
         tenant_id = existing.data.get("tenant_id") if existing.data else None
     if not tenant_id or not subscription_id:
+        logger.warning(f"Subscription updated webhook missing tenant_id or subscription_id: {subscription_id}")
         return
 
-    price_id = _extract_first_price_id(subscription)
-    plan_name: str = "free"
-    plan_id: Optional[str] = None
-    if price_id:
-        plan_resp = (
-            db_service.client.table("subscription_plans")
-            .select("id, name")
-            .or_(f"stripe_price_id_monthly.eq.{price_id},stripe_price_id_yearly.eq.{price_id}")
-            .single()
-            .execute()
-        )
-        if plan_resp.data:
-            plan_id = plan_resp.data.get("id")
-            plan_name = (plan_resp.data.get("name") or "free").lower()
+    # Acquire webhook lock to prevent race conditions
+    async with webhook_lock_service.acquire_webhook_lock(tenant_id, "subscription") as locked:
+        if not locked:
+            logger.error(f"Failed to acquire webhook lock for tenant {tenant_id} in customer.subscription.updated")
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Another webhook is currently processing for this tenant. Please retry."
+            )
 
-    status_value = _obj_get(subscription, "status")
-    cancel_at_period_end = bool(_obj_get(subscription, "cancel_at_period_end", False))
-    canceled_at = _obj_get(subscription, "canceled_at")
+        logger.info(f"Processing customer.subscription.updated for tenant {tenant_id}, subscription {subscription_id}")
 
-    # Update subscription in database (billing mirror)
-    update_data: Dict[str, Any] = {
-        "status": status_value,
-        "cancel_at_period_end": cancel_at_period_end,
-        "canceled_at": datetime.fromtimestamp(canceled_at).isoformat() if canceled_at else None,
-        "current_period_start": datetime.fromtimestamp(_obj_get(subscription, "current_period_start")).isoformat() if _obj_get(subscription, "current_period_start") else None,
-        "current_period_end": datetime.fromtimestamp(_obj_get(subscription, "current_period_end")).isoformat() if _obj_get(subscription, "current_period_end") else None,
-    }
-    if plan_id:
-        update_data["plan_id"] = plan_id
+        # Get the current plan before updating
+        old_plan_name = "free"
+        try:
+            old_sub_response = db_service.client.table("subscriptions").select(
+                "plan:plan_id(name)"
+            ).eq("stripe_subscription_id", subscription_id).maybe_single().execute()
 
-    db_service.client.table("subscriptions").update(update_data).eq(
-        "stripe_subscription_id", subscription_id
-    ).execute()
+            if old_sub_response and old_sub_response.data:
+                plan_data = old_sub_response.data.get("plan") or {}
+                old_plan_name = (plan_data.get("name") or "free").lower()
+        except Exception as e:
+            logger.warning(f"Could not retrieve old plan for tenant {tenant_id}: {e}")
 
-    await upsert_subscription_items(tenant_id, subscription_id, subscription)
+        price_id = _extract_first_price_id(subscription)
+        plan_name: str = "free"
+        plan_id: Optional[str] = None
+        if price_id:
+            plan_resp = (
+                db_service.client.table("subscription_plans")
+                .select("id, name")
+                .or_(f"stripe_price_id_monthly.eq.{price_id},stripe_price_id_yearly.eq.{price_id}")
+                .single()
+                .execute()
+            )
+            if plan_resp.data:
+                plan_id = plan_resp.data.get("id")
+                plan_name = (plan_resp.data.get("name") or "free").lower()
 
-    next_plan = _plan_from_status(status_value, cancel_at_period_end, plan_name)
-    await set_tenant_plan(tenant_id, next_plan)  # type: ignore[arg-type]
+        status_value = _obj_get(subscription, "status")
+        cancel_at_period_end = bool(_obj_get(subscription, "cancel_at_period_end", False))
+        canceled_at = _obj_get(subscription, "canceled_at")
+
+        # Update subscription in database (billing mirror)
+        update_data: Dict[str, Any] = {
+            "status": status_value,
+            "cancel_at_period_end": cancel_at_period_end,
+            "canceled_at": datetime.fromtimestamp(canceled_at).isoformat() if canceled_at else None,
+            "current_period_start": datetime.fromtimestamp(_obj_get(subscription, "current_period_start")).isoformat() if _obj_get(subscription, "current_period_start") else None,
+            "current_period_end": datetime.fromtimestamp(_obj_get(subscription, "current_period_end")).isoformat() if _obj_get(subscription, "current_period_end") else None,
+        }
+        if plan_id:
+            update_data["plan_id"] = plan_id
+
+        db_service.client.table("subscriptions").update(update_data).eq(
+            "stripe_subscription_id", subscription_id
+        ).execute()
+
+        await upsert_subscription_items(tenant_id, subscription_id, subscription)
+
+        next_plan = _plan_from_status(status_value, cancel_at_period_end, plan_name)
+        await set_tenant_plan(tenant_id, next_plan)  # type: ignore[arg-type]
+
+        # Check if this is a downgrade and handle it
+        old_precedence = await _get_plan_precedence(old_plan_name)
+        new_precedence = await _get_plan_precedence(next_plan)
+
+        if new_precedence < old_precedence:
+            logger.info(
+                f"Downgrade detected for tenant {tenant_id}: {old_plan_name} "
+                f"(precedence {old_precedence}) -> {next_plan} (precedence {new_precedence})"
+            )
+
+            try:
+                # Handle the downgrade using the downgrade service
+                downgrade_summary = await downgrade_service.handle_plan_downgrade(
+                    tenant_id=tenant_id,
+                    old_plan=old_plan_name,
+                    new_plan=next_plan
+                )
+
+                logger.info(
+                    f"Downgrade handling completed for tenant {tenant_id}. "
+                    f"Summary: {downgrade_summary.get('actions_taken', [])} | "
+                    f"Grace periods created: {len(downgrade_summary.get('grace_periods_created', []))} | "
+                    f"Errors: {downgrade_summary.get('errors', [])}"
+                )
+
+                if downgrade_summary.get("errors"):
+                    logger.error(
+                        f"Errors during downgrade handling for tenant {tenant_id}: "
+                        f"{downgrade_summary['errors']}"
+                    )
+
+            except Exception as e:
+                logger.error(
+                    f"Failed to handle downgrade for tenant {tenant_id} "
+                    f"from {old_plan_name} to {next_plan}: {e}",
+                    exc_info=True
+                )
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail="Downgrade handling failed; please retry webhook."
+                )
+        elif new_precedence > old_precedence:
+            logger.info(
+                f"Upgrade detected for tenant {tenant_id}: {old_plan_name} -> {next_plan}. "
+                f"No downgrade handling needed."
+            )
+        else:
+            logger.debug(f"No plan tier change for tenant {tenant_id}, plan remains: {next_plan}")
+
+        logger.info(f"Successfully processed customer.subscription.updated for tenant {tenant_id}, new plan: {next_plan}")
 
 
 async def handle_subscription_deleted(subscription):
@@ -927,74 +1082,186 @@ async def handle_subscription_deleted(subscription):
     if not tenant_id and subscription_id:
         existing = (
             db_service.client.table("subscriptions")
-            .select("tenant_id")
+            .select("tenant_id, plan:plan_id(name)")
             .eq("stripe_subscription_id", subscription_id)
             .single()
             .execute()
         )
-        tenant_id = existing.data.get("tenant_id") if existing.data else None
+        if existing.data:
+            tenant_id = existing.data.get("tenant_id")
     if not subscription_id:
+        logger.warning("Subscription deleted webhook missing subscription_id")
         return
 
-    free_plan = db_service.client.table("subscription_plans").select("id").eq("name", "free").single().execute()
-    free_plan_id = free_plan.data.get("id") if free_plan.data else None
+    # Acquire webhook lock to prevent race conditions
+    # Use a generic lock key even if tenant_id is missing, based on subscription_id
+    lock_key = tenant_id if tenant_id else f"sub_{subscription_id}"
+    async with webhook_lock_service.acquire_webhook_lock(lock_key, "subscription_deleted") as locked:
+        if not locked:
+            logger.error(f"Failed to acquire webhook lock for {lock_key} in customer.subscription.deleted")
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Another webhook is currently processing for this tenant. Please retry."
+            )
 
-    update_data: Dict[str, Any] = {
-        "status": "canceled",
-        "canceled_at": datetime.now().isoformat(),
-    }
-    if free_plan_id:
-        update_data["plan_id"] = free_plan_id
+        logger.info(f"Processing customer.subscription.deleted for subscription {subscription_id}, tenant {tenant_id}")
 
-    db_service.client.table("subscriptions").update(update_data).eq(
-        "stripe_subscription_id", subscription_id
-    ).execute()
+        # Get the old plan before updating
+        old_plan_name = "free"
+        if tenant_id:
+            try:
+                old_sub_response = db_service.client.table("subscriptions").select(
+                    "plan:plan_id(name)"
+                ).eq("stripe_subscription_id", subscription_id).maybe_single().execute()
 
-    if tenant_id:
-        await set_tenant_plan(tenant_id, "free")  # type: ignore[arg-type]
+                if old_sub_response and old_sub_response.data:
+                    plan_data = old_sub_response.data.get("plan") or {}
+                    old_plan_name = (plan_data.get("name") or "free").lower()
+            except Exception as e:
+                logger.warning(f"Could not retrieve old plan for tenant {tenant_id}: {e}")
+
+        free_plan = db_service.client.table("subscription_plans").select("id").eq("name", "free").single().execute()
+        free_plan_id = free_plan.data.get("id") if free_plan.data else None
+
+        update_data: Dict[str, Any] = {
+            "status": "canceled",
+            "canceled_at": datetime.now().isoformat(),
+        }
+        if free_plan_id:
+            update_data["plan_id"] = free_plan_id
+
+        db_service.client.table("subscriptions").update(update_data).eq(
+            "stripe_subscription_id", subscription_id
+        ).execute()
+
+        if tenant_id:
+            await set_tenant_plan(tenant_id, "free")  # type: ignore[arg-type]
+
+            # Handle downgrade to free plan if they had a paid plan
+            if old_plan_name != "free":
+                logger.info(
+                    f"Subscription deleted - downgrade from {old_plan_name} to free "
+                    f"for tenant {tenant_id}"
+                )
+
+                try:
+                    # Handle the downgrade using the downgrade service
+                    downgrade_summary = await downgrade_service.handle_plan_downgrade(
+                        tenant_id=tenant_id,
+                        old_plan=old_plan_name,
+                        new_plan="free"
+                    )
+
+                    logger.info(
+                        f"Downgrade handling completed for tenant {tenant_id}. "
+                        f"Summary: {downgrade_summary.get('actions_taken', [])} | "
+                        f"Grace periods created: {len(downgrade_summary.get('grace_periods_created', []))} | "
+                        f"Errors: {downgrade_summary.get('errors', [])}"
+                    )
+
+                    if downgrade_summary.get("errors"):
+                        logger.error(
+                            f"Errors during downgrade handling for tenant {tenant_id}: "
+                            f"{downgrade_summary['errors']}"
+                        )
+
+                except Exception as e:
+                    logger.error(
+                        f"Failed to handle downgrade for tenant {tenant_id} "
+                        f"from {old_plan_name} to free: {e}",
+                        exc_info=True
+                    )
+                    raise HTTPException(
+                        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                        detail="Downgrade handling failed; please retry webhook."
+                    )
+
+            logger.info(f"Successfully processed customer.subscription.deleted for tenant {tenant_id}, downgraded to free")
+        else:
+            logger.warning(f"Subscription {subscription_id} deleted but no tenant_id found")
 
 
 async def handle_payment_succeeded(invoice):
     """Handle successful payment"""
     # Get tenant from customer
+    customer_id = invoice.get("customer")
+    if not customer_id:
+        logger.warning("Payment succeeded webhook missing customer_id")
+        return
+
     sub_response = db_service.client.table("subscriptions").select("id, tenant_id").eq(
-        "stripe_customer_id", invoice["customer"]
+        "stripe_customer_id", customer_id
     ).single().execute()
 
     if sub_response.data:
-        # Record payment in history
-        db_service.client.table("payment_history").insert({
-            "tenant_id": sub_response.data["tenant_id"],
-            "subscription_id": sub_response.data["id"],
-            "stripe_payment_intent_id": invoice.get("payment_intent"),
-            "stripe_invoice_id": invoice["id"],
-            "amount": invoice["amount_paid"] / 100,
-            "currency": invoice["currency"].upper(),
-            "status": "succeeded",
-            "description": "Subscription payment"
-        }).execute()
+        tenant_id = sub_response.data["tenant_id"]
+
+        # Acquire webhook lock to prevent race conditions on payment history
+        async with webhook_lock_service.acquire_webhook_lock(tenant_id, "payment") as locked:
+            if not locked:
+                logger.error(f"Failed to acquire webhook lock for tenant {tenant_id} in invoice.payment_succeeded")
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail="Another webhook is currently processing for this tenant. Please retry."
+                )
+
+            logger.info(f"Processing invoice.payment_succeeded for tenant {tenant_id}, invoice {invoice['id']}")
+
+            # Record payment in history
+            db_service.client.table("payment_history").insert({
+                "tenant_id": tenant_id,
+                "subscription_id": sub_response.data["id"],
+                "stripe_payment_intent_id": invoice.get("payment_intent"),
+                "stripe_invoice_id": invoice["id"],
+                "amount": invoice["amount_paid"] / 100,
+                "currency": invoice["currency"].upper(),
+                "status": "succeeded",
+                "description": "Subscription payment"
+            }).execute()
+
+            logger.info(f"Successfully recorded payment for tenant {tenant_id}, amount: {invoice['amount_paid'] / 100}")
 
 
 async def handle_payment_failed(invoice):
     """Handle failed payment"""
     # Get tenant from customer
+    customer_id = invoice.get("customer")
+    if not customer_id:
+        logger.warning("Payment failed webhook missing customer_id")
+        return
+
     sub_response = db_service.client.table("subscriptions").select("id, tenant_id").eq(
-        "stripe_customer_id", invoice["customer"]
+        "stripe_customer_id", customer_id
     ).single().execute()
 
     if sub_response.data:
-        # Record failed payment
-        db_service.client.table("payment_history").insert({
-            "tenant_id": sub_response.data["tenant_id"],
-            "subscription_id": sub_response.data["id"],
-            "stripe_invoice_id": invoice["id"],
-            "amount": invoice["amount_due"] / 100,
-            "currency": invoice["currency"].upper(),
-            "status": "failed",
-            "description": "Failed subscription payment"
-        }).execute()
+        tenant_id = sub_response.data["tenant_id"]
 
-        # Update subscription status
-        db_service.client.table("subscriptions").update({
-            "status": "past_due"
-        }).eq("id", sub_response.data["id"]).execute()
+        # Acquire webhook lock to prevent race conditions on payment failure handling
+        async with webhook_lock_service.acquire_webhook_lock(tenant_id, "payment_failed") as locked:
+            if not locked:
+                logger.error(f"Failed to acquire webhook lock for tenant {tenant_id} in invoice.payment_failed")
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail="Another webhook is currently processing for this tenant. Please retry."
+                )
+
+            logger.info(f"Processing invoice.payment_failed for tenant {tenant_id}, invoice {invoice['id']}")
+
+            # Record failed payment
+            db_service.client.table("payment_history").insert({
+                "tenant_id": tenant_id,
+                "subscription_id": sub_response.data["id"],
+                "stripe_invoice_id": invoice["id"],
+                "amount": invoice["amount_due"] / 100,
+                "currency": invoice["currency"].upper(),
+                "status": "failed",
+                "description": "Failed subscription payment"
+            }).execute()
+
+            # Update subscription status
+            db_service.client.table("subscriptions").update({
+                "status": "past_due"
+            }).eq("id", sub_response.data["id"]).execute()
+
+            logger.warning(f"Payment failed for tenant {tenant_id}, subscription marked as past_due")

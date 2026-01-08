@@ -1190,6 +1190,50 @@ export interface HealthCheckResponse {
   errorMessage?: string;
 }
 
+// Retention types
+export interface RetentionPolicy {
+  retentionDays: number;
+  isEnabled: boolean;
+  minExecutionsToKeep: number;
+  lastCleanupAt?: string;
+  lastCleanupDeletedCount: number;
+}
+
+export interface CreateRetentionPolicyRequest {
+  retentionDays?: number;
+  isEnabled?: boolean;
+  minExecutionsToKeep?: number;
+}
+
+export interface UpdateRetentionPolicyRequest {
+  retentionDays?: number;
+  isEnabled?: boolean;
+  minExecutionsToKeep?: number;
+}
+
+export interface CleanupResult {
+  tenantId: string;
+  deletedCount: number;
+  retentionDays: number;
+  isEnabled: boolean;
+  timestamp: string;
+  summary?: any;
+  skipped?: boolean;
+  reason?: string;
+}
+
+export interface CleanupPreview {
+  tenantId: string;
+  totalExecutions: number;
+  oldExecutionsCount: number;
+  executionsToDelete: number;
+  cutoffDate: string;
+  retentionDays: number;
+  minExecutionsToKeep: number;
+  wouldDelete: boolean;
+  isEnabled: boolean;
+}
+
 // Notification/Alert types
 export type ChannelType = 'slack' | 'email' | 'webhook';
 export type NotificationStatusType = 'pending' | 'sent' | 'failed' | 'skipped';

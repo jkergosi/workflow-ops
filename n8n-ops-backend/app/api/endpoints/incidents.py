@@ -2,7 +2,7 @@
 from fastapi import APIRouter, HTTPException, status, Depends, Query
 from typing import Optional
 
-from app.services.auth_service import get_current_user
+from app.services.auth_service import get_current_user, is_user_admin
 from app.services.drift_incident_service import drift_incident_service
 from app.core.entitlements_gate import require_entitlement
 from app.services.entitlements_service import entitlements_service
@@ -12,7 +12,9 @@ from app.schemas.drift_incident import (
     DriftIncidentResponse,
     DriftIncidentListResponse,
     DriftIncidentAcknowledge,
+    DriftIncidentStabilize,
     DriftIncidentResolve,
+    DriftIncidentClose,
     DriftIncidentStatus,
 )
 
@@ -181,6 +183,14 @@ async def acknowledge_incident(
     tenant_id = user_info["tenant"]["id"]
     user_id = user_info["user"]["id"]
 
+    # Validate admin_override permission
+    admin_override = payload.admin_override
+    if admin_override and not is_user_admin(user_info):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only admin users can use admin_override flag"
+        )
+
     incident = await drift_incident_service.acknowledge_incident(
         tenant_id=tenant_id,
         incident_id=incident_id,
@@ -189,6 +199,7 @@ async def acknowledge_incident(
         owner_user_id=payload.owner_user_id,
         ticket_ref=payload.ticket_ref,
         expires_at=payload.expires_at,
+        admin_override=admin_override,
     )
 
     return DriftIncidentResponse(**incident)
@@ -197,7 +208,7 @@ async def acknowledge_incident(
 @router.post("/{incident_id}/stabilize", response_model=DriftIncidentResponse)
 async def stabilize_incident(
     incident_id: str,
-    reason: Optional[str] = None,
+    payload: DriftIncidentStabilize,
     user_info: dict = Depends(get_current_user),
     _: dict = Depends(require_entitlement("drift_incidents")),
 ):
@@ -205,11 +216,20 @@ async def stabilize_incident(
     tenant_id = user_info["tenant"]["id"]
     user_id = user_info["user"]["id"]
 
+    # Validate admin_override permission
+    admin_override = payload.admin_override
+    if admin_override and not is_user_admin(user_info):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only admin users can use admin_override flag"
+        )
+
     incident = await drift_incident_service.stabilize_incident(
         tenant_id=tenant_id,
         incident_id=incident_id,
         user_id=user_id,
-        reason=reason,
+        reason=payload.reason,
+        admin_override=admin_override,
     )
 
     return DriftIncidentResponse(**incident)
@@ -226,6 +246,14 @@ async def reconcile_incident(
     tenant_id = user_info["tenant"]["id"]
     user_id = user_info["user"]["id"]
 
+    # Validate admin_override permission
+    admin_override = payload.admin_override
+    if admin_override and not is_user_admin(user_info):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only admin users can use admin_override flag"
+        )
+
     incident = await drift_incident_service.reconcile_incident(
         tenant_id=tenant_id,
         incident_id=incident_id,
@@ -233,6 +261,7 @@ async def reconcile_incident(
         resolution_type=payload.resolution_type,
         reason=payload.reason,
         resolution_details=payload.resolution_details,
+        admin_override=admin_override,
     )
 
     return DriftIncidentResponse(**incident)
@@ -241,19 +270,34 @@ async def reconcile_incident(
 @router.post("/{incident_id}/close", response_model=DriftIncidentResponse)
 async def close_incident(
     incident_id: str,
-    reason: Optional[str] = None,
+    payload: DriftIncidentClose,
     user_info: dict = Depends(get_current_user),
     _: dict = Depends(require_entitlement("drift_incidents")),
 ):
-    """Close a drift incident."""
+    """Close a drift incident.
+
+    Requirements depend on the current incident status:
+    - Closing from detected/acknowledged/stabilized: requires resolution_type AND reason
+    - Closing from reconciled: requires reason (resolution notes)
+    """
     tenant_id = user_info["tenant"]["id"]
     user_id = user_info["user"]["id"]
+
+    # Validate admin_override permission
+    admin_override = payload.admin_override
+    if admin_override and not is_user_admin(user_info):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only admin users can use admin_override flag"
+        )
 
     incident = await drift_incident_service.close_incident(
         tenant_id=tenant_id,
         incident_id=incident_id,
         user_id=user_id,
-        reason=reason,
+        reason=payload.reason,
+        resolution_type=payload.resolution_type,
+        admin_override=admin_override,
     )
 
     return DriftIncidentResponse(**incident)

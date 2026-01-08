@@ -185,6 +185,19 @@ class PromotionExecuteRequest(BaseModel):
     scheduled_at: Optional[datetime] = None  # If provided, schedule deployment for this time. If None, execute immediately.
 
 
+class RollbackResult(BaseModel):
+    """
+    Result of a promotion rollback operation.
+    Records complete rollback history for audit trail.
+    """
+    rollback_triggered: bool
+    workflows_rolled_back: int
+    rollback_errors: List[str] = []
+    snapshot_id: str  # Pre-promotion snapshot used for rollback
+    rollback_method: str  # "git_restore" or "snapshot_restore"
+    rollback_timestamp: datetime
+
+
 class PromotionExecutionResult(BaseModel):
     promotion_id: str
     status: PromotionStatus
@@ -197,6 +210,7 @@ class PromotionExecutionResult(BaseModel):
     errors: List[str] = []
     warnings: List[str] = []
     created_placeholders: List[str] = []
+    rollback_result: Optional["RollbackResult"] = None  # Set if rollback occurred
 
 
 class ApprovalRecord(BaseModel):

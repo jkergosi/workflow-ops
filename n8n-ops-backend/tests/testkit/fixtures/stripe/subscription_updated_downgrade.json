@@ -1,0 +1,53 @@
+{
+  "id": "evt_downgrade_test",
+  "object": "event",
+  "api_version": "2023-10-16",
+  "created": 1704153600,
+  "data": {
+    "object": {
+      "id": "sub_test123",
+      "object": "subscription",
+      "customer": "cus_test123",
+      "status": "active",
+      "items": {
+        "data": [
+          {
+            "id": "si_test123",
+            "price": {
+              "id": "price_pro_monthly",
+              "product": "prod_n8n",
+              "unit_amount": 4900,
+              "currency": "usd",
+              "recurring": {
+                "interval": "month"
+              },
+              "metadata": {
+                "plan_name": "pro",
+                "provider": "n8n"
+              }
+            }
+          }
+        ]
+      },
+      "current_period_start": 1704067200,
+      "current_period_end": 1706745600,
+      "cancel_at_period_end": false
+    },
+    "previous_attributes": {
+      "items": {
+        "data": [
+          {
+            "price": {
+              "id": "price_agency_monthly",
+              "metadata": {
+                "plan_name": "agency"
+              }
+            }
+          }
+        ]
+      }
+    }
+  },
+  "type": "customer.subscription.updated"
+}
+

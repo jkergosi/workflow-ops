@@ -1,0 +1,43 @@
+[
+  {
+    "sha": "abc123def456",
+    "commit": {
+      "author": {
+        "name": "Test User",
+        "email": "test@example.com",
+        "date": "2024-01-05T10:30:00Z"
+      },
+      "committer": {
+        "name": "Test User",
+        "email": "test@example.com",
+        "date": "2024-01-05T10:30:00Z"
+      },
+      "message": "Update customer onboarding workflow"
+    },
+    "author": {
+      "login": "testuser",
+      "id": 123
+    }
+  },
+  {
+    "sha": "def456ghi789",
+    "commit": {
+      "author": {
+        "name": "Test User",
+        "email": "test@example.com",
+        "date": "2024-01-04T15:00:00Z"
+      },
+      "committer": {
+        "name": "Test User",
+        "email": "test@example.com",
+        "date": "2024-01-04T15:00:00Z"
+      },
+      "message": "Add email notification workflow"
+    },
+    "author": {
+      "login": "testuser",
+      "id": 123
+    }
+  }
+]
+

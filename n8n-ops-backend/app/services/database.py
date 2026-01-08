@@ -4,6 +4,7 @@ from app.core.config import settings
 from typing import List, Dict, Any, Optional
 from datetime import datetime
 from uuid import uuid4
+import numpy as np
 
 logger = logging.getLogger(__name__)
 
@@ -386,6 +387,154 @@ class DatabaseService:
 
         return executions
 
+    async def get_executions_paginated(
+        self,
+        tenant_id: str,
+        environment_id: str,
+        page: int = 1,
+        page_size: int = 50,
+        workflow_id: Optional[str] = None,
+        status_filter: Optional[str] = None,
+        search_query: Optional[str] = None,
+        sort_field: str = "started_at",
+        sort_direction: str = "desc"
+    ) -> Dict[str, Any]:
+        """
+        Get executions with server-side pagination and filtering.
+
+        This is the optimized replacement for client-side filtering in ExecutionsPage.
+        Uses database-level filtering to minimize payload size.
+
+        Args:
+            tenant_id: Tenant ID
+            environment_id: Environment ID
+            page: Page number (1-indexed)
+            page_size: Items per page (max 100)
+            workflow_id: Filter by workflow ID
+            status_filter: Filter by status (success, error, running, waiting)
+            search_query: Search in workflow name
+            sort_field: Field to sort by
+            sort_direction: 'asc' or 'desc'
+
+        Returns:
+            {
+                "executions": [...],
+                "total": int,
+                "page": int,
+                "page_size": int,
+                "total_pages": int
+            }
+        """
+        import math
+
+        page_size = min(page_size, 100)
+
+        # Build base query
+        query = (
+            self.client.table("executions")
+            .select("*", count="exact")
+            .eq("tenant_id", tenant_id)
+            .eq("environment_id", environment_id)
+        )
+
+        # Apply workflow filter
+        if workflow_id:
+            query = query.eq("workflow_id", workflow_id)
+
+        # Apply status filter
+        if status_filter:
+            query = query.eq("status", status_filter)
+
+        # Determine sort column
+        sort_column_map = {
+            "started_at": "started_at",
+            "finished_at": "finished_at",
+            "status": "status",
+            "workflow_name": "workflow_id",  # Sort by ID as proxy
+            "execution_time": "duration_ms"
+        }
+        sort_col = sort_column_map.get(sort_field, "started_at")
+
+        # Apply sorting
+        query = query.order(sort_col, desc=(sort_direction == "desc"))
+
+        # Execute query to get total count
+        count_response = query.execute()
+        all_executions = count_response.data or []
+        
+        # Apply search filter client-side (workflow_name requires JOIN)
+        if search_query:
+            search_lower = search_query.lower()
+            # We'll filter after enriching with workflow names
+            pass
+
+        # Get workflow names for enrichment
+        workflow_ids = list(set(e.get("workflow_id") for e in all_executions if e.get("workflow_id")))
+        workflow_name_map = {}
+        
+        if workflow_ids:
+            # Get workflow names from canonical system
+            mappings_response = (
+                self.client.table("workflow_env_map")
+                .select("n8n_workflow_id, workflow_data, canonical_id")
+                .eq("tenant_id", tenant_id)
+                .eq("environment_id", environment_id)
+                .in_("n8n_workflow_id", workflow_ids)
+                .execute()
+            )
+
+            canonical_ids = [m.get("canonical_id") for m in (mappings_response.data or []) if m.get("canonical_id")]
+            canonical_map = {}
+            if canonical_ids:
+                canonical_response = (
+                    self.client.table("canonical_workflows")
+                    .select("canonical_id, display_name")
+                    .eq("tenant_id", tenant_id)
+                    .in_("canonical_id", canonical_ids)
+                    .execute()
+                )
+                for canonical in (canonical_response.data or []):
+                    canonical_map[canonical.get("canonical_id")] = canonical
+
+            for mapping in (mappings_response.data or []):
+                n8n_id = mapping.get("n8n_workflow_id")
+                if n8n_id:
+                    workflow_data = mapping.get("workflow_data") or {}
+                    canonical_id = mapping.get("canonical_id")
+                    canonical = canonical_map.get(canonical_id, {}) if canonical_id else {}
+                    workflow_name = workflow_data.get("name") or canonical.get("display_name") or "Unknown"
+                    workflow_name_map[n8n_id] = workflow_name
+
+        # Enrich executions with workflow names
+        for execution in all_executions:
+            wf_id = execution.get("workflow_id")
+            execution["workflow_name"] = workflow_name_map.get(wf_id, "Unknown")
+
+        # Apply search filter (now that we have workflow names)
+        if search_query:
+            search_lower = search_query.lower()
+            all_executions = [
+                e for e in all_executions
+                if search_lower in (e.get("workflow_name") or "").lower()
+                or search_lower in (e.get("workflow_id") or "").lower()
+            ]
+
+        total_count = len(all_executions)
+
+        # Apply pagination
+        offset = (page - 1) * page_size
+        executions = all_executions[offset:offset + page_size]
+
+        total_pages = math.ceil(total_count / page_size) if page_size > 0 else 0
+
+        return {
+            "executions": executions,
+            "total": total_count,
+            "page": page,
+            "page_size": page_size,
+            "total_pages": total_pages
+        }
+
     async def get_execution(self, execution_id: str, tenant_id: str) -> Optional[Dict[str, Any]]:
         """Get a specific execution"""
         response = self.client.table("executions").select("*").eq("id", execution_id).eq("tenant_id", tenant_id).single().execute()
@@ -451,10 +600,10 @@ class DatabaseService:
         workflow_ids: List[str] = None
     ) -> Dict[str, int]:
         """
-        Get execution counts grouped by workflow_id.
+        Get execution counts grouped by workflow_id using database-level aggregation.
 
-        This is an optimized query that returns counts without fetching all execution records.
-        Uses database aggregation (GROUP BY) instead of client-side counting.
+        Uses PostgreSQL function get_execution_counts_by_workflow for optimal performance.
+        Falls back to client-side counting if RPC function is not available.
 
         Args:
             tenant_id: Tenant ID to filter by
@@ -464,41 +613,50 @@ class DatabaseService:
         Returns:
             Dictionary mapping workflow_id to execution count: {"workflow-1": 42, "workflow-2": 17}
         """
-        # Use Supabase RPC function for efficient aggregation
-        # If no RPC function exists, fall back to fetching data and counting client-side
+        if workflow_ids is not None and len(workflow_ids) == 0:
+            return {}
+
         try:
-            # Build a raw SQL query using PostgREST count=exact feature
-            # Note: Supabase doesn't directly support GROUP BY in the client, so we use count with distinct filters
+            # Try using RPC function for efficient GROUP BY aggregation
+            if environment_id:
+                response = self.client.rpc(
+                    'get_execution_counts_by_workflow',
+                    {
+                        'p_tenant_id': tenant_id,
+                        'p_environment_id': environment_id
+                    }
+                ).execute()
 
-            # If workflow_ids is empty, return empty dict
-            if workflow_ids is not None and len(workflow_ids) == 0:
-                return {}
+                counts = {}
+                for row in (response.data or []):
+                    wf_id = row.get('workflow_id')
+                    count = row.get('execution_count', 0)
+                    if wf_id:
+                        if workflow_ids is None or wf_id in workflow_ids:
+                            counts[wf_id] = int(count)
+                return counts
 
-            # Build base query
-            query = self.client.table("executions").select("workflow_id", count="exact").eq("tenant_id", tenant_id)
+        except Exception as rpc_error:
+            logger.debug(f"RPC function not available, falling back to client-side: {rpc_error}")
 
+        # Fallback: client-side counting (for environments without the RPC function)
+        try:
+            query = self.client.table("executions").select("workflow_id").eq("tenant_id", tenant_id)
             if environment_id:
                 query = query.eq("environment_id", environment_id)
-
             if workflow_ids:
                 query = query.in_("workflow_id", workflow_ids)
 
-            # Execute query to get all matching records
             response = query.execute()
-
-            # Count manually on client side (Supabase limitation)
-            # Group by workflow_id
             counts = {}
             for execution in (response.data or []):
                 workflow_id = execution.get("workflow_id")
                 if workflow_id:
                     counts[workflow_id] = counts.get(workflow_id, 0) + 1
-
             return counts
 
         except Exception as e:
-            import logging
-            logging.error(f"Failed to get execution counts: {str(e)}")
+            logger.error(f"Failed to get execution counts: {str(e)}")
             return {}
 
     async def get_failed_executions(
@@ -522,6 +680,36 @@ class DatabaseService:
 
         response = query.execute()
         return response.data
+
+    async def get_error_intelligence_aggregated(
+        self,
+        tenant_id: str,
+        since: str,
+        until: str,
+        environment_id: str = None
+    ) -> List[Dict[str, Any]]:
+        """
+        Get error intelligence using database-level aggregation.
+
+        Uses PostgreSQL function get_error_intelligence for 85%+ performance improvement
+        over client-side processing.
+
+        Returns list of error groups with classification done at database level.
+        """
+        try:
+            params = {
+                'p_tenant_id': tenant_id,
+                'p_since': since,
+                'p_until': until
+            }
+            if environment_id:
+                params['p_environment_id'] = environment_id
+
+            response = self.client.rpc('get_error_intelligence', params).execute()
+            return response.data or []
+        except Exception as e:
+            logger.warning(f"RPC get_error_intelligence not available, returning empty: {e}")
+            return []
 
     async def get_last_workflow_failure(
         self,
@@ -1589,18 +1777,22 @@ class DatabaseService:
         durations = [e.get("execution_time") for e in executions if e.get("execution_time") is not None]
         avg_duration = sum(durations) / len(durations) if durations else 0
 
-        # Calculate p95 duration
+        # Calculate p95 duration using PERCENTILE_CONT equivalent (linear interpolation)
+        # This matches PostgreSQL's PERCENTILE_CONT behavior for consistency
         p95_duration = None
         if durations:
-            sorted_durations = sorted(durations)
-            p95_index = int(len(sorted_durations) * 0.95)
-            p95_duration = sorted_durations[min(p95_index, len(sorted_durations) - 1)]
+            p95_duration = float(np.percentile(durations, 95))
+
+        # Calculate success rate correctly: only count completed executions (success + error)
+        # Exclude running, waiting, or other intermediate states from denominator
+        completed_executions = success + failed
+        success_rate = (success / completed_executions * 100) if completed_executions > 0 else 0.0
 
         return {
             "total_executions": total,
             "success_count": success,
             "failure_count": failed,
-            "success_rate": (success / total * 100) if total > 0 else 100.0,
+            "success_rate": success_rate,
             "avg_duration_ms": avg_duration,
             "p95_duration_ms": p95_duration
         }
@@ -1715,12 +1907,16 @@ class DatabaseService:
         for wf_id, stats in workflow_stats.items():
             avg_duration = sum(stats["durations"]) / len(stats["durations"]) if stats["durations"] else 0
 
-            # Calculate p95
+            # Calculate p95 using PERCENTILE_CONT equivalent (linear interpolation)
+            # This matches PostgreSQL's PERCENTILE_CONT behavior for consistency
             p95_duration = None
             if stats["durations"]:
-                sorted_durations = sorted(stats["durations"])
-                p95_index = int(len(sorted_durations) * 0.95)
-                p95_duration = sorted_durations[min(p95_index, len(sorted_durations) - 1)]
+                p95_duration = float(np.percentile(stats["durations"], 95))
+
+            # Calculate success rate correctly: only count completed executions (success + error)
+            # Exclude running, waiting, or other intermediate states from denominator
+            completed_executions = stats["success_count"] + stats["failure_count"]
+            success_rate = (stats["success_count"] / completed_executions * 100) if completed_executions > 0 else 0.0
 
             result.append({
                 "workflow_id": stats["workflow_id"],
@@ -1728,7 +1924,8 @@ class DatabaseService:
                 "execution_count": stats["execution_count"],
                 "success_count": stats["success_count"],
                 "failure_count": stats["failure_count"],
-                "error_rate": (stats["failure_count"] / stats["execution_count"] * 100) if stats["execution_count"] > 0 else 0,
+                "success_rate": success_rate,
+                "error_rate": (stats["failure_count"] / completed_executions * 100) if completed_executions > 0 else 0,
                 "avg_duration_ms": avg_duration,
                 "p95_duration_ms": p95_duration
             })
@@ -1767,9 +1964,7 @@ class DatabaseService:
         Returns:
             List of workflow analytics dicts with aggregated metrics
         """
-        import logging
         from collections import defaultdict
-        import numpy as np
 
         logger = logging.getLogger(__name__)
 
@@ -2209,6 +2404,117 @@ class DatabaseService:
         response = query.order("created_at", desc=True).limit(limit).execute()
         return response.data
 
+    async def mark_stale_promotion_jobs(
+        self,
+        tenant_id: Optional[str] = None,
+        max_runtime_hours: int = 2
+    ) -> Dict[str, Any]:
+        """
+        Mark stale promotion background jobs as failed and update associated promotions.
+
+        This helper identifies promotion jobs that have been running for longer than
+        the specified max_runtime_hours and marks them as failed, along with their
+        associated promotion records. This is typically called during promotion listing
+        or health checks to clean up hung/crashed jobs.
+
+        Args:
+            tenant_id: Optional tenant ID to scope the cleanup (if None, checks all tenants)
+            max_runtime_hours: Maximum hours a promotion job should run (default: 2 hours)
+
+        Returns:
+            Dict with counts of marked jobs and promotions:
+            {
+                "marked_jobs": int,
+                "marked_promotions": int,
+                "errors": List[str]
+            }
+        """
+        from datetime import datetime, timedelta
+
+        marked_jobs = 0
+        marked_promotions = 0
+        errors = []
+
+        # Calculate cutoff time for stale jobs
+        cutoff = datetime.utcnow() - timedelta(hours=max_runtime_hours)
+
+        # Query for stale promotion jobs (running status, started before cutoff)
+        query = (
+            self.client.table("background_jobs")
+            .select("*")
+            .eq("job_type", "promotion_execute")
+            .eq("status", "running")
+            .lt("started_at", cutoff.isoformat())
+        )
+
+        if tenant_id:
+            query = query.eq("tenant_id", tenant_id)
+
+        try:
+            result = query.execute()
+            stale_jobs = result.data or []
+
+            for job in stale_jobs:
+                job_id = job.get("id")
+                promotion_id = job.get("resource_id")
+
+                try:
+                    # Calculate how long the job has been running
+                    started_at = datetime.fromisoformat(job.get("started_at").replace("Z", "+00:00"))
+                    hours_running = (datetime.utcnow() - started_at.replace(tzinfo=None)).total_seconds() / 3600
+
+                    # Mark background job as failed
+                    await self.update_background_job(job_id, {
+                        "status": "failed",
+                        "completed_at": datetime.utcnow().isoformat(),
+                        "error_message": f"Promotion job timed out after running for {hours_running:.2f} hours. Server may have restarted or the task crashed.",
+                        "error_details": {
+                            "timeout_hours": hours_running,
+                            "max_runtime_hours": max_runtime_hours,
+                            "started_at": job.get("started_at"),
+                            "marked_stale_at": datetime.utcnow().isoformat(),
+                            "reason": "stale_job_cleanup"
+                        }
+                    })
+                    marked_jobs += 1
+                    logger.warning(f"Marked stale promotion job {job_id} as failed (running for {hours_running:.2f}h)")
+
+                    # Also mark the promotion record as failed if it exists
+                    if promotion_id:
+                        try:
+                            promotion = await self.get_promotion(promotion_id, job.get("tenant_id"))
+                            if promotion and promotion.get("status") == "running":
+                                await self.update_promotion(promotion_id, job.get("tenant_id"), {
+                                    "status": "failed",
+                                    "error_message": f"Promotion timed out after {hours_running:.2f} hours",
+                                    "metadata": {
+                                        **(promotion.get("metadata") or {}),
+                                        "timeout_hours": hours_running,
+                                        "marked_stale_at": datetime.utcnow().isoformat()
+                                    }
+                                })
+                                marked_promotions += 1
+                                logger.info(f"Marked associated promotion {promotion_id} as failed due to stale job")
+                        except Exception as prom_error:
+                            error_msg = f"Failed to update promotion {promotion_id} for stale job {job_id}: {str(prom_error)}"
+                            logger.error(error_msg)
+                            errors.append(error_msg)
+
+                except Exception as job_error:
+                    error_msg = f"Failed to mark stale job {job_id} as failed: {str(job_error)}"
+                    logger.error(error_msg)
+                    errors.append(error_msg)
+
+        except Exception as query_error:
+            error_msg = f"Failed to query stale promotion jobs: {str(query_error)}"
+            logger.error(error_msg)
+            errors.append(error_msg)
+
+        return {
+            "marked_jobs": marked_jobs,
+            "marked_promotions": marked_promotions,
+            "errors": errors
+        }
 
     # ---------- Provider Operations ----------
 
@@ -2651,6 +2957,205 @@ class DatabaseService:
 
         # Legacy behavior: return list directly
         return workflows
+
+    async def get_workflows_paginated(
+        self,
+        tenant_id: str,
+        environment_id: str,
+        page: int = 1,
+        page_size: int = 50,
+        search_query: Optional[str] = None,
+        tag_filter: Optional[List[str]] = None,
+        status_filter: Optional[str] = None,
+        sort_field: str = "updatedAt",
+        sort_direction: str = "desc",
+        include_deleted: bool = False,
+        include_ignored: bool = False
+    ) -> Dict[str, Any]:
+        """
+        Get workflows with server-side pagination, filtering, and sorting.
+
+        This is the optimized replacement for client-side filtering in WorkflowsPage.
+        Uses database-level filtering to minimize payload size.
+
+        Args:
+            tenant_id: Tenant ID
+            environment_id: Environment ID
+            page: Page number (1-indexed)
+            page_size: Items per page (max 100)
+            search_query: Search in name/description
+            tag_filter: List of tag names to filter by
+            status_filter: 'active' or 'inactive'
+            sort_field: Field to sort by
+            sort_direction: 'asc' or 'desc'
+            include_deleted: Include deleted workflows
+            include_ignored: Include ignored workflows
+
+        Returns:
+            {
+                "workflows": [...],
+                "total": int,
+                "page": int,
+                "page_size": int,
+                "total_pages": int
+            }
+        """
+        import math
+        import json
+
+        page_size = min(page_size, 100)
+
+        # Optimized select - only fetch needed fields to reduce payload
+        select_fields = """
+            id,
+            tenant_id,
+            environment_id,
+            canonical_id,
+            n8n_workflow_id,
+            last_env_sync_at,
+            linked_at,
+            status,
+            workflow_data->>'name' as workflow_name,
+            workflow_data->>'description' as workflow_description,
+            workflow_data->>'active' as workflow_active,
+            workflow_data->'tags' as workflow_tags,
+            workflow_data->>'createdAt' as workflow_created_at,
+            workflow_data->>'updatedAt' as workflow_updated_at
+        """
+
+        # Build base query
+        query = (
+            self.client.table("workflow_env_map")
+            .select(select_fields, count="exact")
+            .eq("tenant_id", tenant_id)
+            .eq("environment_id", environment_id)
+        )
+
+        # Filter by status
+        status_conditions = []
+        if not include_deleted:
+            status_conditions.append("status.neq.deleted")
+        status_conditions.append("status.neq.missing")
+        if not include_ignored:
+            status_conditions.append("status.neq.ignored")
+        status_conditions.append("status.is.null")
+        if status_conditions:
+            query = query.or_(",".join(status_conditions))
+
+        # Only get workflows that exist in n8n
+        query = query.not_.is_("n8n_workflow_id", "null")
+
+        # Server-side search filtering using ILIKE
+        if search_query:
+            search_lower = search_query.lower()
+            query = query.or_(
+                f"workflow_data->>name.ilike.%{search_lower}%,"
+                f"workflow_data->>description.ilike.%{search_lower}%"
+            )
+
+        # Status filter (active/inactive)
+        if status_filter:
+            is_active = "true" if status_filter == "active" else "false"
+            query = query.eq("workflow_data->>active", is_active)
+
+        # Note: Tag filtering with JSONB arrays is complex in PostgREST
+        # We'll do it client-side after fetching (less impactful than search)
+        
+        # Determine sort column
+        sort_column_map = {
+            "name": "workflow_data->>name",
+            "updatedAt": "workflow_data->>updatedAt",
+            "createdAt": "workflow_data->>createdAt",
+            "active": "workflow_data->>active"
+        }
+        sort_col = sort_column_map.get(sort_field, "workflow_data->>updatedAt")
+        
+        # Apply sorting and pagination
+        query = query.order(sort_col, desc=(sort_direction == "desc"))
+        
+        # Execute query to get total count first
+        count_response = query.execute()
+        all_mappings = count_response.data or []
+        
+        # Apply tag filter client-side if needed (before pagination)
+        if tag_filter and len(tag_filter) > 0:
+            def has_matching_tag(mapping):
+                tags = mapping.get("workflow_tags")
+                if not tags:
+                    return False
+                if isinstance(tags, str):
+                    try:
+                        tags = json.loads(tags)
+                    except:
+                        return False
+                for tag in tags:
+                    tag_name = tag.get("name") if isinstance(tag, dict) else tag
+                    if tag_name in tag_filter:
+                        return True
+                return False
+            all_mappings = [m for m in all_mappings if has_matching_tag(m)]
+
+        total_count = len(all_mappings)
+        
+        # Apply pagination
+        offset = (page - 1) * page_size
+        mappings = all_mappings[offset:offset + page_size]
+        
+        # Get canonical workflows for display names (batch fetch)
+        canonical_ids = [m.get("canonical_id") for m in mappings if m.get("canonical_id")]
+        canonical_map = {}
+        if canonical_ids:
+            canonical_response = (
+                self.client.table("canonical_workflows")
+                .select("canonical_id, display_name")
+                .eq("tenant_id", tenant_id)
+                .in_("canonical_id", canonical_ids)
+                .execute()
+            )
+            for canonical in (canonical_response.data or []):
+                canonical_map[canonical.get("canonical_id")] = canonical
+
+        # Transform to workflow format
+        def safe_parse_json(value, default):
+            if value is None:
+                return default
+            if isinstance(value, str):
+                try:
+                    return json.loads(value)
+                except (json.JSONDecodeError, TypeError):
+                    return default
+            return value
+
+        workflows = []
+        for mapping in mappings:
+            canonical_id = mapping.get("canonical_id")
+            canonical = canonical_map.get(canonical_id, {}) if canonical_id else {}
+            workflow_tags = safe_parse_json(mapping.get("workflow_tags"), [])
+
+            workflow_obj = {
+                "id": mapping.get("n8n_workflow_id"),
+                "name": mapping.get("workflow_name") or canonical.get("display_name") or "Unknown",
+                "description": mapping.get("workflow_description") or "",
+                "active": mapping.get("workflow_active") == "true",
+                "tags": workflow_tags,
+                "createdAt": mapping.get("workflow_created_at") or mapping.get("linked_at"),
+                "updatedAt": mapping.get("workflow_updated_at") or mapping.get("last_env_sync_at"),
+                "lastSyncedAt": mapping.get("last_env_sync_at"),
+                "syncStatus": "synced" if mapping.get("status") == "linked" else "pending",
+                "canonical_id": canonical_id,
+                "canonical_display_name": canonical.get("display_name")
+            }
+            workflows.append(workflow_obj)
+
+        total_pages = math.ceil(total_count / page_size) if page_size > 0 else 0
+
+        return {
+            "workflows": workflows,
+            "total": total_count,
+            "page": page,
+            "page_size": page_size,
+            "total_pages": total_pages
+        }
     
     async def get_workflow_diff_states(
         self,

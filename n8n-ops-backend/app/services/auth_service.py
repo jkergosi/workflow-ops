@@ -262,6 +262,23 @@ async def get_current_user(
             if tenant_response.data and len(tenant_response.data) > 0:
                 tenant = tenant_response.data[0]
 
+        # Get admin user info for audit trail
+        admin_user_response = db_service.client.table("users").select("*, tenants(*)").eq(
+            "id", admin_user_id
+        ).execute()
+
+        admin_user = None
+        admin_tenant = None
+        if admin_user_response.data and len(admin_user_response.data) > 0:
+            admin_user = admin_user_response.data[0]
+            admin_tenant = admin_user.get("tenants")
+            if not admin_tenant and admin_user.get("tenant_id"):
+                admin_tenant_response = db_service.client.table("tenants").select("*").eq(
+                    "id", admin_user["tenant_id"]
+                ).execute()
+                if admin_tenant_response.data and len(admin_tenant_response.data) > 0:
+                    admin_tenant = admin_tenant_response.data[0]
+
         return {
             "user": {
                 "id": user["id"],
@@ -275,7 +292,18 @@ async def get_current_user(
                 "subscription_tier": tenant.get("subscription_tier", "free"),
             } if tenant else None,
             "impersonating": True,
-            "admin_id": admin_user_id
+            "impersonation_session_id": None,  # Legacy token doesn't have session ID
+            "impersonated_user_id": user["id"],
+            "impersonated_tenant_id": tenant["id"] if tenant else None,
+            "actor_user": {
+                "id": admin_user["id"],
+                "email": admin_user["email"],
+                "name": admin_user.get("name"),
+                "role": admin_user.get("role"),
+            } if admin_user else {"id": admin_user_id},
+            "actor_user_id": admin_user_id,
+            "actor_tenant_id": admin_tenant["id"] if admin_tenant else None,
+            "admin_id": admin_user_id  # Keep for backward compatibility
         }
 
     # Verify Supabase JWT
@@ -357,11 +385,16 @@ async def get_current_user(
                     } if target_tenant else None,
                     "impersonating": True,
                     "impersonation_session_id": sess.get("id"),
+                    "impersonated_user_id": target_user["id"],
+                    "impersonated_tenant_id": target_tenant["id"] if target_tenant else None,
                     "actor_user": {
                         "id": user["id"],
                         "email": user["email"],
                         "name": user.get("name"),
+                        "role": user.get("role"),
                     },
+                    "actor_user_id": user["id"],
+                    "actor_tenant_id": tenant["id"] if tenant else None,
                 }
 
     return {
@@ -377,6 +410,27 @@ async def get_current_user(
             "subscription_tier": tenant.get("subscription_tier", "free"),
         } if tenant else None
     }
+
+
+def is_user_admin(user: Dict[str, Any]) -> bool:
+    """
+    Check if a user has admin role.
+
+    Args:
+        user: User dictionary containing user information
+
+    Returns:
+        bool: True if user has admin role, False otherwise
+    """
+    if not user:
+        return False
+
+    # Handle both nested user dict (from get_current_user response)
+    # and direct user dict (from database)
+    user_data = user.get("user", user) if "user" in user else user
+    role = user_data.get("role", "")
+
+    return role == "admin"
 
 
 async def get_current_user_optional(
@@ -467,11 +521,16 @@ async def get_current_user_optional(
                         } if target_tenant else None,
                         "impersonating": True,
                         "impersonation_session_id": sess.get("id"),
+                        "impersonated_user_id": target_user["id"],
+                        "impersonated_tenant_id": target_tenant["id"] if target_tenant else None,
                         "actor_user": {
                             "id": user["id"],
                             "email": user["email"],
                             "name": user.get("name"),
+                            "role": user.get("role"),
                         },
+                        "actor_user_id": user["id"],
+                        "actor_tenant_id": tenant["id"] if tenant else None,
                         "is_new": user_info.get("is_new", False),
                     }
 

@@ -1,0 +1,9 @@
+{
+  "name": "customer_onboarding.json",
+  "path": "workflows/production/customer_onboarding.json",
+  "sha": "abc123",
+  "size": 2048,
+  "content": "ewogICJpZCI6ICIxIiwKICAibmFtZSI6ICJDdXN0b21lciBPbmJvYXJkaW5nIgp9Cg==",
+  "encoding": "base64"
+}
+

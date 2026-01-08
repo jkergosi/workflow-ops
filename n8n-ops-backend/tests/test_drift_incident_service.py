@@ -110,6 +110,37 @@ class TestDriftIncidentServiceValidTransitions:
         for status in DriftIncidentStatus:
             assert service._validate_transition("closed", status) is False
 
+    def test_admin_override_allows_invalid_transitions(self):
+        """Test that admin override allows normally invalid transitions."""
+        service = DriftIncidentService()
+
+        # Admin can skip from detected to stabilized (normally invalid)
+        assert service._validate_transition("detected", DriftIncidentStatus.stabilized, admin_override=True) is True
+        # Admin can skip from detected to reconciled (normally invalid)
+        assert service._validate_transition("detected", DriftIncidentStatus.reconciled, admin_override=True) is True
+        # Admin can go backwards from stabilized to acknowledged (normally invalid)
+        assert service._validate_transition("stabilized", DriftIncidentStatus.acknowledged, admin_override=True) is True
+
+    def test_admin_override_still_blocks_closed_terminal_state(self):
+        """Test that admin override cannot transition FROM closed state (terminal enforcement)."""
+        service = DriftIncidentService()
+
+        # Even admins cannot reopen closed incidents
+        assert service._validate_transition("closed", DriftIncidentStatus.detected, admin_override=True) is False
+        assert service._validate_transition("closed", DriftIncidentStatus.acknowledged, admin_override=True) is False
+        assert service._validate_transition("closed", DriftIncidentStatus.stabilized, admin_override=True) is False
+        assert service._validate_transition("closed", DriftIncidentStatus.reconciled, admin_override=True) is False
+
+    def test_admin_override_allows_to_closed(self):
+        """Test that admin override works for transitions TO closed state."""
+        service = DriftIncidentService()
+
+        # Admin override should work for closing from any non-closed state
+        assert service._validate_transition("detected", DriftIncidentStatus.closed, admin_override=True) is True
+        assert service._validate_transition("acknowledged", DriftIncidentStatus.closed, admin_override=True) is True
+        assert service._validate_transition("stabilized", DriftIncidentStatus.closed, admin_override=True) is True
+        assert service._validate_transition("reconciled", DriftIncidentStatus.closed, admin_override=True) is True
+
 
 class TestGetIncidents:
     """Tests for get_incidents method."""
@@ -324,8 +355,8 @@ class TestAcknowledgeIncident:
 
     @pytest.mark.asyncio
     async def test_acknowledge_incident_invalid_transition(self, mock_incident):
-        """Test acknowledging already acknowledged incident."""
-        already_acknowledged = {
+        """Test acknowledging already closed incident fails."""
+        already_closed = {
             **mock_incident,
             "status": DriftIncidentStatus.closed.value,
         }
@@ -333,7 +364,7 @@ class TestAcknowledgeIncident:
         service = DriftIncidentService()
 
         with patch.object(service, "get_incident", new_callable=AsyncMock) as mock_get:
-            mock_get.return_value = already_acknowledged
+            mock_get.return_value = already_closed
 
             with pytest.raises(HTTPException) as exc_info:
                 await service.acknowledge_incident(
@@ -343,6 +374,57 @@ class TestAcknowledgeIncident:
                 )
 
             assert exc_info.value.status_code == 400
+
+    @pytest.mark.asyncio
+    async def test_acknowledge_from_stabilized_fails(self, mock_stabilized_incident):
+        """Test that acknowledging from stabilized status fails (backward transition)."""
+        service = DriftIncidentService()
+
+        with patch.object(service, "get_incident", new_callable=AsyncMock) as mock_get:
+            mock_get.return_value = mock_stabilized_incident
+
+            with pytest.raises(HTTPException) as exc_info:
+                await service.acknowledge_incident(
+                    tenant_id=MOCK_TENANT_ID,
+                    incident_id=MOCK_INCIDENT_ID,
+                    user_id=MOCK_USER_ID,
+                )
+
+            assert exc_info.value.status_code == 400
+            assert "Cannot acknowledge" in str(exc_info.value.detail)
+
+    @pytest.mark.asyncio
+    async def test_acknowledge_from_stabilized_succeeds_with_admin_override(self, mock_stabilized_incident):
+        """Test that admin override allows backward transition from stabilized to acknowledged."""
+        acknowledged_incident = {
+            **mock_stabilized_incident,
+            "status": DriftIncidentStatus.acknowledged.value,
+        }
+
+        service = DriftIncidentService()
+
+        with patch.object(service, "get_incident", new_callable=AsyncMock) as mock_get:
+            mock_get.return_value = mock_stabilized_incident
+
+            with patch("app.services.drift_incident_service.db_service") as mock_db:
+                mock_query = MagicMock()
+                mock_query.update.return_value = mock_query
+                mock_query.eq.return_value = mock_query
+                mock_query.execute.return_value = MagicMock(data=[acknowledged_incident])
+                mock_db.client.table.return_value = mock_query
+
+                # Mock feature service for TTL check
+                with patch("app.services.drift_incident_service.feature_service") as mock_features:
+                    mock_features.get_tenant_features = AsyncMock(return_value={})
+
+                    result = await service.acknowledge_incident(
+                        tenant_id=MOCK_TENANT_ID,
+                        incident_id=MOCK_INCIDENT_ID,
+                        user_id=MOCK_USER_ID,
+                        admin_override=True,
+                    )
+
+                    assert result["status"] == DriftIncidentStatus.acknowledged.value
 
 
 class TestStabilizeIncident:
@@ -393,6 +475,58 @@ class TestStabilizeIncident:
 
             assert exc_info.value.status_code == 400
 
+    @pytest.mark.asyncio
+    async def test_stabilize_from_detected_succeeds_with_admin_override(self, mock_incident):
+        """Test that admin override allows stabilizing from detected status."""
+        stabilized_incident = {
+            **mock_incident,
+            "status": DriftIncidentStatus.stabilized.value,
+        }
+
+        service = DriftIncidentService()
+
+        with patch.object(service, "get_incident", new_callable=AsyncMock) as mock_get:
+            mock_get.return_value = mock_incident
+
+            with patch("app.services.drift_incident_service.db_service") as mock_db:
+                mock_query = MagicMock()
+                mock_query.update.return_value = mock_query
+                mock_query.eq.return_value = mock_query
+                mock_query.execute.return_value = MagicMock(data=[stabilized_incident])
+                mock_db.client.table.return_value = mock_query
+
+                result = await service.stabilize_incident(
+                    tenant_id=MOCK_TENANT_ID,
+                    incident_id=MOCK_INCIDENT_ID,
+                    user_id=MOCK_USER_ID,
+                    admin_override=True,
+                )
+
+                assert result["status"] == DriftIncidentStatus.stabilized.value
+
+    @pytest.mark.asyncio
+    async def test_stabilize_from_closed_fails_even_with_admin_override(self, mock_incident):
+        """Test that admin override cannot reopen closed incidents (terminal state)."""
+        closed_incident = {
+            **mock_incident,
+            "status": DriftIncidentStatus.closed.value,
+        }
+
+        service = DriftIncidentService()
+
+        with patch.object(service, "get_incident", new_callable=AsyncMock) as mock_get:
+            mock_get.return_value = closed_incident
+
+            with pytest.raises(HTTPException) as exc_info:
+                await service.stabilize_incident(
+                    tenant_id=MOCK_TENANT_ID,
+                    incident_id=MOCK_INCIDENT_ID,
+                    user_id=MOCK_USER_ID,
+                    admin_override=True,
+                )
+
+            assert exc_info.value.status_code == 400
+
 
 class TestReconcileIncident:
     """Tests for reconcile_incident method."""
@@ -428,6 +562,57 @@ class TestReconcileIncident:
                 assert result["status"] == DriftIncidentStatus.reconciled.value
                 assert result["resolution_type"] == ResolutionType.promote.value
 
+    @pytest.mark.asyncio
+    async def test_reconcile_from_detected_fails(self, mock_incident):
+        """Test that reconciling from detected status fails without admin override."""
+        service = DriftIncidentService()
+
+        with patch.object(service, "get_incident", new_callable=AsyncMock) as mock_get:
+            mock_get.return_value = mock_incident
+
+            with pytest.raises(HTTPException) as exc_info:
+                await service.reconcile_incident(
+                    tenant_id=MOCK_TENANT_ID,
+                    incident_id=MOCK_INCIDENT_ID,
+                    user_id=MOCK_USER_ID,
+                    resolution_type=ResolutionType.promote,
+                )
+
+            assert exc_info.value.status_code == 400
+            assert "Cannot reconcile" in str(exc_info.value.detail)
+
+    @pytest.mark.asyncio
+    async def test_reconcile_from_detected_succeeds_with_admin_override(self, mock_incident):
+        """Test that admin override allows reconciling from detected status."""
+        reconciled_incident = {
+            **mock_incident,
+            "status": DriftIncidentStatus.reconciled.value,
+            "resolution_type": ResolutionType.promote.value,
+        }
+
+        service = DriftIncidentService()
+
+        with patch.object(service, "get_incident", new_callable=AsyncMock) as mock_get:
+            mock_get.return_value = mock_incident
+
+            with patch("app.services.drift_incident_service.db_service") as mock_db:
+                mock_query = MagicMock()
+                mock_query.update.return_value = mock_query
+                mock_query.eq.return_value = mock_query
+                mock_query.execute.return_value = MagicMock(data=[reconciled_incident])
+                mock_db.client.table.return_value = mock_query
+
+                result = await service.reconcile_incident(
+                    tenant_id=MOCK_TENANT_ID,
+                    incident_id=MOCK_INCIDENT_ID,
+                    user_id=MOCK_USER_ID,
+                    resolution_type=ResolutionType.promote,
+                    admin_override=True,
+                )
+
+                assert result["status"] == DriftIncidentStatus.reconciled.value
+                assert result["resolution_type"] == ResolutionType.promote.value
+
 
 class TestCloseIncident:
     """Tests for close_incident method."""
@@ -457,6 +642,7 @@ class TestCloseIncident:
                     incident_id=MOCK_INCIDENT_ID,
                     user_id=MOCK_USER_ID,
                     reason="Issue resolved",
+                    resolution_type=ResolutionType.acknowledge,
                 )
 
                 assert result["status"] == DriftIncidentStatus.closed.value
@@ -476,9 +662,377 @@ class TestCloseIncident:
                     tenant_id=MOCK_TENANT_ID,
                     incident_id=MOCK_INCIDENT_ID,
                     user_id=MOCK_USER_ID,
+                    reason="Issue resolved",
+                    resolution_type=ResolutionType.acknowledge,
                 )
 
             assert exc_info.value.status_code == 400
+
+    @pytest.mark.asyncio
+    async def test_close_already_closed_fails_even_with_admin_override(self, mock_incident):
+        """Test that closed is terminal even for admins."""
+        closed_incident = {**mock_incident, "status": DriftIncidentStatus.closed.value}
+
+        service = DriftIncidentService()
+
+        with patch.object(service, "get_incident", new_callable=AsyncMock) as mock_get:
+            mock_get.return_value = closed_incident
+
+            with pytest.raises(HTTPException) as exc_info:
+                await service.close_incident(
+                    tenant_id=MOCK_TENANT_ID,
+                    incident_id=MOCK_INCIDENT_ID,
+                    user_id=MOCK_USER_ID,
+                    reason="Issue resolved",
+                    resolution_type=ResolutionType.acknowledge,
+                    admin_override=True,
+                )
+
+            assert exc_info.value.status_code == 400
+
+    @pytest.mark.asyncio
+    async def test_close_from_detected_without_resolution_type_fails(self, mock_incident):
+        """Test that closing from detected without resolution_type fails."""
+        service = DriftIncidentService()
+
+        with patch.object(service, "get_incident", new_callable=AsyncMock) as mock_get:
+            mock_get.return_value = mock_incident
+
+            with pytest.raises(HTTPException) as exc_info:
+                await service.close_incident(
+                    tenant_id=MOCK_TENANT_ID,
+                    incident_id=MOCK_INCIDENT_ID,
+                    user_id=MOCK_USER_ID,
+                    reason="Closing incident",
+                    # resolution_type is missing
+                )
+
+            assert exc_info.value.status_code == 400
+            assert "resolution_type" in str(exc_info.value.detail)
+
+    @pytest.mark.asyncio
+    async def test_close_from_detected_without_reason_fails(self, mock_incident):
+        """Test that closing from detected without reason fails."""
+        service = DriftIncidentService()
+
+        with patch.object(service, "get_incident", new_callable=AsyncMock) as mock_get:
+            mock_get.return_value = mock_incident
+
+            with pytest.raises(HTTPException) as exc_info:
+                await service.close_incident(
+                    tenant_id=MOCK_TENANT_ID,
+                    incident_id=MOCK_INCIDENT_ID,
+                    user_id=MOCK_USER_ID,
+                    resolution_type=ResolutionType.acknowledge,
+                    # reason is missing
+                )
+
+            assert exc_info.value.status_code == 400
+            assert "reason" in str(exc_info.value.detail)
+
+    @pytest.mark.asyncio
+    async def test_close_from_detected_with_resolution_type_and_reason_succeeds(self, mock_incident):
+        """Test that closing from detected with both resolution_type and reason succeeds."""
+        closed_incident = {
+            **mock_incident,
+            "status": DriftIncidentStatus.closed.value,
+            "resolution_type": ResolutionType.acknowledge.value,
+            "reason": "False positive",
+        }
+
+        service = DriftIncidentService()
+
+        with patch.object(service, "get_incident", new_callable=AsyncMock) as mock_get:
+            mock_get.return_value = mock_incident
+
+            with patch("app.services.drift_incident_service.db_service") as mock_db:
+                # Mock incident update response
+                mock_update_response = MagicMock()
+                mock_update_response.data = [closed_incident]
+
+                mock_query = MagicMock()
+                mock_query.update.return_value = mock_query
+                mock_query.eq.return_value = mock_query
+                mock_query.execute.return_value = mock_update_response
+
+                # Mock environment update query
+                mock_env_query = MagicMock()
+                mock_env_query.update.return_value = mock_env_query
+                mock_env_query.eq.return_value = mock_env_query
+                mock_env_query.execute.return_value = MagicMock(data=[{}])
+
+                # Configure table side effect
+                def table_side_effect(table_name):
+                    if table_name == "drift_incidents":
+                        return mock_query
+                    elif table_name == "environments":
+                        return mock_env_query
+                    return MagicMock()
+
+                mock_db.client.table.side_effect = table_side_effect
+
+                result = await service.close_incident(
+                    tenant_id=MOCK_TENANT_ID,
+                    incident_id=MOCK_INCIDENT_ID,
+                    user_id=MOCK_USER_ID,
+                    reason="False positive",
+                    resolution_type=ResolutionType.acknowledge,
+                )
+
+                assert result["status"] == DriftIncidentStatus.closed.value
+                assert result["resolution_type"] == ResolutionType.acknowledge.value
+
+    @pytest.mark.asyncio
+    async def test_close_from_acknowledged_without_resolution_type_fails(self, mock_acknowledged_incident):
+        """Test that closing from acknowledged without resolution_type fails."""
+        service = DriftIncidentService()
+
+        with patch.object(service, "get_incident", new_callable=AsyncMock) as mock_get:
+            mock_get.return_value = mock_acknowledged_incident
+
+            with pytest.raises(HTTPException) as exc_info:
+                await service.close_incident(
+                    tenant_id=MOCK_TENANT_ID,
+                    incident_id=MOCK_INCIDENT_ID,
+                    user_id=MOCK_USER_ID,
+                    reason="Closing incident",
+                )
+
+            assert exc_info.value.status_code == 400
+            assert "resolution_type" in str(exc_info.value.detail)
+
+    @pytest.mark.asyncio
+    async def test_close_from_acknowledged_without_reason_fails(self, mock_acknowledged_incident):
+        """Test that closing from acknowledged without reason fails."""
+        service = DriftIncidentService()
+
+        with patch.object(service, "get_incident", new_callable=AsyncMock) as mock_get:
+            mock_get.return_value = mock_acknowledged_incident
+
+            with pytest.raises(HTTPException) as exc_info:
+                await service.close_incident(
+                    tenant_id=MOCK_TENANT_ID,
+                    incident_id=MOCK_INCIDENT_ID,
+                    user_id=MOCK_USER_ID,
+                    resolution_type=ResolutionType.acknowledge,
+                )
+
+            assert exc_info.value.status_code == 400
+            assert "reason" in str(exc_info.value.detail)
+
+    @pytest.mark.asyncio
+    async def test_close_from_stabilized_without_resolution_type_fails(self, mock_stabilized_incident):
+        """Test that closing from stabilized without resolution_type fails."""
+        service = DriftIncidentService()
+
+        with patch.object(service, "get_incident", new_callable=AsyncMock) as mock_get:
+            mock_get.return_value = mock_stabilized_incident
+
+            with pytest.raises(HTTPException) as exc_info:
+                await service.close_incident(
+                    tenant_id=MOCK_TENANT_ID,
+                    incident_id=MOCK_INCIDENT_ID,
+                    user_id=MOCK_USER_ID,
+                    reason="Closing incident",
+                )
+
+            assert exc_info.value.status_code == 400
+            assert "resolution_type" in str(exc_info.value.detail)
+
+    @pytest.mark.asyncio
+    async def test_close_from_stabilized_without_reason_fails(self, mock_stabilized_incident):
+        """Test that closing from stabilized without reason fails."""
+        service = DriftIncidentService()
+
+        with patch.object(service, "get_incident", new_callable=AsyncMock) as mock_get:
+            mock_get.return_value = mock_stabilized_incident
+
+            with pytest.raises(HTTPException) as exc_info:
+                await service.close_incident(
+                    tenant_id=MOCK_TENANT_ID,
+                    incident_id=MOCK_INCIDENT_ID,
+                    user_id=MOCK_USER_ID,
+                    resolution_type=ResolutionType.acknowledge,
+                )
+
+            assert exc_info.value.status_code == 400
+            assert "reason" in str(exc_info.value.detail)
+
+    @pytest.mark.asyncio
+    async def test_close_from_reconciled_without_reason_fails(self, mock_incident):
+        """Test that closing from reconciled without reason fails."""
+        reconciled_incident = {
+            **mock_incident,
+            "status": DriftIncidentStatus.reconciled.value,
+            "resolution_type": ResolutionType.promote.value,
+        }
+
+        service = DriftIncidentService()
+
+        with patch.object(service, "get_incident", new_callable=AsyncMock) as mock_get:
+            mock_get.return_value = reconciled_incident
+
+            with pytest.raises(HTTPException) as exc_info:
+                await service.close_incident(
+                    tenant_id=MOCK_TENANT_ID,
+                    incident_id=MOCK_INCIDENT_ID,
+                    user_id=MOCK_USER_ID,
+                    # reason is missing
+                )
+
+            assert exc_info.value.status_code == 400
+            assert "reason" in str(exc_info.value.detail)
+            assert "resolution notes" in str(exc_info.value.detail)
+
+    @pytest.mark.asyncio
+    async def test_close_from_reconciled_with_reason_succeeds(self, mock_incident):
+        """Test that closing from reconciled with reason succeeds."""
+        reconciled_incident = {
+            **mock_incident,
+            "status": DriftIncidentStatus.reconciled.value,
+            "resolution_type": ResolutionType.promote.value,
+        }
+
+        closed_incident = {
+            **reconciled_incident,
+            "status": DriftIncidentStatus.closed.value,
+            "reason": "All changes promoted to source",
+        }
+
+        service = DriftIncidentService()
+
+        with patch.object(service, "get_incident", new_callable=AsyncMock) as mock_get:
+            mock_get.return_value = reconciled_incident
+
+            with patch("app.services.drift_incident_service.db_service") as mock_db:
+                # Mock incident update response
+                mock_update_response = MagicMock()
+                mock_update_response.data = [closed_incident]
+
+                mock_query = MagicMock()
+                mock_query.update.return_value = mock_query
+                mock_query.eq.return_value = mock_query
+                mock_query.execute.return_value = mock_update_response
+
+                # Mock environment update query
+                mock_env_query = MagicMock()
+                mock_env_query.update.return_value = mock_env_query
+                mock_env_query.eq.return_value = mock_env_query
+                mock_env_query.execute.return_value = MagicMock(data=[{}])
+
+                # Configure table side effect
+                def table_side_effect(table_name):
+                    if table_name == "drift_incidents":
+                        return mock_query
+                    elif table_name == "environments":
+                        return mock_env_query
+                    return MagicMock()
+
+                mock_db.client.table.side_effect = table_side_effect
+
+                result = await service.close_incident(
+                    tenant_id=MOCK_TENANT_ID,
+                    incident_id=MOCK_INCIDENT_ID,
+                    user_id=MOCK_USER_ID,
+                    reason="All changes promoted to source",
+                )
+
+                assert result["status"] == DriftIncidentStatus.closed.value
+                assert result["reason"] == "All changes promoted to source"
+
+
+class TestStrictTransitionEnforcement:
+    """Test strict transition enforcement and admin override functionality."""
+
+    @pytest.mark.asyncio
+    async def test_invalid_skip_transition_detected_to_stabilized(self, mock_incident):
+        """Test that skipping from detected to stabilized is rejected."""
+        service = DriftIncidentService()
+
+        with patch.object(service, "get_incident", new_callable=AsyncMock) as mock_get:
+            mock_get.return_value = mock_incident
+
+            with pytest.raises(HTTPException) as exc_info:
+                await service.stabilize_incident(
+                    tenant_id=MOCK_TENANT_ID,
+                    incident_id=MOCK_INCIDENT_ID,
+                    user_id=MOCK_USER_ID,
+                )
+
+            assert exc_info.value.status_code == 400
+            assert "Cannot stabilize" in str(exc_info.value.detail)
+            assert "detected" in str(exc_info.value.detail)
+
+    @pytest.mark.asyncio
+    async def test_invalid_skip_transition_detected_to_reconciled(self, mock_incident):
+        """Test that skipping from detected to reconciled is rejected."""
+        service = DriftIncidentService()
+
+        with patch.object(service, "get_incident", new_callable=AsyncMock) as mock_get:
+            mock_get.return_value = mock_incident
+
+            with pytest.raises(HTTPException) as exc_info:
+                await service.reconcile_incident(
+                    tenant_id=MOCK_TENANT_ID,
+                    incident_id=MOCK_INCIDENT_ID,
+                    user_id=MOCK_USER_ID,
+                    resolution_type=ResolutionType.promote,
+                )
+
+            assert exc_info.value.status_code == 400
+            assert "Cannot reconcile" in str(exc_info.value.detail)
+
+    @pytest.mark.asyncio
+    async def test_admin_override_allows_skip_transitions(self, mock_incident):
+        """Test that admin override allows skipping from detected to reconciled."""
+        reconciled_incident = {
+            **mock_incident,
+            "status": DriftIncidentStatus.reconciled.value,
+            "resolution_type": ResolutionType.promote.value,
+        }
+
+        service = DriftIncidentService()
+
+        with patch.object(service, "get_incident", new_callable=AsyncMock) as mock_get:
+            mock_get.return_value = mock_incident
+
+            with patch("app.services.drift_incident_service.db_service") as mock_db:
+                mock_query = MagicMock()
+                mock_query.update.return_value = mock_query
+                mock_query.eq.return_value = mock_query
+                mock_query.execute.return_value = MagicMock(data=[reconciled_incident])
+                mock_db.client.table.return_value = mock_query
+
+                # Admin should be able to skip from detected directly to reconciled
+                result = await service.reconcile_incident(
+                    tenant_id=MOCK_TENANT_ID,
+                    incident_id=MOCK_INCIDENT_ID,
+                    user_id=MOCK_USER_ID,
+                    resolution_type=ResolutionType.promote,
+                    admin_override=True,
+                )
+
+                assert result["status"] == DriftIncidentStatus.reconciled.value
+
+    @pytest.mark.asyncio
+    async def test_transition_validation_error_messages_include_valid_options(self, mock_incident):
+        """Test that transition errors include helpful information about valid transitions."""
+        service = DriftIncidentService()
+
+        with patch.object(service, "get_incident", new_callable=AsyncMock) as mock_get:
+            mock_get.return_value = mock_incident
+
+            with pytest.raises(HTTPException) as exc_info:
+                await service.stabilize_incident(
+                    tenant_id=MOCK_TENANT_ID,
+                    incident_id=MOCK_INCIDENT_ID,
+                    user_id=MOCK_USER_ID,
+                )
+
+            # Error message should include valid transitions
+            error_detail = str(exc_info.value.detail)
+            assert "Valid transitions:" in error_detail
+            assert "acknowledged" in error_detail or "closed" in error_detail
 
 
 class TestGetIncidentStats:
@@ -760,6 +1314,172 @@ class TestGetActiveIncidentForEnvironment:
             )
 
             assert result is None
+
+
+class TestImmutableSnapshotValidation:
+    """Tests for drift_snapshot immutability enforcement."""
+
+    @pytest.mark.asyncio
+    async def test_update_incident_rejects_drift_snapshot_modification(self, mock_incident):
+        """Test that updating drift_snapshot via update_incident is rejected."""
+        service = DriftIncidentService()
+
+        with patch.object(service, "get_incident", new_callable=AsyncMock) as mock_get:
+            mock_get.return_value = mock_incident
+
+            with pytest.raises(HTTPException) as exc_info:
+                await service.update_incident(
+                    tenant_id=MOCK_TENANT_ID,
+                    incident_id=MOCK_INCIDENT_ID,
+                    drift_snapshot={"new": "snapshot"},
+                )
+
+            assert exc_info.value.status_code == 400
+            assert "immutable" in str(exc_info.value.detail)
+            assert "drift_snapshot" in str(exc_info.value.detail)
+
+    @pytest.mark.asyncio
+    async def test_refresh_incident_drift_rejects_snapshot_modification(self, mock_incident):
+        """Test that updating drift_snapshot via refresh_incident_drift is rejected."""
+        service = DriftIncidentService()
+
+        with patch.object(service, "get_incident", new_callable=AsyncMock) as mock_get:
+            mock_get.return_value = mock_incident
+
+            with pytest.raises(HTTPException) as exc_info:
+                await service.refresh_incident_drift(
+                    tenant_id=MOCK_TENANT_ID,
+                    incident_id=MOCK_INCIDENT_ID,
+                    affected_workflows=[
+                        AffectedWorkflow(
+                            workflow_id="wf-1",
+                            workflow_name="Test",
+                            drift_type="modified",
+                        )
+                    ],
+                    drift_snapshot={"new": "snapshot"},
+                )
+
+            assert exc_info.value.status_code == 400
+            assert "immutable" in str(exc_info.value.detail)
+            assert "drift_snapshot" in str(exc_info.value.detail)
+
+    @pytest.mark.asyncio
+    async def test_update_incident_allows_other_fields(self, mock_incident):
+        """Test that update_incident allows updating non-snapshot fields."""
+        updated_incident = {
+            **mock_incident,
+            "title": "Updated Title",
+            "owner_user_id": "new-owner",
+        }
+
+        service = DriftIncidentService()
+
+        with patch.object(service, "get_incident", new_callable=AsyncMock) as mock_get:
+            mock_get.return_value = mock_incident
+
+            with patch("app.services.drift_incident_service.db_service") as mock_db:
+                mock_query = MagicMock()
+                mock_query.update.return_value = mock_query
+                mock_query.eq.return_value = mock_query
+                mock_query.execute.return_value = MagicMock(data=[updated_incident])
+                mock_db.client.table.return_value = mock_query
+
+                # Mock feature service for TTL check
+                with patch("app.services.drift_incident_service.feature_service") as mock_features:
+                    mock_features.get_tenant_features = AsyncMock(return_value={})
+
+                    result = await service.update_incident(
+                        tenant_id=MOCK_TENANT_ID,
+                        incident_id=MOCK_INCIDENT_ID,
+                        title="Updated Title",
+                        owner_user_id="new-owner",
+                    )
+
+                    assert result["title"] == "Updated Title"
+                    assert result["owner_user_id"] == "new-owner"
+
+    @pytest.mark.asyncio
+    async def test_refresh_incident_drift_allows_workflow_updates(self, mock_incident):
+        """Test that refresh_incident_drift allows updating affected_workflows without snapshot."""
+        updated_incident = {
+            **mock_incident,
+            "affected_workflows": [{"workflow_id": "wf-1", "workflow_name": "Test"}],
+        }
+
+        service = DriftIncidentService()
+
+        with patch.object(service, "get_incident", new_callable=AsyncMock) as mock_get:
+            mock_get.return_value = mock_incident
+
+            with patch("app.services.drift_incident_service.db_service") as mock_db:
+                mock_query = MagicMock()
+                mock_query.update.return_value = mock_query
+                mock_query.eq.return_value = mock_query
+                mock_query.execute.return_value = MagicMock(data=[updated_incident])
+                mock_db.client.table.return_value = mock_query
+
+                result = await service.refresh_incident_drift(
+                    tenant_id=MOCK_TENANT_ID,
+                    incident_id=MOCK_INCIDENT_ID,
+                    affected_workflows=[
+                        AffectedWorkflow(
+                            workflow_id="wf-1",
+                            workflow_name="Test",
+                            drift_type="modified",
+                        )
+                    ],
+                    drift_snapshot=None,  # Explicitly None to test that we can pass None
+                )
+
+                assert len(result["affected_workflows"]) == 1
+
+    @pytest.mark.asyncio
+    async def test_create_incident_allows_initial_snapshot(self, mock_incident):
+        """Test that drift_snapshot can be set during incident creation."""
+        incident_with_snapshot = {
+            **mock_incident,
+            "drift_snapshot": {"initial": "snapshot"},
+        }
+
+        service = DriftIncidentService()
+
+        with patch.object(service, "get_active_incident_for_environment", new_callable=AsyncMock) as mock_active:
+            mock_active.return_value = None
+
+            with patch("app.services.drift_incident_service.db_service") as mock_db:
+                # Mock insert response
+                mock_insert_response = MagicMock()
+                mock_insert_response.data = [incident_with_snapshot]
+
+                mock_insert_query = MagicMock()
+                mock_insert_query.insert.return_value = mock_insert_query
+                mock_insert_query.execute.return_value = mock_insert_response
+
+                # Mock update response for environment update
+                mock_update_query = MagicMock()
+                mock_update_query.update.return_value = mock_update_query
+                mock_update_query.eq.return_value = mock_update_query
+                mock_update_query.execute.return_value = MagicMock(data=[{}])
+
+                def table_side_effect(name):
+                    if name == "drift_incidents":
+                        return mock_insert_query
+                    elif name == "environments":
+                        return mock_update_query
+                    return MagicMock()
+
+                mock_db.client.table.side_effect = table_side_effect
+
+                result = await service.create_incident(
+                    tenant_id=MOCK_TENANT_ID,
+                    environment_id=MOCK_ENVIRONMENT_ID,
+                    user_id=MOCK_USER_ID,
+                    title="Test Incident",
+                    drift_snapshot={"initial": "snapshot"},
+                )
+
+                assert result["drift_snapshot"] == {"initial": "snapshot"}
 
 
 class TestGetIncidentEnrichment:

@@ -36,10 +36,6 @@ async def start_impersonation(
 
     target_user_id = body.target_user_id
 
-    # Guardrail: never impersonate another platform admin
-    if is_platform_admin(target_user_id):
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Cannot impersonate another Platform Admin")
-
     # Load target user (must exist)
     target_resp = db_service.client.table("users").select("id, email, name, role, tenant_id").eq("id", target_user_id).maybe_single().execute()
     target = target_resp.data
@@ -47,6 +43,21 @@ async def start_impersonation(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Target user not found")
 
     tenant_id = target.get("tenant_id")
+
+    # Guardrail: never impersonate another platform admin
+    if is_platform_admin(target_user_id):
+        await create_audit_log(
+            action_type="IMPERSONATION_BLOCKED",
+            action=f"Blocked impersonation attempt for platform admin user_id={target_user_id}",
+            actor_id=actor_id,
+            actor_email=actor.get("email"),
+            actor_name=actor.get("name"),
+            tenant_id=tenant_id,
+            resource_type="impersonation",
+            resource_id=target_user_id,
+            metadata={"target_user_id": target_user_id, "reason": "target_is_platform_admin"},
+        )
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Cannot impersonate another Platform Admin")
 
     # End any existing active session for this actor (no nested impersonation)
     db_service.client.table("platform_impersonation_sessions").update(

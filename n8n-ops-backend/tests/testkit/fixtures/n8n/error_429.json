@@ -1,0 +1,7 @@
+{
+  "code": 429,
+  "message": "Rate limit exceeded. Please try again later.",
+  "hint": "Wait 60 seconds before making more requests",
+  "retryAfter": 60
+}
+

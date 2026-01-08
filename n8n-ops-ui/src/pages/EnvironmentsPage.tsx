@@ -1,6 +1,6 @@
 // @ts-nocheck
 // TODO: Fix TypeScript errors in this file
-import { useState } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
@@ -46,7 +46,6 @@ import { Plus, Server, RefreshCw, Edit, RefreshCcw, CheckCircle2, AlertCircle, L
 import { toast } from 'sonner';
 import type { Environment, EnvironmentType, EnvironmentTypeConfig } from '@/types';
 import { useFeatures } from '@/lib/features';
-import { useEffect } from 'react';
 import { useBackgroundJobsSSE } from '@/lib/use-background-jobs-sse';
 import { SmartEmptyState } from '@/components/SmartEmptyState';
 import { useEnvironmentTypes, getEnvironmentTypeLabel } from '@/hooks/useEnvironmentTypes';
@@ -124,9 +123,41 @@ export function EnvironmentsPage() {
     enabled: !isLoading && !!environments?.data?.length,
   });
 
+  const handleProgressEvent = useCallback((eventType: string, payload: any) => {
+    const envId = payload.environmentId || payload.environment_id;
+    if (!envId) return;
+
+    setActiveJobs((prev) => ({
+      ...prev,
+      [envId]: {
+        jobId: payload.jobId || payload.job_id,
+        jobType: eventType === 'sync.progress' ? 'sync' :
+                 eventType === 'backup.progress' ? 'backup' : 'restore',
+        status: payload.status || 'running',
+        currentStep: payload.currentStep || payload.current_step,
+        current: payload.current || 0,
+        total: payload.total || 1,
+        message: payload.message,
+        currentWorkflowName: payload.currentWorkflowName || payload.current_workflow_name,
+        errors: payload.errors,
+      },
+    }));
+
+    if (payload.status === 'completed' || payload.status === 'failed') {
+      setTimeout(() => {
+        setActiveJobs((prev) => {
+          const next = { ...prev };
+          delete next[envId];
+          return next;
+        });
+      }, 10000);
+    }
+  }, []);
+
   // Subscribe to background job updates for all environments
   useBackgroundJobsSSE({
     enabled: !isLoading && !!environments?.data?.length,
+    onProgressEvent: handleProgressEvent,
   });
 
   // Fetch active jobs for ALL environments in a single query (optimized)
@@ -182,84 +213,6 @@ export function EnvironmentsPage() {
       });
     }
   }, [jobsQueries.data]);
-
-  // Listen to SSE events and update active jobs
-  useEffect(() => {
-    const handleSSEEvent = (eventType: string) => (event: MessageEvent) => {
-      try {
-        const payload = JSON.parse(event.data);
-        const envId = payload.environmentId || payload.environment_id;
-        
-        if (envId) {
-          console.log('[SSE] Received event:', eventType, payload);
-          setActiveJobs((prev) => ({
-            ...prev,
-            [envId]: {
-              jobId: payload.jobId || payload.job_id,
-              jobType: eventType === 'sync.progress' ? 'sync' : 
-                       eventType === 'backup.progress' ? 'backup' : 'restore',
-              status: payload.status || 'running',
-              currentStep: payload.currentStep || payload.current_step,
-              current: payload.current || 0,
-              total: payload.total || 1,
-              message: payload.message,
-              currentWorkflowName: payload.currentWorkflowName || payload.current_workflow_name,
-              errors: payload.errors,
-            },
-          }));
-
-          // Remove from active jobs if completed or failed (after a delay)
-          if (payload.status === 'completed' || payload.status === 'failed') {
-            setTimeout(() => {
-              setActiveJobs((prev) => {
-                const next = { ...prev };
-                delete next[envId];
-                return next;
-              });
-            }, 10000); // Keep for 10 seconds to show completion message
-          }
-        }
-      } catch (error) {
-        console.error('[SSE] Failed to parse event:', error, event.data);
-      }
-    };
-
-    // Create EventSource connection for background jobs
-    // EventSource can't send custom headers, so we pass token as query parameter
-    // VITE_API_BASE_URL already includes /api/v1, so we just add /sse/stream
-    const baseUrl = import.meta.env.VITE_API_BASE_URL || '/api/v1';
-    const token = localStorage.getItem('auth_token');
-    const url = token 
-      ? `${baseUrl}/sse/stream?token=${encodeURIComponent(token)}`
-      : `${baseUrl}/sse/stream`;
-    console.log('[SSE] Connecting to background jobs stream:', url.replace(token || '', '***'));
-    
-    const eventSource = new EventSource(url, { withCredentials: true });
-
-    eventSource.onopen = () => {
-      console.log('[SSE] Connected to background jobs stream');
-    };
-
-    eventSource.onerror = (error) => {
-      console.error('[SSE] Connection error:', error);
-      console.error('[SSE] EventSource readyState:', eventSource.readyState);
-      // readyState: 0 = CONNECTING, 1 = OPEN, 2 = CLOSED
-    };
-
-    eventSource.addEventListener('sync.progress', handleSSEEvent('sync.progress'));
-    eventSource.addEventListener('backup.progress', handleSSEEvent('backup.progress'));
-    eventSource.addEventListener('restore.progress', handleSSEEvent('restore.progress'));
-
-    // Also listen for generic 'message' events as fallback
-    eventSource.onmessage = (event) => {
-      console.log('[SSE] Received message event:', event);
-    };
-
-    return () => {
-      console.log('[SSE] Closing background jobs stream');
-      eventSource.close();
-    };
-  }, []);
 
   const testMutation = useMutation({
     mutationFn: ({ baseUrl, apiKey }: { baseUrl: string; apiKey: string }) =>

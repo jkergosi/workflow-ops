@@ -17,8 +17,10 @@ import {
   TableRow,
 } from '@/components/ui/table';
 import { api } from '@/lib/api';
+import { apiClient } from '@/lib/api-client';
 import { useAppStore } from '@/store/use-app-store';
-import { Search, ArrowUpDown, ArrowUp, ArrowDown, X, ExternalLink, CheckCircle2, XCircle, Clock, Play, Download, RefreshCw } from 'lucide-react';
+import { useDebounce } from '@/hooks/useDebounce';
+import { Search, ArrowUpDown, ArrowUp, ArrowDown, X, ExternalLink, CheckCircle2, XCircle, Clock, Play, Download, RefreshCw, Loader2 } from 'lucide-react';
 import type { EnvironmentType } from '@/types';
 import { toast } from 'sonner';
 import { getDefaultEnvironmentId, resolveEnvironment, sortEnvironments } from '@/lib/environment-utils';
@@ -39,7 +41,8 @@ export function ExecutionsPage() {
   const queryClient = useQueryClient();
   const [searchParams, setSearchParams] = useSearchParams();
 
-  const [searchQuery, setSearchQuery] = useState('');
+  const [searchInput, setSearchInput] = useState('');
+  const debouncedSearch = useDebounce(searchInput, 300);
   const [selectedStatus, setSelectedStatus] = useState<string>('');
   const [selectedWorkflow, setSelectedWorkflow] = useState<string>(() => searchParams.get('workflow') || '');
   const [sortField, setSortField] = useState<SortField>('startedAt');
@@ -86,15 +89,46 @@ export function ExecutionsPage() {
   // Get the current environment's base URL
   // (currentEnvironment is now resolved from availableEnvironments above)
 
-  // Fetch executions from database
-  const { data: executions, isLoading, refetch } = useQuery({
-    queryKey: ['executions', currentEnvironmentId],
-    queryFn: async () => {
-      if (!currentEnvironmentId) return { data: [] };
-      return api.getExecutions(currentEnvironmentId);
-    },
+  // Map frontend sort field names to backend names
+  const sortFieldMap: Record<SortField, string> = {
+    workflowName: 'workflow_name',
+    status: 'status',
+    startedAt: 'started_at',
+    executionTime: 'execution_time',
+  };
+
+  // Server-side paginated executions query (optimized)
+  const { data: executionsResponse, isLoading, isFetching, refetch } = useQuery({
+    queryKey: [
+      'executions-paginated',
+      currentEnvironmentId,
+      currentPage,
+      pageSize,
+      debouncedSearch,
+      selectedStatus,
+      selectedWorkflow,
+      sortField,
+      sortDirection,
+    ],
+    queryFn: () =>
+      currentEnvironmentId
+        ? apiClient.getExecutionsPaginated(currentEnvironmentId, currentPage, pageSize, {
+            workflowId: selectedWorkflow || undefined,
+            statusFilter: selectedStatus || undefined,
+            search: debouncedSearch || undefined,
+            sortField: sortFieldMap[sortField],
+            sortDirection,
+          })
+        : Promise.resolve({ data: { executions: [], total: 0, page: 1, page_size: pageSize, total_pages: 0 } }),
     enabled: !!currentEnvironmentId,
+    keepPreviousData: true,
+    staleTime: 60 * 1000, // 1 minute
   });
+
+  // Extract data from paginated response
+  const executions = executionsResponse?.data?.executions || [];
+  const totalExecutions = executionsResponse?.data?.total || 0;
+  const totalPages = executionsResponse?.data?.total_pages || 1;
 
   // Sync mutation to refresh from N8N (executions only)
   const syncMutation = useMutation({
@@ -105,9 +139,9 @@ export function ExecutionsPage() {
     },
     onSuccess: (results) => {
       setIsSyncing(false);
-      const totalExecutions = results.reduce((sum, r) => sum + (r.synced || 0), 0);
-      toast.success(`Synced ${totalExecutions} executions from N8N`);
-      queryClient.invalidateQueries({ queryKey: ['executions'] });
+      const totalSynced = results.reduce((sum, r) => sum + (r.synced || 0), 0);
+      toast.success(`Synced ${totalSynced} executions from N8N`);
+      queryClient.invalidateQueries({ queryKey: ['executions-paginated'] });
     },
     onError: (error: any) => {
       setIsSyncing(false);
@@ -122,11 +156,12 @@ export function ExecutionsPage() {
     syncMutation.mutate();
   };
 
-  // Get unique workflows from executions for the filter dropdown
+  // Get unique workflows from current page for the filter dropdown
+  // Note: With server-side pagination, we only have workflows from the current page
   const uniqueWorkflows = useMemo(() => {
-    if (!executions?.data) return [];
+    if (!executions?.length) return [];
     const workflowMap = new Map<string, string>();
-    executions.data.forEach((execution) => {
+    executions.forEach((execution) => {
       if (!workflowMap.has(execution.workflowId)) {
         workflowMap.set(execution.workflowId, execution.workflowName || execution.workflowId);
       }
@@ -136,92 +171,10 @@ export function ExecutionsPage() {
       .sort((a, b) => a.name.localeCompare(b.name));
   }, [executions]);
 
-  // Filter and sort executions
-  const filteredAndSortedExecutions = useMemo(() => {
-    if (!executions?.data) return [];
-
-    let result = [...executions.data];
-
-    // Apply search filter (workflow name)
-    if (searchQuery) {
-      const query = searchQuery.toLowerCase();
-      result = result.filter((execution) => {
-        const matchesWorkflowName = execution.workflowName?.toLowerCase().includes(query);
-        const matchesWorkflowId = execution.workflowId.toLowerCase().includes(query);
-        return matchesWorkflowName || matchesWorkflowId;
-      });
-    }
-
-    // Apply status filter
-    if (selectedStatus) {
-      result = result.filter((execution) => execution.status === selectedStatus);
-    }
-
-    // Apply workflow filter
-    if (selectedWorkflow) {
-      result = result.filter((execution) => execution.workflowId === selectedWorkflow);
-    }
-
-    // Apply sorting
-    result.sort((a, b) => {
-      let aValue: any;
-      let bValue: any;
-
-      switch (sortField) {
-        case 'workflowName':
-          aValue = (a.workflowName || a.workflowId).toLowerCase();
-          bValue = (b.workflowName || b.workflowId).toLowerCase();
-          break;
-        case 'status':
-          aValue = a.status;
-          bValue = b.status;
-          break;
-        case 'startedAt':
-          aValue = new Date(a.startedAt).getTime();
-          bValue = new Date(b.startedAt).getTime();
-          break;
-        case 'executionTime':
-          aValue = a.executionTime || 0;
-          bValue = b.executionTime || 0;
-          break;
-        default:
-          return 0;
-      }
-
-      if (aValue < bValue) return sortDirection === 'asc' ? -1 : 1;
-      if (aValue > bValue) return sortDirection === 'asc' ? 1 : -1;
-      return 0;
-    });
-
-    return result;
-  }, [executions, searchQuery, selectedStatus, selectedWorkflow, sortField, sortDirection]);
-
-  // Pagination calculations
-  const { paginatedExecutions, totalPages, totalExecutions } = useMemo(() => {
-    const total = filteredAndSortedExecutions.length;
-    const pages = Math.ceil(total / pageSize);
-    const startIndex = (currentPage - 1) * pageSize;
-    const endIndex = startIndex + pageSize;
-    const paginated = filteredAndSortedExecutions.slice(startIndex, endIndex);
-
-    return {
-      paginatedExecutions: paginated,
-      totalPages: pages,
-      totalExecutions: total,
-    };
-  }, [filteredAndSortedExecutions, currentPage, pageSize]);
-
   // Reset to page 1 when filters change
-  const resetPage = () => {
-    if (currentPage !== 1) {
-      setCurrentPage(1);
-    }
-  };
-
-  // Reset page when filters, search, or environment changes
   useEffect(() => {
-    resetPage();
-  }, [searchQuery, selectedStatus, selectedWorkflow, selectedEnvironment]);
+    setCurrentPage(1);
+  }, [debouncedSearch, selectedStatus, selectedWorkflow, currentEnvironmentId]);
 
   const handleSort = (field: SortField) => {
     if (sortField === field) {
@@ -244,12 +197,12 @@ export function ExecutionsPage() {
   };
 
   const clearFilters = () => {
-    setSearchQuery('');
+    setSearchInput('');
     setSelectedStatus('');
     setSelectedWorkflow('');
   };
 
-  const hasActiveFilters = searchQuery || selectedStatus || selectedWorkflow;
+  const hasActiveFilters = searchInput || selectedStatus || selectedWorkflow;
 
   const openExecution = (executionId: string, workflowId: string) => {
     if (currentEnvironment?.baseUrl) {
@@ -370,8 +323,8 @@ export function ExecutionsPage() {
                 <Input
                   id="search"
                   placeholder="Search by workflow name..."
-                  value={searchQuery}
-                  onChange={(e) => setSearchQuery(e.target.value)}
+                  value={searchInput}
+                  onChange={(e) => setSearchInput(e.target.value)}
                   className="pl-8"
                 />
               </div>
@@ -452,9 +405,9 @@ export function ExecutionsPage() {
           </CardDescription>
         </CardHeader>
         <CardContent>
-          {isLoading ? (
+          {isLoading && !isFetching ? (
             <div className="text-center py-8">Loading executions...</div>
-          ) : totalExecutions === 0 ? (
+          ) : totalExecutions === 0 && !isFetching ? (
             <div className="text-center py-8 text-muted-foreground">
               {hasActiveFilters ? 'No executions match your filters' : 'No executions found'}
             </div>
@@ -480,7 +433,7 @@ export function ExecutionsPage() {
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {paginatedExecutions.map((execution) => (
+                  {executions.map((execution) => (
                     <TableRow key={execution.id}>
                       <TableCell className="font-medium">
                         <Link
@@ -543,16 +496,19 @@ export function ExecutionsPage() {
                     </select>
                   </div>
                   <div className="text-sm text-muted-foreground">
-                    Showing {((currentPage - 1) * pageSize) + 1} to {Math.min(currentPage * pageSize, totalExecutions)} of {totalExecutions} executions
+                    Showing {totalExecutions > 0 ? ((currentPage - 1) * pageSize) + 1 : 0} to {Math.min(currentPage * pageSize, totalExecutions)} of {totalExecutions} executions
                   </div>
                 </div>
 
                 <div className="flex items-center gap-2">
+                  {isFetching && (
+                    <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
+                  )}
                   <Button
                     variant="outline"
                     size="sm"
                     onClick={() => setCurrentPage(1)}
-                    disabled={currentPage === 1}
+                    disabled={currentPage === 1 || isFetching}
                   >
                     First
                   </Button>
@@ -560,20 +516,20 @@ export function ExecutionsPage() {
                     variant="outline"
                     size="sm"
                     onClick={() => setCurrentPage(currentPage - 1)}
-                    disabled={currentPage === 1}
+                    disabled={currentPage === 1 || isFetching}
                   >
                     Previous
                   </Button>
                   <div className="flex items-center gap-1">
                     <span className="text-sm">
-                      Page {currentPage} of {totalPages}
+                      Page {currentPage} of {totalPages || 1}
                     </span>
                   </div>
                   <Button
                     variant="outline"
                     size="sm"
                     onClick={() => setCurrentPage(currentPage + 1)}
-                    disabled={currentPage === totalPages}
+                    disabled={currentPage >= totalPages || isFetching}
                   >
                     Next
                   </Button>
@@ -581,7 +537,7 @@ export function ExecutionsPage() {
                     variant="outline"
                     size="sm"
                     onClick={() => setCurrentPage(totalPages)}
-                    disabled={currentPage === totalPages}
+                    disabled={currentPage >= totalPages || isFetching}
                   >
                     Last
                   </Button>

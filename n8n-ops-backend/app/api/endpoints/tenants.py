@@ -1588,6 +1588,18 @@ async def impersonate_tenant_user(
         # Guardrail: never impersonate another platform admin
         from app.core.platform_admin import is_platform_admin
         if is_platform_admin(user_id):
+            from app.api.endpoints.admin_audit import create_audit_log
+            await create_audit_log(
+                action_type="IMPERSONATION_BLOCKED",
+                action=f"Blocked impersonation attempt for platform admin user_id={user_id}",
+                actor_id=actor_id,
+                actor_email=actor.get("email"),
+                actor_name=actor.get("name"),
+                tenant_id=tenant_id,
+                resource_type="impersonation",
+                resource_id=user_id,
+                metadata={"target_user_id": user_id, "reason": "target_is_platform_admin"},
+            )
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Cannot impersonate another Platform Admin")
 
         # End any existing active session for this actor

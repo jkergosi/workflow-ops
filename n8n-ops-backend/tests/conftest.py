@@ -357,3 +357,99 @@ def frozen_time():
 def fixed_datetime():
     """Return a fixed datetime for deterministic tests."""
     return datetime(2024, 1, 15, 10, 0, 0)
+
+
+# ============ Testkit Fixtures ============
+
+
+@pytest.fixture
+def n8n_factory():
+    """N8N response factory for generating test data."""
+    from tests.testkit import N8nResponseFactory
+    return N8nResponseFactory
+
+
+@pytest.fixture
+def github_factory():
+    """GitHub response factory for generating test data."""
+    from tests.testkit import GitHubResponseFactory
+    return GitHubResponseFactory
+
+
+@pytest.fixture
+def stripe_factory():
+    """Stripe event factory for generating test data."""
+    from tests.testkit import StripeEventFactory
+    return StripeEventFactory
+
+
+@pytest.fixture
+def database_seeder():
+    """Database seeder factory for creating test records."""
+    from tests.testkit import DatabaseSeeder
+    return DatabaseSeeder
+
+
+@pytest.fixture
+def testkit(n8n_factory, github_factory, stripe_factory, database_seeder):
+    """
+    Combined testkit fixture providing access to all factories.
+    
+    Usage:
+        def test_something(testkit):
+            workflow = testkit.n8n.workflow({"id": "123"})
+            setup = testkit.db.create_full_tenant_setup()
+    """
+    class Testkit:
+        n8n = n8n_factory
+        github = github_factory
+        stripe = stripe_factory
+        db = database_seeder
+    
+    return Testkit
+
+
+@pytest.fixture
+def n8n_http_mock():
+    """
+    N8N HTTP mock fixture for mocking n8n API calls.
+    
+    Usage:
+        def test_something(n8n_http_mock):
+            mock = n8n_http_mock("https://dev.n8n.example.com")
+            with mock:
+                mock.mock_get_workflows([...])
+                # Make API calls - they will be mocked
+    """
+    from tests.testkit import N8nHttpMock
+    return N8nHttpMock
+
+
+@pytest.fixture
+def github_http_mock():
+    """
+    GitHub HTTP mock fixture for mocking GitHub API calls.
+    
+    Usage:
+        def test_something(github_http_mock):
+            mock = github_http_mock()
+            with mock:
+                mock.mock_get_repo("owner", "repo")
+                # Make API calls - they will be mocked
+    """
+    from tests.testkit import GitHubHttpMock
+    return GitHubHttpMock
+
+
+@pytest.fixture
+def stripe_webhook_mock():
+    """
+    Stripe webhook mock fixture for generating webhook signatures.
+    
+    Usage:
+        def test_something(stripe_webhook_mock):
+            mock = stripe_webhook_mock("whsec_test_secret")
+            headers = mock.create_webhook_headers(payload)
+    """
+    from tests.testkit import StripeWebhookMock
+    return StripeWebhookMock

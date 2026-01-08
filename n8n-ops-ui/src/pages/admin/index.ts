@@ -18,3 +18,4 @@ export { SupportConfigPage } from './SupportConfigPage';
 export { SupportRequestsPage } from './SupportRequestsPage';
 export { DriftPoliciesPage } from './DriftPoliciesPage';
 export { TenantProvidersPage } from './TenantProvidersPage';
+export { RetentionSettingsPage } from './RetentionSettingsPage';

@@ -62,7 +62,7 @@ import {
   Info,
   Eye,
 } from 'lucide-react';
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { toast } from 'sonner';
 import {
   AlertDialog,
@@ -250,72 +250,46 @@ export function EnvironmentDetailPage() {
 
   const recentJobs = Array.isArray(jobsData) ? jobsData.slice(0, 20) : [];
 
+  const handleProgressEvent = useCallback((eventType: string, payload: any) => {
+    const envId = payload.environmentId || payload.environment_id;
+    if (envId !== id) return;
+
+    setActiveJobs((prev) => ({
+      ...prev,
+      [envId]: {
+        jobId: payload.jobId || payload.job_id,
+        jobType: eventType === 'sync.progress' ? 'sync' :
+                 eventType === 'backup.progress' ? 'backup' : 'restore',
+        status: payload.status || 'running',
+        currentStep: payload.currentStep || payload.current_step,
+        current: payload.current || 0,
+        total: payload.total || 1,
+        message: payload.message,
+        currentWorkflowName: payload.currentWorkflowName || payload.current_workflow_name,
+        errors: payload.errors,
+      },
+    }));
+
+    if (payload.status === 'completed' || payload.status === 'failed') {
+      setTimeout(() => {
+        setActiveJobs((prev) => {
+          const next = { ...prev };
+          delete next[envId];
+          return next;
+        });
+        queryClient.invalidateQueries({ queryKey: ['environment', id] });
+        queryClient.invalidateQueries({ queryKey: ['environment-jobs', id] });
+        queryClient.invalidateQueries({ queryKey: ['workflows', id] });
+        queryClient.invalidateQueries({ queryKey: ['snapshots', id] });
+      }, 10000);
+    }
+  }, [id, queryClient]);
+
   // Subscribe to background job updates
   useBackgroundJobsSSE({
     enabled: !isLoading && !!id,
+    onProgressEvent: handleProgressEvent,
   });
-
-  // Listen to SSE events and update active jobs
-  useEffect(() => {
-    const handleSSEEvent = (eventType: string) => (event: MessageEvent) => {
-      try {
-        const payload = JSON.parse(event.data);
-        const envId = payload.environmentId || payload.environment_id;
-
-        if (envId === id) {
-          setActiveJobs((prev) => ({
-            ...prev,
-            [envId]: {
-              jobId: payload.jobId || payload.job_id,
-              jobType: eventType === 'sync.progress' ? 'sync' :
-                       eventType === 'backup.progress' ? 'backup' : 'restore',
-              status: payload.status || 'running',
-              currentStep: payload.currentStep || payload.current_step,
-              current: payload.current || 0,
-              total: payload.total || 1,
-              message: payload.message,
-              currentWorkflowName: payload.currentWorkflowName || payload.current_workflow_name,
-              errors: payload.errors,
-            },
-          }));
-
-          // Remove from active jobs if completed or failed (after a delay)
-          if (payload.status === 'completed' || payload.status === 'failed') {
-            setTimeout(() => {
-              setActiveJobs((prev) => {
-                const next = { ...prev };
-                delete next[envId];
-                return next;
-              });
-              // Refresh data
-              queryClient.invalidateQueries({ queryKey: ['environment', id] });
-              queryClient.invalidateQueries({ queryKey: ['environment-jobs', id] });
-              queryClient.invalidateQueries({ queryKey: ['workflows', id] });
-              queryClient.invalidateQueries({ queryKey: ['snapshots', id] });
-            }, 10000);
-          }
-        }
-      } catch (error) {
-        console.error('[SSE] Failed to parse event:', error, event.data);
-      }
-    };
-
-    const baseUrl = import.meta.env.VITE_API_BASE_URL || '/api/v1';
-    const token = localStorage.getItem('auth_token');
-    const url = token
-      ? `${baseUrl}/sse/stream?token=${encodeURIComponent(token)}`
-      : `${baseUrl}/sse/stream`;
-
-    const eventSource = new EventSource(url, { withCredentials: true });
-
-    eventSource.addEventListener('sync.progress', handleSSEEvent('sync.progress'));
-    eventSource.addEventListener('backup.progress', handleSSEEvent('backup.progress'));
-    eventSource.addEventListener('restore.progress', handleSSEEvent('restore.progress'));
-
-    return () => {
-      eventSource.close();
-    };
-  }, [id, queryClient]);
 
   // Mutations
 

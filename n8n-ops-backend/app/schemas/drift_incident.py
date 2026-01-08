@@ -63,6 +63,12 @@ class DriftIncidentTransition(BaseModel):
     status: DriftIncidentStatus
     reason: Optional[str] = None
     ticket_ref: Optional[str] = None
+    admin_override: bool = Field(
+        default=False,
+        description="Admin-only flag to bypass state transition validation rules. "
+                    "Allows admins to force transitions that would normally be invalid "
+                    "(e.g., skipping required states or reopening closed incidents)."
+    )
 
 
 class DriftIncidentAcknowledge(BaseModel):
@@ -71,6 +77,19 @@ class DriftIncidentAcknowledge(BaseModel):
     owner_user_id: Optional[str] = None
     ticket_ref: Optional[str] = None
     expires_at: Optional[datetime] = None  # Agency+ TTL
+    admin_override: bool = Field(
+        default=False,
+        description="Admin-only flag to bypass state transition validation rules."
+    )
+
+
+class DriftIncidentStabilize(BaseModel):
+    """Stabilize a drift incident."""
+    reason: Optional[str] = None
+    admin_override: bool = Field(
+        default=False,
+        description="Admin-only flag to bypass state transition validation rules."
+    )
 
 
 class DriftIncidentResolve(BaseModel):
@@ -78,6 +97,31 @@ class DriftIncidentResolve(BaseModel):
     resolution_type: ResolutionType
     reason: Optional[str] = None
     resolution_details: Optional[Dict[str, Any]] = None
+    admin_override: bool = Field(
+        default=False,
+        description="Admin-only flag to bypass state transition validation rules."
+    )
+
+
+class DriftIncidentClose(BaseModel):
+    """Close a drift incident.
+
+    Validation requirements depend on current incident status:
+    - Closing from detected/acknowledged/stabilized: requires resolution_type AND reason
+    - Closing from reconciled: requires reason (resolution notes)
+    """
+    reason: Optional[str] = Field(
+        None,
+        description="Resolution notes explaining the closure. Required for all closures."
+    )
+    resolution_type: Optional[ResolutionType] = Field(
+        None,
+        description="How the incident was resolved. Required when closing from pre-reconciliation states (detected/acknowledged/stabilized)."
+    )
+    admin_override: bool = Field(
+        default=False,
+        description="Admin-only flag to bypass state transition validation rules."
+    )
 
 
 class DriftIncidentResponse(BaseModel):

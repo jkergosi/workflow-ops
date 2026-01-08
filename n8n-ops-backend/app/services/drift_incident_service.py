@@ -6,7 +6,7 @@ Supports retention and soft-delete:
 - payload_purged_at tracks when payload was removed
 - payload_available computed field for UI convenience
 """
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional
 from fastapi import HTTPException, status
 
@@ -122,6 +122,75 @@ class DriftIncidentService:
         except Exception:
             return None
 
+    async def _check_duplicate_incident(
+        self,
+        tenant_id: str,
+        environment_id: str,
+        affected_workflows: Optional[List[AffectedWorkflow]] = None,
+        drift_snapshot: Optional[Dict[str, Any]] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """Check if a duplicate incident exists based on content similarity.
+
+        Returns the duplicate incident if found, None otherwise.
+
+        Duplicate detection strategy:
+        1. First check for active incidents (highest priority - prevent duplicates)
+        2. Then check recent incidents (last 24 hours) with matching affected workflows
+        3. Compare drift snapshots if available for exact match detection
+        """
+        # Check for active incident (non-closed)
+        active_incident = await self.get_active_incident_for_environment(tenant_id, environment_id)
+        if active_incident:
+            return active_incident
+
+        # If no affected workflows provided, skip detailed duplicate check
+        if not affected_workflows:
+            return None
+
+        # Check for recent incidents (last 24 hours) with matching affected workflows
+        try:
+            # Get recent incidents from the last 24 hours
+            cutoff_time = (datetime.utcnow() - timedelta(hours=24)).isoformat()
+
+            response = db_service.client.table("drift_incidents").select(
+                "*"
+            ).eq("tenant_id", tenant_id).eq(
+                "environment_id", environment_id
+            ).eq("is_deleted", False).gte(
+                "detected_at", cutoff_time
+            ).order("detected_at", desc=True).execute()
+
+            if not response.data:
+                return None
+
+            # Extract workflow IDs from incoming request
+            incoming_workflow_ids = {w.workflow_id for w in affected_workflows}
+
+            # Check each recent incident for matching workflows
+            for incident in response.data:
+                existing_workflows = incident.get("affected_workflows", [])
+                existing_workflow_ids = {
+                    w.get("workflow_id") for w in existing_workflows if w.get("workflow_id")
+                }
+
+                # If the workflow sets match exactly, this is likely a duplicate
+                if incoming_workflow_ids == existing_workflow_ids and len(incoming_workflow_ids) > 0:
+                    # If drift snapshots are available, compare them for exact match
+                    if drift_snapshot and incident.get("drift_snapshot"):
+                        # For exact duplicate detection, compare snapshot structure
+                        # This is a simplified comparison - in production might need deep comparison
+                        if drift_snapshot == incident.get("drift_snapshot"):
+                            return incident
+                    else:
+                        # If no snapshots, matching workflows is sufficient
+                        return incident
+
+            return None
+
+        except Exception:
+            # If duplicate check fails, don't block incident creation
+            return None
+
     async def create_incident(
         self,
         tenant_id: str,
@@ -132,16 +201,28 @@ class DriftIncidentService:
         drift_snapshot: Optional[Dict[str, Any]] = None,
         severity: Optional[DriftSeverity] = None,
     ) -> Dict[str, Any]:
-        """Create a new drift incident."""
-        # Check if there's already an active incident
-        existing = await self.get_active_incident_for_environment(tenant_id, environment_id)
+        """Create a new drift incident with duplicate detection."""
+        # Check for duplicate incidents (active or recent with same workflows)
+        existing = await self._check_duplicate_incident(
+            tenant_id, environment_id, affected_workflows, drift_snapshot
+        )
         if existing:
+            # Determine error type based on incident status
+            is_active = existing["status"] != "closed"
+            error_type = "active_incident_exists" if is_active else "duplicate_incident_exists"
+
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
                 detail={
-                    "error": "active_incident_exists",
+                    "error": error_type,
                     "incident_id": existing["id"],
-                    "message": "An active drift incident already exists for this environment",
+                    "incident_status": existing["status"],
+                    "detected_at": existing["detected_at"],
+                    "message": (
+                        "An active drift incident already exists for this environment"
+                        if is_active
+                        else "A duplicate drift incident was recently created (within last 24 hours) with the same affected workflows"
+                    ),
                 },
             )
 
@@ -198,13 +279,24 @@ class DriftIncidentService:
         ticket_ref: Optional[str] = None,
         expires_at: Optional[datetime] = None,
         severity: Optional[DriftSeverity] = None,
+        drift_snapshot: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
-        """Update incident fields (not status transitions)."""
+        """Update incident fields (not status transitions).
+
+        Note: drift_snapshot is immutable and cannot be updated after creation.
+        """
         incident = await self.get_incident(tenant_id, incident_id)
         if not incident:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="Incident not found",
+            )
+
+        # Reject any attempt to modify drift_snapshot after creation
+        if drift_snapshot is not None:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="drift_snapshot is immutable and cannot be modified after incident creation",
             )
 
         update_data = {"updated_at": datetime.utcnow().isoformat()}
@@ -238,9 +330,26 @@ class DriftIncidentService:
             )
 
     def _validate_transition(
-        self, current_status: str, new_status: DriftIncidentStatus
+        self, current_status: str, new_status: DriftIncidentStatus, admin_override: bool = False
     ) -> bool:
-        """Check if a status transition is valid."""
+        """Check if a status transition is valid.
+
+        Args:
+            current_status: Current incident status
+            new_status: Desired new status
+            admin_override: If True, allows any transition (admin bypass)
+
+        Returns:
+            True if transition is valid or admin override is enabled
+        """
+        # Admin override allows any transition except FROM closed state
+        if admin_override:
+            current = DriftIncidentStatus(current_status)
+            # Still enforce that closed is terminal even for admins
+            if current == DriftIncidentStatus.closed:
+                return False
+            return True
+
         current = DriftIncidentStatus(current_status)
         return new_status in VALID_TRANSITIONS.get(current, [])
 
@@ -253,6 +362,7 @@ class DriftIncidentService:
         owner_user_id: Optional[str] = None,
         ticket_ref: Optional[str] = None,
         expires_at: Optional[datetime] = None,
+        admin_override: bool = False,
     ) -> Dict[str, Any]:
         """Acknowledge a drift incident."""
         incident = await self.get_incident(tenant_id, incident_id)
@@ -263,11 +373,11 @@ class DriftIncidentService:
             )
 
         if not self._validate_transition(
-            incident["status"], DriftIncidentStatus.acknowledged
+            incident["status"], DriftIncidentStatus.acknowledged, admin_override
         ):
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Cannot acknowledge incident in '{incident['status']}' status",
+                detail=f"Cannot acknowledge incident in '{incident['status']}' status. Valid transitions: {[s.value for s in VALID_TRANSITIONS.get(DriftIncidentStatus(incident['status']), [])]}",
             )
 
         now = datetime.utcnow().isoformat()
@@ -307,6 +417,7 @@ class DriftIncidentService:
         incident_id: str,
         user_id: str,
         reason: Optional[str] = None,
+        admin_override: bool = False,
     ) -> Dict[str, Any]:
         """Mark incident as stabilized (no new drift changes)."""
         incident = await self.get_incident(tenant_id, incident_id)
@@ -317,11 +428,11 @@ class DriftIncidentService:
             )
 
         if not self._validate_transition(
-            incident["status"], DriftIncidentStatus.stabilized
+            incident["status"], DriftIncidentStatus.stabilized, admin_override
         ):
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Cannot stabilize incident in '{incident['status']}' status",
+                detail=f"Cannot stabilize incident in '{incident['status']}' status. Valid transitions: {[s.value for s in VALID_TRANSITIONS.get(DriftIncidentStatus(incident['status']), [])]}",
             )
 
         now = datetime.utcnow().isoformat()
@@ -355,6 +466,7 @@ class DriftIncidentService:
         resolution_type: ResolutionType,
         reason: Optional[str] = None,
         resolution_details: Optional[Dict[str, Any]] = None,
+        admin_override: bool = False,
     ) -> Dict[str, Any]:
         """Mark incident as reconciled with resolution tracking."""
         incident = await self.get_incident(tenant_id, incident_id)
@@ -365,11 +477,11 @@ class DriftIncidentService:
             )
 
         if not self._validate_transition(
-            incident["status"], DriftIncidentStatus.reconciled
+            incident["status"], DriftIncidentStatus.reconciled, admin_override
         ):
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Cannot reconcile incident in '{incident['status']}' status",
+                detail=f"Cannot reconcile incident in '{incident['status']}' status. Valid transitions: {[s.value for s in VALID_TRANSITIONS.get(DriftIncidentStatus(incident['status']), [])]}",
             )
 
         now = datetime.utcnow().isoformat()
@@ -404,8 +516,17 @@ class DriftIncidentService:
         incident_id: str,
         user_id: str,
         reason: Optional[str] = None,
+        resolution_type: Optional[ResolutionType] = None,
+        admin_override: bool = False,
     ) -> Dict[str, Any]:
-        """Close a drift incident."""
+        """Close a drift incident.
+
+        Validation rules:
+        - If closing from detected/acknowledged/stabilized (without reconciliation):
+          Requires resolution_type and reason to explain why it's being closed
+        - If closing from reconciled status:
+          Requires reason (resolution notes)
+        """
         incident = await self.get_incident(tenant_id, incident_id)
         if not incident:
             raise HTTPException(
@@ -414,12 +535,40 @@ class DriftIncidentService:
             )
 
         if not self._validate_transition(
-            incident["status"], DriftIncidentStatus.closed
+            incident["status"], DriftIncidentStatus.closed, admin_override
         ):
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Cannot close incident in '{incident['status']}' status",
+                detail=f"Cannot close incident in '{incident['status']}' status. Valid transitions: {[s.value for s in VALID_TRANSITIONS.get(DriftIncidentStatus(incident['status']), [])]}",
             )
+
+        # Validate closure requirements based on current status
+        current_status = DriftIncidentStatus(incident["status"])
+
+        # If closing from pre-reconciliation states, require resolution_type and reason
+        if current_status in [
+            DriftIncidentStatus.detected,
+            DriftIncidentStatus.acknowledged,
+            DriftIncidentStatus.stabilized
+        ]:
+            if not resolution_type:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"Closing incident from '{current_status.value}' status requires resolution_type to explain how the incident was resolved",
+                )
+            if not reason:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"Closing incident from '{current_status.value}' status requires reason to explain why it's being closed without full reconciliation",
+                )
+
+        # If closing from reconciled status, require resolution notes (reason)
+        if current_status == DriftIncidentStatus.reconciled:
+            if not reason:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Closing reconciled incident requires reason (resolution notes)",
+                )
 
         now = datetime.utcnow().isoformat()
         update_data = {
@@ -431,6 +580,8 @@ class DriftIncidentService:
 
         if reason:
             update_data["reason"] = reason
+        if resolution_type:
+            update_data["resolution_type"] = resolution_type.value
 
         try:
             response = db_service.client.table("drift_incidents").update(
@@ -459,7 +610,10 @@ class DriftIncidentService:
         affected_workflows: List[AffectedWorkflow],
         drift_snapshot: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
-        """Update incident with latest drift data."""
+        """Update incident with latest drift data.
+
+        Note: drift_snapshot is immutable after creation and cannot be updated.
+        """
         incident = await self.get_incident(tenant_id, incident_id)
         if not incident:
             raise HTTPException(
@@ -473,13 +627,17 @@ class DriftIncidentService:
                 detail="Cannot update closed incident",
             )
 
+        # Reject any attempt to modify drift_snapshot after creation
+        if drift_snapshot is not None:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="drift_snapshot is immutable and cannot be modified after incident creation",
+            )
+
         update_data = {
             "affected_workflows": [w.model_dump() for w in affected_workflows],
             "updated_at": datetime.utcnow().isoformat(),
         }
-
-        if drift_snapshot:
-            update_data["drift_snapshot"] = drift_snapshot
 
         try:
             response = db_service.client.table("drift_incidents").update(

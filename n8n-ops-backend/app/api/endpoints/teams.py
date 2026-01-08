@@ -14,8 +14,10 @@ from app.core.entitlements_gate import require_entitlement
 from app.services.email_service import email_service
 from app.services.auth_service import get_current_user
 from app.services.feature_service import feature_service
+from app.services.entitlements_service import entitlements_service
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 
 # Entitlement gates for RBAC features
@@ -53,28 +55,17 @@ async def get_team_limits(
     user_info: dict = Depends(get_current_user),
     _: dict = Depends(require_entitlement("rbac_basic"))
 ):
-    """Get team member limits based on subscription plan"""
+    """Get team member limits and current usage based on subscription plan"""
     try:
         tenant_id = get_tenant_id(user_info)
-        # Get current active team members count
-        members_response = db_service.client.table("users").select(
-            "id", count="exact"
-        ).eq("tenant_id", tenant_id).eq("status", "active").execute()
 
-        current_members = members_response.count or 0
-
-        # Get plan limits from feature_service (uses tenant_provider_subscriptions)
-        features = await feature_service.get_tenant_features(tenant_id)
-        max_members = features.get("max_team_members")
-
-        can_add_more = True
-        if max_members is not None:
-            can_add_more = current_members < max_members
+        # Use entitlements_service for consistent limit checking
+        can_add, message, current_members, max_members = await entitlements_service.can_add_team_member(tenant_id)
 
         return {
             "current_members": current_members,
             "max_members": max_members,
-            "can_add_more": can_add_more
+            "can_add_more": can_add
         }
 
     except Exception as e:
@@ -120,9 +111,18 @@ async def create_team_member(
     user_info: dict = Depends(get_current_user),
     _: dict = Depends(require_entitlement("rbac_basic"))
 ):
-    """Add a new team member"""
+    """
+    Add a new team member.
+
+    This endpoint enforces plan-based team member limits server-side.
+    The entitlements_service ensures tenants cannot exceed their plan's
+    team member quota (e.g., 1 for Free, 10 for Pro, unlimited for Agency/Enterprise).
+    """
     try:
         tenant_id = get_tenant_id(user_info)
+        user = user_info.get("user", {})
+        user_id = user.get("id")
+
         # Check if email already exists
         existing = db_service.client.table("users").select("id").eq(
             "email", member.email
@@ -134,12 +134,18 @@ async def create_team_member(
                 detail="A user with this email already exists"
             )
 
-        # Check team member limits (trigger will enforce this, but check anyway)
-        limits = await get_team_limits(user_info=user_info)
-        if not limits["can_add_more"]:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail=f"Team member limit reached ({limits['max_members']}). Upgrade your plan to add more members."
+        # Enforce team member limit with server-side validation
+        # This prevents bypassing the limit through direct API calls
+        can_add, message, current, limit = await entitlements_service.can_add_team_member(tenant_id)
+        if not can_add:
+            logger.warning(
+                f"Team member creation blocked for tenant {tenant_id}: "
+                f"{current}/{limit} members (limit reached)"
+            )
+            await entitlements_service.enforce_team_member_limit(
+                tenant_id=tenant_id,
+                user_id=user_id,
+                endpoint="/api/teams"
             )
 
         # Generate invitation token
@@ -175,6 +181,11 @@ async def create_team_member(
                 detail="Failed to create team member"
             )
 
+        logger.info(
+            f"Team member '{member.email}' invited for tenant {tenant_id}. "
+            f"Usage: {current + 1}/{limit}"
+        )
+
         # Send invitation email
         try:
             email_sent = await email_service.send_team_invitation(
@@ -187,10 +198,8 @@ async def create_team_member(
             )
             
             if not email_sent:
-                logger = logging.getLogger(__name__)
                 logger.warning(f"Failed to send invitation email to {member.email}, but team member was created")
         except Exception as email_error:
-            logger = logging.getLogger(__name__)
             logger.error(f"Error sending invitation email to {member.email}: {str(email_error)}")
             # Don't fail the request if email fails
 
@@ -365,10 +374,8 @@ async def resend_invitation(
             )
             
             if not email_sent:
-                logger = logging.getLogger(__name__)
                 logger.warning(f"Failed to resend invitation email to {member.data.get('email')}")
         except Exception as email_error:
-            logger = logging.getLogger(__name__)
             logger.error(f"Error resending invitation email: {str(email_error)}")
 
         return {"message": "Invitation sent successfully"}

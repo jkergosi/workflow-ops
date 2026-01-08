@@ -10,6 +10,7 @@ from uuid import uuid4
 
 from app.services.database import db_service
 from app.services.promotion_service import normalize_workflow_for_comparison
+from app.schemas.canonical_workflow import WorkflowMappingStatus
 
 logger = logging.getLogger(__name__)
 
@@ -17,15 +18,96 @@ logger = logging.getLogger(__name__)
 def compute_workflow_hash(workflow: Dict[str, Any]) -> str:
     """
     Compute SHA256 hash of normalized workflow content.
-    
+
     Uses normalize_workflow_for_comparison() as the single source of truth
     for normalization, then hashes the sorted JSON representation.
-    
+
     Returns hex digest (no prefix).
     """
     normalized = normalize_workflow_for_comparison(workflow)
     json_str = json.dumps(normalized, sort_keys=True)
     return hashlib.sha256(json_str.encode()).hexdigest()
+
+
+def compute_workflow_mapping_status(
+    canonical_id: Optional[str],
+    n8n_workflow_id: Optional[str],
+    is_present_in_n8n: bool,
+    is_deleted: bool = False,
+    is_ignored: bool = False
+) -> WorkflowMappingStatus:
+    """
+    Compute the correct workflow mapping status based on precedence rules.
+
+    Implements the status precedence rules defined in WorkflowMappingStatus:
+    1. DELETED - Takes precedence over all other states
+    2. IGNORED - Takes precedence over operational states
+    3. MISSING - Workflow was mapped but disappeared from n8n
+    4. UNTRACKED - Workflow exists in n8n but has no canonical_id
+    5. LINKED - Normal operational state with both IDs
+
+    Args:
+        canonical_id: The canonical workflow ID (None if not linked)
+        n8n_workflow_id: The n8n workflow ID (None if not synced)
+        is_present_in_n8n: Whether workflow currently exists in n8n environment
+        is_deleted: Whether the mapping/workflow is soft-deleted
+        is_ignored: Whether the workflow is explicitly marked as ignored
+
+    Returns:
+        The computed WorkflowMappingStatus based on precedence rules
+
+    Examples:
+        # Deleted workflow (highest precedence)
+        >>> compute_workflow_mapping_status("c1", "w1", True, is_deleted=True)
+        WorkflowMappingStatus.DELETED
+
+        # Ignored workflow
+        >>> compute_workflow_mapping_status("c1", "w1", True, is_ignored=True)
+        WorkflowMappingStatus.IGNORED
+
+        # Missing workflow (was linked, disappeared from n8n)
+        >>> compute_workflow_mapping_status("c1", "w1", False)
+        WorkflowMappingStatus.MISSING
+
+        # Untracked workflow (exists in n8n, no canonical_id)
+        >>> compute_workflow_mapping_status(None, "w1", True)
+        WorkflowMappingStatus.UNTRACKED
+
+        # Linked workflow (normal state)
+        >>> compute_workflow_mapping_status("c1", "w1", True)
+        WorkflowMappingStatus.LINKED
+    """
+    # Precedence 1: DELETED overrides everything
+    if is_deleted:
+        return WorkflowMappingStatus.DELETED
+
+    # Precedence 2: IGNORED overrides operational states
+    if is_ignored:
+        return WorkflowMappingStatus.IGNORED
+
+    # Precedence 3: MISSING if workflow was mapped but disappeared from n8n
+    # A workflow is considered "was mapped" if it has n8n_workflow_id
+    if not is_present_in_n8n and n8n_workflow_id:
+        return WorkflowMappingStatus.MISSING
+
+    # Precedence 4: UNTRACKED if no canonical_id but exists in n8n
+    if not canonical_id and is_present_in_n8n:
+        return WorkflowMappingStatus.UNTRACKED
+
+    # Precedence 5: LINKED as default operational state
+    # This requires both canonical_id and is_present_in_n8n
+    if canonical_id and is_present_in_n8n:
+        return WorkflowMappingStatus.LINKED
+
+    # Edge case: if we get here, the mapping is in an inconsistent state
+    # This could happen during onboarding or partial sync operations
+    # Default to UNTRACKED as the safest fallback
+    logger.warning(
+        f"Inconsistent workflow mapping state: canonical_id={canonical_id}, "
+        f"n8n_workflow_id={n8n_workflow_id}, is_present_in_n8n={is_present_in_n8n}, "
+        f"is_deleted={is_deleted}, is_ignored={is_ignored}. Defaulting to UNTRACKED."
+    )
+    return WorkflowMappingStatus.UNTRACKED
 
 
 class CanonicalWorkflowService:

@@ -116,10 +116,14 @@ class CanonicalEnvSyncService:
             start_index = checkpoint.get("last_processed_index", 0) if checkpoint else 0
             
             # Process in batches
+            # Transaction boundary: Each batch is an implicit transaction unit
+            # - Individual workflow failures within a batch are isolated (caught per-workflow)
+            # - Batch checkpoint ensures resumability after partial completion
+            # - Database upserts provide atomicity for each workflow mapping
             for batch_start in range(start_index, total_workflows, BATCH_SIZE):
                 batch_end = min(batch_start + BATCH_SIZE, total_workflows)
                 batch_summaries = n8n_workflow_summaries[batch_start:batch_end]
-                
+
                 # Fetch full workflow data for this batch
                 batch_workflows = []
                 for summary in batch_summaries:
@@ -132,7 +136,7 @@ class CanonicalEnvSyncService:
                             logger.warning(f"Failed to fetch full workflow {workflow_id}: {str(e)}, using summary")
                             # Fallback to summary if full fetch fails
                             batch_workflows.append(summary)
-                
+
                 # Update progress if job_id provided (phase: updating_environment_state)
                 if job_id:
                     await background_job_service.update_job_status(
@@ -146,7 +150,7 @@ class CanonicalEnvSyncService:
                             "current_step": "updating_environment_state"
                         }
                     )
-                    
+
                     # Emit SSE event for real-time updates (phase-based, not batch-based)
                     if tenant_id_for_sse:
                         try:
@@ -163,19 +167,20 @@ class CanonicalEnvSyncService:
                             )
                         except Exception as sse_err:
                             logger.warning(f"Failed to emit SSE progress event: {str(sse_err)}")
-                
+
                 # Determine environment class for sync behavior
                 env_class = environment.get("environment_class", "dev").lower()
                 is_dev = env_class == "dev"
-                
-                # Process batch
+
+                # Process batch with transaction safety
+                # Each workflow in batch has error isolation via try-catch in _process_workflow_batch
                 batch_results = await CanonicalEnvSyncService._process_workflow_batch(
                     tenant_id,
                     environment_id,
                     batch_workflows,
                     is_dev=is_dev
                 )
-                
+
                 # Aggregate results
                 results["workflows_synced"] += batch_results["synced"]
                 results["workflows_skipped"] += batch_results.get("skipped", 0)
@@ -254,12 +259,18 @@ class CanonicalEnvSyncService:
     ) -> Dict[str, Any]:
         """
         Process a batch of workflows.
-        
+
         Greenfield Sync Model:
         - DEV (is_dev=True): Full sync - update workflow_data + env_content_hash + n8n_updated_at
         - Non-DEV (is_dev=False): Observational sync - update env_content_hash + n8n_updated_at only
-        
+
         Short-circuit optimization: If n8n_updated_at is unchanged, skip processing.
+
+        Transaction Safety:
+        - Each workflow is processed independently within a try-catch block
+        - Individual workflow failures don't affect other workflows in the batch
+        - Database operations use upsert with on_conflict for idempotency
+        - Per-workflow errors are collected and returned for reporting
         """
         batch_results = {
             "synced": 0,
@@ -480,7 +491,34 @@ class CanonicalEnvSyncService:
         workflow_data: Optional[Dict[str, Any]] = None,
         n8n_updated_at: Optional[str] = None
     ) -> Dict[str, Any]:
-        """Create a new workflow environment mapping"""
+        """
+        Create a new workflow environment mapping.
+
+        This function is idempotent and safe to retry:
+        - Uses upsert with unique constraint on (tenant_id, environment_id, n8n_workflow_id)
+        - Checks for existing mappings to detect unexpected duplicates
+        - Logs warnings if duplicate creation is attempted (indicates logic bug)
+        - Always returns successfully, either creating or updating as needed
+        """
+        # Idempotency check: Verify if mapping already exists
+        # This helps detect if _create_workflow_mapping is being called inappropriately
+        existing_mapping = await CanonicalEnvSyncService._get_mapping_by_n8n_id(
+            tenant_id,
+            environment_id,
+            n8n_workflow_id
+        )
+
+        if existing_mapping:
+            # Mapping already exists - this indicates a potential logic issue
+            # The caller should have used _update_workflow_mapping instead
+            logger.warning(
+                f"Idempotency check: Mapping already exists for n8n_workflow_id={n8n_workflow_id} "
+                f"in env={environment_id}. Proceeding with upsert (safe to retry). "
+                f"Existing: canonical_id={existing_mapping.get('canonical_id')}, "
+                f"status={existing_mapping.get('status')}. "
+                f"New: canonical_id={canonical_id}, status={status.value if status else None}"
+            )
+
         mapping_data = {
             "tenant_id": tenant_id,
             "environment_id": environment_id,
@@ -491,29 +529,45 @@ class CanonicalEnvSyncService:
             "linked_by_user_id": linked_by_user_id,
             "status": status.value if status else None,
         }
-        
+
         # Store workflow_data only if provided (DEV mode)
         if workflow_data is not None:
             mapping_data["workflow_data"] = workflow_data
-        
+
         # Store n8n_updated_at for short-circuit optimization
         if n8n_updated_at is not None:
             mapping_data["n8n_updated_at"] = n8n_updated_at
-        
+
         # Only include canonical_id if it's not None
         if canonical_id is not None:
             mapping_data["canonical_id"] = canonical_id
-        
+
         try:
-            # Use unique constraint on (tenant_id, environment_id, n8n_workflow_id)
+            # Use upsert with unique constraint on (tenant_id, environment_id, n8n_workflow_id)
+            # This ensures idempotency: if the row exists, it will be updated; otherwise, created
             response = (
                 db_service.client.table("workflow_env_map")
                 .upsert(mapping_data, on_conflict="tenant_id,environment_id,n8n_workflow_id")
                 .execute()
             )
+
+            # Log successful creation/update for audit trail
+            if existing_mapping:
+                logger.info(
+                    f"Updated existing mapping via upsert for n8n_workflow_id={n8n_workflow_id} "
+                    f"in env={environment_id}"
+                )
+            else:
+                logger.debug(
+                    f"Created new mapping for n8n_workflow_id={n8n_workflow_id} "
+                    f"in env={environment_id}, canonical_id={canonical_id}, status={status.value if status else None}"
+                )
+
             return response.data[0] if response.data else mapping_data
         except Exception as e:
-            logger.error(f"Error creating workflow mapping: {str(e)}")
+            logger.error(
+                f"Error creating/updating workflow mapping for n8n_workflow_id={n8n_workflow_id}: {str(e)}"
+            )
             raise
     
     @staticmethod
@@ -603,10 +657,15 @@ class CanonicalEnvSyncService:
     ) -> int:
         """
         Mark workflows as missing if they no longer exist in n8n.
-        
+
         Preserves n8n_workflow_id for history/audit.
-        
+
         Returns count of workflows marked as missing.
+
+        Transaction Safety:
+        - Each workflow update is independent (no cross-workflow dependencies)
+        - Individual workflow update failures don't affect others
+        - Update operations are idempotent (safe to retry)
         """
         try:
             # Get all mappings for this environment
@@ -619,27 +678,33 @@ class CanonicalEnvSyncService:
                 .neq("status", "deleted")
                 .execute()
             )
-            
+
             missing_count = 0
             for mapping in (response.data or []):
                 n8n_id = mapping.get("n8n_workflow_id")
                 if n8n_id and n8n_id not in existing_n8n_ids:
-                    # Workflow no longer exists in n8n - mark as missing
-                    # Preserve n8n_workflow_id for history
-                    # Update last_env_sync_at when marking as missing
-                    update_filter = (
-                        db_service.client.table("workflow_env_map")
-                        .update({
-                            "status": WorkflowMappingStatus.MISSING.value,
-                            "last_env_sync_at": datetime.utcnow().isoformat()
-                        })
-                        .eq("tenant_id", tenant_id)
-                        .eq("environment_id", environment_id)
-                        .eq("n8n_workflow_id", n8n_id)
-                    )
-                    update_filter.execute()
-                    missing_count += 1
-            
+                    # Transaction boundary: Each workflow update isolated via try-catch
+                    try:
+                        # Workflow no longer exists in n8n - mark as missing
+                        # Preserve n8n_workflow_id for history
+                        # Update last_env_sync_at when marking as missing
+                        update_filter = (
+                            db_service.client.table("workflow_env_map")
+                            .update({
+                                "status": WorkflowMappingStatus.MISSING.value,
+                                "last_env_sync_at": datetime.utcnow().isoformat()
+                            })
+                            .eq("tenant_id", tenant_id)
+                            .eq("environment_id", environment_id)
+                            .eq("n8n_workflow_id", n8n_id)
+                        )
+                        update_filter.execute()
+                        missing_count += 1
+                    except Exception as update_err:
+                        # Isolate failure to this workflow only
+                        logger.warning(f"Failed to mark workflow {n8n_id} as missing: {str(update_err)}")
+                        # Continue processing other workflows
+
             return missing_count
         except Exception as e:
             logger.error(f"Error marking missing workflows: {str(e)}")

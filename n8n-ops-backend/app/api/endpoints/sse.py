@@ -50,6 +50,10 @@ def get_tenant_id(user_info: dict) -> str:
     return tenant_id
 
 
+def _get_last_event_id(request: Request) -> Optional[str]:
+    return request.headers.get("last-event-id") or request.query_params.get("lastEventId")
+
+
 def _attach_progress_fields(deployment: dict, workflows: Optional[list] = None) -> dict:
     """
     Attach progress fields derived from summary_json.
@@ -250,6 +254,9 @@ async def sse_deployments_stream(
     After: streams incremental events (deployment.upsert, deployment.progress, counts.update).
     """
     tenant_id = get_tenant_id(user_info)
+    last_event_id = _get_last_event_id(request)
+    if last_event_id:
+        logger.info(f"SSE deployments reconnect detected (last_event_id={last_event_id})")
 
     async def event_generator():
         subscription_id = None
@@ -341,6 +348,9 @@ async def sse_deployment_detail_stream(
     After: streams events for this specific deployment.
     """
     tenant_id = get_tenant_id(user_info)
+    last_event_id = _get_last_event_id(request)
+    if last_event_id:
+        logger.info(f"SSE deployment detail reconnect detected (deployment_id={deployment_id}, last_event_id={last_event_id})")
 
     # Verify deployment exists
     snapshot = await _build_deployment_detail_snapshot(tenant_id, deployment_id)
@@ -732,6 +742,9 @@ async def sse_background_jobs_stream(
     async def event_generator():
         subscription_id = None
         try:
+            last_event_id = _get_last_event_id(request)
+            if last_event_id:
+                logger.info(f"SSE background jobs reconnect detected (scope hints env_id={env_id}, job_id={job_id}, last_event_id={last_event_id})")
             # Determine scope based on filters
             if job_id:
                 scope = f"background_jobs_job:{job_id}"

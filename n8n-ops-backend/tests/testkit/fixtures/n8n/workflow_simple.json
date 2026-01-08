@@ -1,0 +1,46 @@
+{
+  "id": "1",
+  "name": "Simple Test Workflow",
+  "active": true,
+  "createdAt": "2024-01-01T00:00:00.000Z",
+  "updatedAt": "2024-01-01T00:00:00.000Z",
+  "versionId": "v1",
+  "nodes": [
+    {
+      "id": "start-node",
+      "type": "n8n-nodes-base.start",
+      "name": "Start",
+      "position": [250, 300],
+      "parameters": {}
+    },
+    {
+      "id": "http-node",
+      "type": "n8n-nodes-base.httpRequest",
+      "name": "HTTP Request",
+      "position": [450, 300],
+      "parameters": {
+        "url": "https://api.example.com/data",
+        "method": "GET"
+      }
+    }
+  ],
+  "connections": {
+    "Start": {
+      "main": [
+        [
+          {
+            "node": "HTTP Request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "staticData": null,
+  "tags": []
+}
+

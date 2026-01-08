@@ -1,4 +1,32 @@
-"""Admin audit log endpoints."""
+"""Admin audit log endpoints.
+
+IMPORTANT - Impersonation Audit Trail Pattern:
+When a platform admin impersonates a user, audit logs record DUAL attribution:
+- actor_* fields: The impersonator (platform admin who initiated the action)
+- impersonated_* fields: The effective user being impersonated
+- tenant_id: The effective tenant context (impersonated user's tenant)
+
+Example usage with impersonation:
+    from app.services.auth_service import get_current_user
+    from app.api.endpoints.admin_audit import create_audit_log, extract_impersonation_context
+
+    user_context = await get_current_user(credentials)
+    impersonation_ctx = extract_impersonation_context(user_context)
+
+    # During impersonation:
+    # - user_context["actor_user"] is the platform admin
+    # - user_context["user"] is the impersonated user
+    # - impersonation_ctx contains the session and target user info
+
+    await create_audit_log(
+        action_type="WORKFLOW_UPDATED",
+        action="Updated workflow settings",
+        actor_id=user_context.get("actor_user_id") or user_context["user"]["id"],
+        actor_email=user_context.get("actor_user", {}).get("email") or user_context["user"]["email"],
+        tenant_id=user_context["tenant"]["id"],
+        **impersonation_ctx  # Spreads impersonation_session_id, impersonated_user_id, etc.
+    )
+"""
 from fastapi import APIRouter, HTTPException, status, Query, Depends
 from typing import Optional, List
 from datetime import datetime
@@ -68,8 +96,13 @@ class AuditActionType(str, Enum):
     CREDENTIAL_MAPPING_DELETED = "CREDENTIAL_MAPPING_DELETED"
     CREDENTIAL_PREFLIGHT_CHECKED = "CREDENTIAL_PREFLIGHT_CHECKED"
     CREDENTIAL_REWRITE_DURING_PROMOTION = "CREDENTIAL_REWRITE_DURING_PROMOTION"
-    # Promotion validation bypass
+    # Promotion actions
     PROMOTION_VALIDATION_BYPASSED = "PROMOTION_VALIDATION_BYPASSED"
+    PROMOTION_EXECUTED = "PROMOTION_EXECUTED"
+    PROMOTION_ROLLBACK = "PROMOTION_ROLLBACK"
+    # Impersonation actions
+    IMPERSONATION_STARTED = "IMPERSONATION_STARTED"
+    IMPERSONATION_ENDED = "IMPERSONATION_ENDED"
 
 
 class AuditLogResponse(BaseModel):
@@ -91,6 +124,11 @@ class AuditLogResponse(BaseModel):
     reason: Optional[str] = None
     ip_address: Optional[str] = None
     metadata: Optional[dict] = None
+    # Impersonation context fields
+    impersonation_session_id: Optional[str] = None
+    impersonated_user_id: Optional[str] = None
+    impersonated_user_email: Optional[str] = None
+    impersonated_tenant_id: Optional[str] = None
 
     class Config:
         from_attributes = True
@@ -116,6 +154,11 @@ class AuditLogCreate(BaseModel):
     new_value: Optional[dict] = None
     reason: Optional[str] = None
     metadata: Optional[dict] = None
+    # Impersonation context fields
+    impersonation_session_id: Optional[str] = None
+    impersonated_user_id: Optional[str] = None
+    impersonated_user_email: Optional[str] = None
+    impersonated_tenant_id: Optional[str] = None
 
 
 async def create_audit_log(
@@ -136,12 +179,26 @@ async def create_audit_log(
     ip_address: Optional[str] = None,
     user_agent: Optional[str] = None,
     metadata: Optional[dict] = None,
+    # Impersonation context parameters
+    impersonation_session_id: Optional[str] = None,
+    impersonated_user_id: Optional[str] = None,
+    impersonated_user_email: Optional[str] = None,
+    impersonated_tenant_id: Optional[str] = None,
 ) -> dict:
-    """Create an audit log entry.
+    """Create an audit log entry with optional impersonation context.
 
     Args:
         provider: Provider type (n8n, make) for provider-scoped actions.
                   Set to None for platform-scoped actions (tenant, user, plan, etc.)
+        impersonation_session_id: Session ID if action performed during impersonation
+        impersonated_user_id: ID of user being impersonated (effective user)
+        impersonated_user_email: Email of user being impersonated
+        impersonated_tenant_id: Tenant ID of impersonated user
+
+    Note:
+        During impersonation, actor_* fields represent the impersonator (platform admin),
+        while impersonated_* fields represent the effective user being impersonated.
+        The tenant_id field represents the effective tenant context for the action.
     """
     try:
         log_data = {
@@ -162,6 +219,11 @@ async def create_audit_log(
             "ip_address": ip_address,
             "user_agent": user_agent,
             "metadata": metadata,
+            # Impersonation context
+            "impersonation_session_id": impersonation_session_id,
+            "impersonated_user_id": impersonated_user_id,
+            "impersonated_user_email": impersonated_user_email,
+            "impersonated_tenant_id": impersonated_tenant_id,
         }
         # Remove None values
         log_data = {k: v for k, v in log_data.items() if v is not None}
@@ -183,6 +245,8 @@ async def get_audit_logs(
     tenant_id: Optional[str] = Query(None, description="Filter by tenant ID"),
     resource_type: Optional[str] = Query(None, description="Filter by resource type"),
     provider: Optional[str] = Query(None, description="Filter by provider: n8n, make, platform (NULL), or all"),
+    impersonation_session_id: Optional[str] = Query(None, description="Filter by impersonation session ID"),
+    impersonated_user_id: Optional[str] = Query(None, description="Filter by impersonated user ID"),
     search: Optional[str] = Query(None, description="Search in action, resource_name"),
     page: int = Query(1, ge=1),
     page_size: int = Query(50, ge=1, le=100),
@@ -220,6 +284,12 @@ async def get_audit_logs(
                 query = query.is_("provider", "null")
             else:
                 query = query.eq("provider", provider)
+
+        # Impersonation filters
+        if impersonation_session_id:
+            query = query.eq("impersonation_session_id", impersonation_session_id)
+        if impersonated_user_id:
+            query = query.eq("impersonated_user_id", impersonated_user_id)
 
         if search:
             query = query.or_(f"action.ilike.%{search}%,resource_name.ilike.%{search}%,actor_email.ilike.%{search}%")
@@ -325,3 +395,42 @@ async def export_audit_logs(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to export audit logs: {str(e)}"
         )
+
+
+def extract_impersonation_context(user_context: dict) -> dict:
+    """Extract impersonation context from user context dict returned by get_current_user.
+
+    Args:
+        user_context: User context dict from get_current_user dependency
+
+    Returns:
+        Dict with impersonation context fields for create_audit_log:
+        - impersonation_session_id: Session ID if impersonating (or None)
+        - impersonated_user_id: Target user ID if impersonating (or None)
+        - impersonated_user_email: Target user email if impersonating (or None)
+        - impersonated_tenant_id: Target tenant ID if impersonating (or None)
+
+    Example:
+        user_context = await get_current_user(credentials)
+        impersonation_ctx = extract_impersonation_context(user_context)
+        await create_audit_log(
+            action_type="USER_UPDATED",
+            action="Updated user profile",
+            actor_id=user_context["user"]["id"],
+            **impersonation_ctx
+        )
+    """
+    if not user_context.get("impersonating"):
+        return {
+            "impersonation_session_id": None,
+            "impersonated_user_id": None,
+            "impersonated_user_email": None,
+            "impersonated_tenant_id": None,
+        }
+
+    return {
+        "impersonation_session_id": user_context.get("impersonation_session_id"),
+        "impersonated_user_id": user_context.get("impersonated_user_id"),
+        "impersonated_user_email": user_context.get("user", {}).get("email"),
+        "impersonated_tenant_id": user_context.get("impersonated_tenant_id"),
+    }

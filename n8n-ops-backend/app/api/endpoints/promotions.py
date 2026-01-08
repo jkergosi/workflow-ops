@@ -13,6 +13,7 @@ logger = logging.getLogger(__name__)
 from app.services.feature_service import feature_service
 from app.core.feature_gate import require_feature
 from app.core.entitlements_gate import require_entitlement
+from app.core.rbac import require_tenant_admin
 from app.services.auth_service import get_current_user
 from app.services.promotion_service import promotion_service
 from app.services.database import db_service
@@ -1192,14 +1193,24 @@ async def _execute_promotion_background(
     tenant_id: str
 ):
     """
-    Background task to execute promotion - transfers workflows from source to target.
-    Updates job progress as it processes workflows.
+    Background task to execute promotion using atomic promotion service.
+
+    This function now delegates to the atomic promotion service (promotion_service.execute_promotion)
+    which provides:
+    - Snapshot-before-mutate ordering (T002)
+    - Atomic rollback on failure (T003)
+    - Idempotency enforcement (T004)
+    - Policy flag enforcement (T005, T006)
+    - Complete audit trail (T009)
+
+    Updates job progress and deployment status as execution proceeds.
     """
-    from app.services.provider_registry import ProviderRegistry
     from app.schemas.deployment import DeploymentStatus, WorkflowChangeType, WorkflowStatus
+    from app.schemas.promotion import WorkflowSelection
+    from app.schemas.pipeline import PipelineStage
 
     total_workflows = len(selected_workflows)
-    
+
     try:
         # Update job status to running
         await background_job_service.update_job_status(
@@ -1208,34 +1219,21 @@ async def _execute_promotion_background(
             progress={"current": 0, "total": total_workflows, "percentage": 0, "message": "Starting promotion execution"}
         )
 
-        # Get provider from environments (default to n8n for backward compatibility)
-        source_provider = source_env.get("provider", "n8n") or "n8n"
-        target_provider = target_env.get("provider", "n8n") or "n8n"
-        
-        # Create provider adapters using ProviderRegistry
-        logger.info(f"[Job {job_id}] Creating provider adapters - Source: {source_provider}, Target: {target_provider}")
-        source_adapter = ProviderRegistry.get_adapter_for_environment(source_env)
-        target_adapter = ProviderRegistry.get_adapter_for_environment(target_env)
-        
-        # Test connections before proceeding
-        logger.info(f"[Job {job_id}] Testing source environment connection...")
-        source_connected = await source_adapter.test_connection()
-        if not source_connected:
-            raise ValueError(f"Failed to connect to source environment")
-        logger.info(f"[Job {job_id}] Source environment connection successful")
-        
-        logger.info(f"[Job {job_id}] Testing target environment connection...")
-        target_connected = await target_adapter.test_connection()
-        if not target_connected:
-            raise ValueError(f"Failed to connect to target environment")
-        logger.info(f"[Job {job_id}] Target environment connection successful")
+        logger.info(f"[Job {job_id}] Starting atomic promotion execution for promotion {promotion_id}")
 
-        # Create PRE_PROMOTION snapshot BEFORE applying any changes to target environment
-        # This snapshot serves as a rollback point if the promotion fails or needs to be reverted
+        # ============================================================================
+        # CRITICAL: SNAPSHOT-BEFORE-MUTATE INVARIANT (T002)
+        # ============================================================================
+        # A pre-promotion snapshot MUST be created successfully before ANY target
+        # environment mutations occur. This snapshot serves as the atomic rollback
+        # point and enables deterministic recovery on promotion failure.
+        #
+        # If snapshot creation fails, the promotion MUST be aborted immediately
+        # to prevent entering an undefined state with no recovery path.
+        # ============================================================================
         logger.info(f"[Job {job_id}] Creating PRE_PROMOTION snapshot of target environment before applying changes")
-        try:
-            from app.services.promotion_service import promotion_service
 
+        try:
             pre_promotion_snapshot_id = await promotion_service.create_pre_promotion_snapshot(
                 tenant_id=tenant_id,
                 target_env_id=target_env.get("id"),
@@ -1243,6 +1241,10 @@ async def _execute_promotion_background(
             )
 
             logger.info(f"[Job {job_id}] PRE_PROMOTION snapshot created successfully: {pre_promotion_snapshot_id}")
+
+            # Validate snapshot has required data for rollback
+            if not pre_promotion_snapshot_id or pre_promotion_snapshot_id == "":
+                raise ValueError("Snapshot creation returned invalid snapshot ID")
 
             # Update deployment record with snapshot ID for tracking
             await db_service.update_deployment(deployment_id, {
@@ -1254,104 +1256,154 @@ async def _execute_promotion_background(
                 job_id=job_id,
                 current=0,
                 total=total_workflows,
-                message="Pre-promotion snapshot created, starting workflow transfer"
+                message="Pre-promotion snapshot created, starting atomic promotion execution"
             )
+
         except Exception as snapshot_error:
-            logger.error(f"[Job {job_id}] Failed to create PRE_PROMOTION snapshot: {str(snapshot_error)}")
-            # Continue with promotion even if snapshot creation fails
-            # This ensures backward compatibility and doesn't block promotions
-            logger.warning(f"[Job {job_id}] Continuing with promotion despite snapshot failure")
+            # CRITICAL: Snapshot creation failure MUST abort the promotion
+            # We cannot proceed without a valid rollback point
+            error_message = f"CRITICAL: Failed to create pre-promotion snapshot. Aborting promotion to prevent undefined state. Error: {str(snapshot_error)}"
+            logger.error(f"[Job {job_id}] {error_message}")
 
-        # NOTE: deployment_workflows records are pre-created in execute_promotion() before this task starts
-        # This ensures workflow records exist even if this background job fails early
-        logger.info(f"[Job {job_id}] Starting transfer of {total_workflows} workflows (records already created)")
+            # Update job status to failed
+            await background_job_service.update_job_status(
+                job_id=job_id,
+                status=BackgroundJobStatus.FAILED,
+                progress={
+                    "current": 0,
+                    "total": total_workflows,
+                    "percentage": 0,
+                    "message": "Snapshot creation failed - promotion aborted"
+                },
+                error_message=error_message
+            )
 
-        # Transfer each workflow
-        created_count = 0
-        updated_count = 0
-        failed_count = 0
-        skipped_count = 0
-        unchanged_count = 0
-        workflow_results = []
+            # Update deployment status to failed
+            await db_service.update_deployment(deployment_id, {
+                "status": DeploymentStatus.FAILED.value,
+                "finished_at": datetime.utcnow().isoformat(),
+                "error_message": error_message
+            })
 
-        for idx, ws in enumerate(selected_workflows, 1):
+            # Update promotion status to failed
+            await db_service.update_promotion(promotion_id, tenant_id, {
+                "status": "failed",
+                "completed_at": datetime.utcnow().isoformat()
+            })
+
+            # Re-raise to terminate background task
+            raise ValueError(error_message) from snapshot_error
+
+        # ============================================================================
+        # ATOMIC PROMOTION EXECUTION (T003, T004, T005, T006)
+        # ============================================================================
+        # Delegate to promotion_service.execute_promotion() for atomic execution.
+        # This service method provides:
+        # - Atomic rollback on any workflow failure
+        # - Idempotency checks to prevent duplicates
+        # - Policy enforcement (allowOverwritingHotfixes, allowForcePromotionOnConflicts)
+        # - Complete audit trail with rollback information
+        # ============================================================================
+
+        # Get pipeline and stage for policy flags
+        pipeline_id = promotion.get("pipeline_id")
+        source_env_id = promotion.get("source_environment_id")
+        target_env_id = promotion.get("target_environment_id")
+
+        # Retrieve policy flags from pipeline stage
+        policy_flags = {
+            "allow_overwriting_hotfixes": False,
+            "allow_force_promotion_on_conflicts": False
+        }
+
+        if pipeline_id:
+            pipeline = await db_service.get_pipeline(pipeline_id, tenant_id)
+            if pipeline:
+                for stage in pipeline.get("stages", []):
+                    if (stage.get("source_environment_id") == source_env_id and
+                        stage.get("target_environment_id") == target_env_id):
+                        stage_obj = PipelineStage(**stage)
+                        policy_flags = stage_obj.policy_flags.dict()
+                        break
+
+        # Get credential issues from gate results
+        gate_results = promotion.get("gate_results", {})
+        credential_issues = gate_results.get("credential_issues", [])
+
+        # Convert selected_workflows to WorkflowSelection objects
+        workflow_selections = []
+        for ws in selected_workflows:
+            workflow_selections.append(WorkflowSelection(
+                workflow_id=ws.get("workflow_id"),
+                workflow_name=ws.get("workflow_name"),
+                selected=True,
+                change_type=ws.get("change_type", "new"),
+                requires_overwrite=ws.get("requires_overwrite", False)
+            ))
+
+        logger.info(f"[Job {job_id}] Calling atomic promotion service with {len(workflow_selections)} workflows")
+        logger.info(f"[Job {job_id}] Policy flags: {policy_flags}")
+
+        # Execute atomic promotion
+        execution_result = await promotion_service.execute_promotion(
+            tenant_id=tenant_id,
+            promotion_id=promotion_id,
+            source_env_id=source_env_id,
+            target_env_id=target_env_id,
+            workflow_selections=workflow_selections,
+            source_snapshot_id=promotion.get("source_snapshot_id", ""),
+            target_pre_snapshot_id=pre_promotion_snapshot_id,
+            policy_flags=policy_flags,
+            credential_issues=credential_issues
+        )
+
+        logger.info(f"[Job {job_id}] Atomic promotion execution completed with status: {execution_result.status}")
+        logger.info(f"[Job {job_id}] Results - Promoted: {execution_result.workflows_promoted}, Failed: {execution_result.workflows_failed}, Skipped: {execution_result.workflows_skipped}")
+
+        if execution_result.rollback_result:
+            logger.warning(f"[Job {job_id}] Rollback was triggered: {execution_result.rollback_result.workflows_rolled_back} workflows rolled back")
+
+        # Create post-promotion snapshot
+        post_promotion_snapshot_id = await promotion_service.create_post_promotion_snapshot(
+            tenant_id=tenant_id,
+            target_env_id=target_env_id,
+            promotion_id=promotion_id,
+            source_snapshot_id=promotion.get("source_snapshot_id", "")
+        )
+
+        logger.info(f"[Job {job_id}] POST_PROMOTION snapshot created: {post_promotion_snapshot_id}")
+
+        # Update deployment record with snapshot ID
+        await db_service.update_deployment(deployment_id, {
+            "post_promotion_snapshot_id": post_promotion_snapshot_id
+        })
+
+        # ============================================================================
+        # UPDATE DEPLOYMENT WORKFLOW RECORDS
+        # ============================================================================
+        # Map execution results back to deployment_workflow records for UI tracking
+        # ============================================================================
+
+        # Build summary from execution result
+        summary_json = {
+            "total": total_workflows,
+            "created": execution_result.workflows_promoted,  # Approximation
+            "updated": 0,
+            "deleted": 0,
+            "failed": execution_result.workflows_failed,
+            "skipped": execution_result.workflows_skipped,
+            "unchanged": 0,
+            "processed": total_workflows,
+        }
+
+        # Update deployment_workflow records based on execution results
+        # NOTE: The atomic execution doesn't return per-workflow status, so we mark them generically
+        for ws in selected_workflows:
             workflow_id = ws.get("workflow_id")
             workflow_name = ws.get("workflow_name")
             change_type = ws.get("change_type", "new")
-            error_message = None
-            status_result = WorkflowStatus.SUCCESS
 
-            try:
-                # Update progress
-                await background_job_service.update_progress(
-                    job_id=job_id,
-                    current=idx,
-                    total=total_workflows,
-                    message=f"Processing workflow: {workflow_name}"
-                )
-
-                # Fetch workflow from source
-                logger.info(f"[Job {job_id}] Fetching workflow {workflow_id} ({workflow_name}) from source environment {source_env.get('n8n_name', source_env.get('id'))}")
-                source_workflow = await source_adapter.get_workflow(workflow_id)
-                
-                if not source_workflow:
-                    raise ValueError(f"Workflow {workflow_id} not found in source environment")
-
-                # Prepare workflow data for target (remove source-specific fields)
-                workflow_data = {
-                    "name": source_workflow.get("name"),
-                    "nodes": source_workflow.get("nodes", []),
-                    "connections": source_workflow.get("connections", {}),
-                    "settings": source_workflow.get("settings", {}),
-                    "staticData": source_workflow.get("staticData"),
-                }
-                
-                logger.info(f"[Job {job_id}] Prepared workflow data for {workflow_name}: {len(workflow_data.get('nodes', []))} nodes")
-
-                # Try to find existing workflow in target by name
-                logger.info(f"[Job {job_id}] Checking for existing workflow '{workflow_name}' in target environment {target_env.get('n8n_name', target_env.get('id'))}")
-                target_workflows = await target_adapter.get_workflows()
-                logger.info(f"[Job {job_id}] Found {len(target_workflows)} existing workflows in target environment")
-                existing_workflow = next(
-                    (w for w in target_workflows if w.get("name") == workflow_name),
-                    None
-                )
-
-                if existing_workflow:
-                    # Update existing workflow
-                    logger.info(f"[Job {job_id}] Updating existing workflow '{workflow_name}' (ID: {existing_workflow.get('id')}) in target")
-                    result = await target_adapter.update_workflow(existing_workflow.get("id"), workflow_data)
-                    logger.info(f"[Job {job_id}] Successfully updated workflow '{workflow_name}' in target environment")
-                    updated_count += 1
-                    change_type = "changed"
-                else:
-                    # Create new workflow
-                    logger.info(f"[Job {job_id}] Creating new workflow '{workflow_name}' in target environment")
-                    result = await target_adapter.create_workflow(workflow_data)
-                    logger.info(f"[Job {job_id}] Successfully created workflow '{workflow_name}' (ID: {result.get('id', 'unknown')}) in target environment")
-                    created_count += 1
-                    change_type = "new"
-
-            except Exception as e:
-                import traceback
-                error_traceback = traceback.format_exc()
-                error_message = str(e)
-                
-                # Log detailed error information
-                logger.error(f"[Job {job_id}] Failed to transfer workflow {workflow_name}: {error_message}")
-                logger.error(f"[Job {job_id}] Error type: {type(e).__name__}")
-                if hasattr(e, 'errno') and e.errno == 22:
-                    logger.error(f"[Job {job_id}] Windows errno 22 (Invalid argument) - check for invalid characters in workflow data")
-                logger.error(f"[Job {job_id}] Traceback: {error_traceback}")
-                
-                # Truncate error message if too long for database
-                if len(error_message) > 500:
-                    error_message = error_message[:500] + "..."
-                
-                status_result = WorkflowStatus.FAILED
-                failed_count += 1
-
-            # Update workflow record (already pre-created with PENDING status)
+            # Map change_type to WorkflowChangeType enum
             wf_change_type_map = {
                 "new": WorkflowChangeType.CREATED,
                 "changed": WorkflowChangeType.UPDATED,
@@ -1361,62 +1413,26 @@ async def _execute_promotion_background(
             }
             wf_change_type = wf_change_type_map.get(change_type, WorkflowChangeType.UPDATED)
 
+            # Determine workflow status based on overall execution result
+            if execution_result.status == PromotionStatus.COMPLETED:
+                wf_status = WorkflowStatus.SUCCESS
+            elif execution_result.status == PromotionStatus.FAILED:
+                # If execution failed with rollback, mark as failed
+                wf_status = WorkflowStatus.FAILED
+            else:
+                wf_status = WorkflowStatus.PENDING
+
             workflow_update = {
                 "change_type": wf_change_type.value,
-                "status": status_result.value,
-                "error_message": error_message,
+                "status": wf_status.value,
+                "error_message": None if wf_status == WorkflowStatus.SUCCESS else "Promotion failed with rollback",
             }
             await db_service.update_deployment_workflow(deployment_id, workflow_id, workflow_update)
-            workflow_results.append({
-                "deployment_id": deployment_id,
-                "workflow_id": workflow_id,
-                "workflow_name_at_time": workflow_name,
-                **workflow_update
-            })
 
-            # Update deployment's updated_at timestamp and running summary so UI can see progress
-            await db_service.update_deployment(deployment_id, {
-                "summary_json": {
-                    "total": total_workflows,
-                    "created": created_count,
-                    "updated": updated_count,
-                    "deleted": 0,
-                    "failed": failed_count,
-                    "skipped": skipped_count,
-                    "unchanged": unchanged_count,
-                    "processed": idx,
-                    "current_workflow": workflow_name
-                }
-            })
+        # Determine final deployment status
+        final_status = DeploymentStatus.SUCCESS if execution_result.status == PromotionStatus.COMPLETED else DeploymentStatus.FAILED
 
-            # Emit SSE progress event
-            try:
-                await emit_deployment_progress(
-                    deployment_id=deployment_id,
-                    progress_current=idx,
-                    progress_total=total_workflows,
-                    current_workflow_name=workflow_name,
-                    tenant_id=tenant_id
-                )
-            except Exception as sse_error:
-                logger.warning(f"Failed to emit SSE progress event: {str(sse_error)}")
-
-        # Calculate final summary
-        summary_json = {
-            "total": total_workflows,
-            "created": created_count,
-            "updated": updated_count,
-            "deleted": 0,
-            "failed": failed_count,
-            "skipped": skipped_count,
-            "unchanged": unchanged_count,
-            "processed": total_workflows,
-        }
-
-        # Determine final status
-        final_status = DeploymentStatus.SUCCESS if failed_count == 0 else DeploymentStatus.FAILED
-
-        # Update deployment with results
+        # Update deployment with final results
         await db_service.update_deployment(deployment_id, {
             "status": final_status.value,
             "finished_at": datetime.utcnow().isoformat(),
@@ -1433,27 +1449,35 @@ async def _execute_promotion_background(
         except Exception as sse_error:
             logger.warning(f"Failed to emit SSE event for deployment completion: {str(sse_error)}")
 
-        # Update promotion as completed
-        promotion_status = "completed" if failed_count == 0 else "failed"
+        # Update promotion with execution results
         await db_service.update_promotion(promotion_id, tenant_id, {
-            "status": promotion_status,
+            "status": execution_result.status.value,
+            "target_pre_snapshot_id": pre_promotion_snapshot_id,
+            "target_post_snapshot_id": post_promotion_snapshot_id,
+            "execution_result": execution_result.dict(),
             "completed_at": datetime.utcnow().isoformat()
         })
 
         # Update job as completed
+        job_status = BackgroundJobStatus.COMPLETED if execution_result.status == PromotionStatus.COMPLETED else BackgroundJobStatus.FAILED
+        error_message = None if execution_result.status == PromotionStatus.COMPLETED else f"{execution_result.workflows_failed} workflow(s) failed"
+
+        if execution_result.rollback_result:
+            error_message = f"Promotion failed and rolled back {execution_result.rollback_result.workflows_rolled_back} workflows"
+
         await background_job_service.update_job_status(
             job_id=job_id,
-            status=BackgroundJobStatus.COMPLETED if failed_count == 0 else BackgroundJobStatus.FAILED,
+            status=job_status,
             progress={"current": total_workflows, "total": total_workflows, "percentage": 100},
             result={
                 "deployment_id": deployment_id,
                 "summary": summary_json,
-                "workflow_results": workflow_results
+                "execution_result": execution_result.dict()
             },
-            error_message=None if failed_count == 0 else f"{failed_count} workflow(s) failed"
+            error_message=error_message
         )
 
-        logger.info(f"Promotion {promotion_id} completed: {created_count} created, {updated_count} updated, {failed_count} failed")
+        logger.info(f"[Job {job_id}] Promotion {promotion_id} completed with status {execution_result.status.value}")
 
     except Exception as e:
         logger.error(f"Background promotion execution failed: {str(e)}")
@@ -1504,6 +1528,7 @@ async def execute_deployment(
     request: Optional[PromotionExecuteRequest] = None,
     background_tasks: BackgroundTasks = None,
     user_info: dict = Depends(get_current_user),
+    _admin_guard: dict = Depends(require_tenant_admin()),
     _: None = Depends(require_entitlement("workflow_ci_cd"))
 ):
     """
@@ -2011,12 +2036,12 @@ async def approve_deployment(
                         active_stage = stage
                         break
                 
-                # Create pre-promotion snapshot
-                target_pre_snapshot_id, _ = await promotion_service.create_snapshot(
+                # Create pre-promotion snapshot BEFORE any target mutations
+                # This enforces the snapshot-before-mutate invariant (T002)
+                target_pre_snapshot_id = await promotion_service.create_pre_promotion_snapshot(
                     tenant_id=tenant_id,
-                    environment_id=updated_promotion.get("target_environment_id"),
-                    reason="Pre-promotion snapshot",
-                    metadata={"promotion_id": promotion_id}
+                    target_env_id=updated_promotion.get("target_environment_id"),
+                    promotion_id=promotion_id
                 )
                 
                 # Execute promotion
@@ -2039,11 +2064,11 @@ async def approve_deployment(
                 )
                 
                 # Create post-promotion snapshot
-                target_post_snapshot_id, _ = await promotion_service.create_snapshot(
+                target_post_snapshot_id = await promotion_service.create_post_promotion_snapshot(
                     tenant_id=tenant_id,
-                    environment_id=updated_promotion.get("target_environment_id"),
-                    reason="Post-promotion snapshot",
-                    metadata={"promotion_id": promotion_id, "source_snapshot_id": updated_promotion.get("source_snapshot_id")}
+                    target_env_id=updated_promotion.get("target_environment_id"),
+                    promotion_id=promotion_id,
+                    source_snapshot_id=updated_promotion.get("source_snapshot_id", "")
                 )
                 
                 # Update promotion with results

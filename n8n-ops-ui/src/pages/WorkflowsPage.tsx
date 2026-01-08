@@ -26,7 +26,9 @@ import {
   TableRow,
 } from '@/components/ui/table';
 import { api } from '@/lib/api';
+import { apiClient } from '@/lib/api-client';
 import { useAppStore } from '@/store/use-app-store';
+import { useDebounce } from '@/hooks/useDebounce';
 import { Upload, PlayCircle, PauseCircle, Search, ArrowUpDown, ArrowUp, ArrowDown, X, Edit, Trash2, Loader2, RefreshCw, ExternalLink, CheckCircle2, AlertCircle, RefreshCcw, AlertTriangle } from 'lucide-react';
 import { toast } from 'sonner';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
@@ -63,7 +65,9 @@ export function WorkflowsPage() {
   const { user } = useAuth();
 
   // Initialize searchQuery from URL params
-  const [searchQuery, setSearchQuery] = useState(() => searchParams.get('search') || '');
+  const [searchInput, setSearchInput] = useState(() => searchParams.get('search') || '');
+  // Debounce search to prevent excessive API calls while typing
+  const debouncedSearch = useDebounce(searchInput, 300);
 
   // Initialize selectedTag from URL params
   const [selectedTag, setSelectedTag] = useState<string[]>(() => {
@@ -73,8 +77,8 @@ export function WorkflowsPage() {
 
   // Update URL when search or tag changes
   useEffect(() => {
-    if (searchQuery) {
-      searchParams.set('search', searchQuery);
+    if (debouncedSearch) {
+      searchParams.set('search', debouncedSearch);
     } else {
       searchParams.delete('search');
     }
@@ -84,7 +88,7 @@ export function WorkflowsPage() {
       searchParams.delete('tag');
     }
     setSearchParams(searchParams, { replace: true });
-  }, [searchQuery, selectedTag, searchParams, setSearchParams]);
+  }, [debouncedSearch, selectedTag, searchParams, setSearchParams]);
   const [selectedStatus, setSelectedStatus] = useState<string>('');
   const [sortField, setSortField] = useState<SortField>('name');
   const [sortDirection, setSortDirection] = useState<SortDirection>('asc');
@@ -109,11 +113,38 @@ export function WorkflowsPage() {
     tags: [] as string[],
   });
 
-  const { data: workflows, isLoading } = useQuery({
-    queryKey: ['workflows', selectedEnvironment],
-    queryFn: () => api.getWorkflows(selectedEnvironment),
-    enabled: !!selectedEnvironment,
+  // Server-side paginated workflow query (optimized)
+  const { data: workflowsResponse, isLoading, isFetching } = useQuery({
+    queryKey: [
+      'workflows-paginated',
+      currentEnvironment?.id,
+      currentPage,
+      pageSize,
+      debouncedSearch,
+      selectedTag,
+      selectedStatus,
+      sortField,
+      sortDirection,
+    ],
+    queryFn: () =>
+      currentEnvironment?.id
+        ? apiClient.getWorkflowsPaginated(currentEnvironment.id, currentPage, pageSize, {
+            search: debouncedSearch || undefined,
+            tags: selectedTag.length > 0 ? selectedTag : undefined,
+            statusFilter: selectedStatus || undefined,
+            sortField: sortField === 'executions' ? 'updatedAt' : sortField, // executions sorted client-side
+            sortDirection,
+          })
+        : Promise.resolve({ data: { workflows: [], total: 0, page: 1, page_size: pageSize, total_pages: 0 } }),
+    enabled: !!currentEnvironment?.id,
+    keepPreviousData: true, // Keep old data while loading new page for smooth UX
+    staleTime: 2 * 60 * 1000, // 2 minutes
   });
+
+  // Extract data from paginated response
+  const workflows = workflowsResponse?.data?.workflows || [];
+  const totalWorkflows = workflowsResponse?.data?.total || 0;
+  const totalPages = workflowsResponse?.data?.total_pages || 1;
 
   // Fetch environments to get the n8n base URL for opening workflows
   const { data: environments } = useQuery({
@@ -206,9 +237,8 @@ export function WorkflowsPage() {
       }
       toast.success('Workflow updated successfully');
 
-      // Force refresh from N8N to get updated tags
-      await api.getWorkflows(selectedEnvironment, true);
-      queryClient.invalidateQueries({ queryKey: ['workflows', selectedEnvironment] });
+      // Invalidate paginated workflows query to refetch
+      queryClient.invalidateQueries({ queryKey: ['workflows-paginated'] });
 
       setEditDialogOpen(false);
       setWorkflowToEdit(null);
@@ -225,7 +255,7 @@ export function WorkflowsPage() {
     },
     onSuccess: () => {
       toast.success('Workflow deleted successfully');
-      queryClient.invalidateQueries({ queryKey: ['workflows', selectedEnvironment] });
+      queryClient.invalidateQueries({ queryKey: ['workflows-paginated'] });
       setDeleteDialogOpen(false);
       setWorkflowToDelete(null);
     },
@@ -241,7 +271,7 @@ export function WorkflowsPage() {
       api.archiveWorkflow(workflowId, selectedEnvironment!),
     onSuccess: () => {
       toast.success('Workflow archived successfully');
-      queryClient.invalidateQueries({ queryKey: ['workflows', selectedEnvironment] });
+      queryClient.invalidateQueries({ queryKey: ['workflows-paginated'] });
     },
     onError: (error: any) => {
       const message = error.response?.data?.detail || 'Failed to archive workflow';
@@ -255,7 +285,7 @@ export function WorkflowsPage() {
       api.permanentlyDeleteWorkflow(workflowId, selectedEnvironment!),
     onSuccess: () => {
       toast.success('Workflow permanently deleted');
-      queryClient.invalidateQueries({ queryKey: ['workflows', selectedEnvironment] });
+      queryClient.invalidateQueries({ queryKey: ['workflows-paginated'] });
       setHardDeleteOpen(false);
       setPendingDeleteWorkflow(null);
     },
@@ -266,13 +296,14 @@ export function WorkflowsPage() {
     },
   });
 
-  // Get all unique tags from workflows
+  // Get all unique tags from current page of workflows
+  // Note: With server-side pagination, we only have tags from the current page
+  // For a complete tag list, you could use a separate endpoint
   const allTags = useMemo(() => {
-    if (!workflows?.data) return [];
+    if (!workflows?.length) return [];
     const tags = new Set<string>();
-    workflows.data.forEach((workflow) => {
+    workflows.forEach((workflow) => {
       workflow.tags?.forEach((tag) => {
-        // Handle both string tags and tag objects
         const tagName = typeof tag === 'string' ? tag : tag.name;
         tags.add(tagName);
       });
@@ -280,104 +311,23 @@ export function WorkflowsPage() {
     return Array.from(tags).sort();
   }, [workflows]);
 
-  // Filter and sort workflows
-  const filteredAndSortedWorkflows = useMemo(() => {
-    if (!workflows?.data) return [];
-
-    let result = [...workflows.data];
-
-    // Apply search filter (name and description only)
-    if (searchQuery) {
-      const query = searchQuery.toLowerCase();
-      result = result.filter((workflow) => {
-        const matchesName = workflow.name.toLowerCase().includes(query);
-        const matchesDescription = workflow.description?.toLowerCase().includes(query);
-        return matchesName || matchesDescription;
-      });
+  // Sort workflows by execution count if that's the sort field (client-side only for this field)
+  const displayWorkflows = useMemo(() => {
+    if (sortField !== 'executions') {
+      return workflows; // Already sorted by server
     }
-
-    // Apply tag filter
-    if (selectedTag.length > 0) {
-      result = result.filter((workflow) =>
-        selectedTag.some((selectedTagName) =>
-          workflow.tags?.some((tag) => {
-            const tagName = typeof tag === 'string' ? tag : tag.name;
-            return tagName === selectedTagName;
-          })
-        )
-      );
-    }
-
-    // Apply status filter
-    if (selectedStatus) {
-      const isActive = selectedStatus === 'active';
-      result = result.filter((workflow) => workflow.active === isActive);
-    }
-
-    // Apply sorting
-    result.sort((a, b) => {
-      let aValue: any;
-      let bValue: any;
-
-      switch (sortField) {
-        case 'name':
-          aValue = a.name.toLowerCase();
-          bValue = b.name.toLowerCase();
-          break;
-        case 'description':
-          aValue = (a.description || '').toLowerCase();
-          bValue = (b.description || '').toLowerCase();
-          break;
-        case 'active':
-          aValue = a.active ? 1 : 0;
-          bValue = b.active ? 1 : 0;
-          break;
-        case 'executions':
-          aValue = executionCountsByWorkflow[a.id] || 0;
-          bValue = executionCountsByWorkflow[b.id] || 0;
-          break;
-        case 'updatedAt':
-          aValue = new Date(a.updatedAt).getTime();
-          bValue = new Date(b.updatedAt).getTime();
-          break;
-        default:
-          return 0;
-      }
-
-      if (aValue < bValue) return sortDirection === 'asc' ? -1 : 1;
-      if (aValue > bValue) return sortDirection === 'asc' ? 1 : -1;
-      return 0;
+    // Sort by execution count client-side
+    return [...workflows].sort((a, b) => {
+      const aCount = executionCountsByWorkflow[a.id] || 0;
+      const bCount = executionCountsByWorkflow[b.id] || 0;
+      return sortDirection === 'asc' ? aCount - bCount : bCount - aCount;
     });
-
-    return result;
-  }, [workflows, searchQuery, selectedTag, selectedStatus, sortField, sortDirection, executionCountsByWorkflow]);
-
-  // Pagination calculations
-  const { paginatedWorkflows, totalPages, totalWorkflows } = useMemo(() => {
-    const total = filteredAndSortedWorkflows.length;
-    const pages = Math.ceil(total / pageSize);
-    const startIndex = (currentPage - 1) * pageSize;
-    const endIndex = startIndex + pageSize;
-    const paginated = filteredAndSortedWorkflows.slice(startIndex, endIndex);
-
-    return {
-      paginatedWorkflows: paginated,
-      totalPages: pages,
-      totalWorkflows: total,
-    };
-  }, [filteredAndSortedWorkflows, currentPage, pageSize]);
+  }, [workflows, sortField, sortDirection, executionCountsByWorkflow]);
 
   // Reset to page 1 when filters change
-  const resetPage = () => {
-    if (currentPage !== 1) {
-      setCurrentPage(1);
-    }
-  };
-
-  // Reset page when filters, search, or tag changes
   useEffect(() => {
-    resetPage();
-  }, [searchQuery, selectedTag, selectedStatus, selectedEnvironment]);
+    setCurrentPage(1);
+  }, [debouncedSearch, selectedTag, selectedStatus, currentEnvironment?.id]);
 
   const handleSort = (field: SortField) => {
     if (sortField === field) {
@@ -447,13 +397,13 @@ export function WorkflowsPage() {
   };
 
   const clearFilters = () => {
-    setSearchQuery('');
+    setSearchInput('');
     setSelectedTag([]);
     setSelectedStatus('');
   };
 
 
-  const hasActiveFilters = searchQuery || selectedTag.length > 0 || selectedStatus;
+  const hasActiveFilters = searchInput || selectedTag.length > 0 || selectedStatus;
 
   // Opens the edit dialog directly (called after policy check or confirmation)
   const openEditDialog = (workflow: Workflow) => {
@@ -556,11 +506,12 @@ export function WorkflowsPage() {
       setIsRefreshing(true);
       toast.info('Refreshing environment state...');
 
-      // Fetch with force_refresh=true
+      // Force refresh from N8N by fetching with force_refresh=true
       await api.getWorkflows(selectedEnvironment, true);
 
-      // Invalidate query to refetch with the new cached data
-      queryClient.invalidateQueries({ queryKey: ['workflows', selectedEnvironment] });
+      // Invalidate paginated query to refetch with the new cached data
+      queryClient.invalidateQueries({ queryKey: ['workflows-paginated'] });
+      queryClient.invalidateQueries({ queryKey: ['workflow-execution-counts'] });
 
       toast.success('Workflows refreshed successfully');
     } catch (error: any) {
@@ -614,8 +565,8 @@ export function WorkflowsPage() {
                 <Input
                   id="search"
                   placeholder="Search by name..."
-                  value={searchQuery}
-                  onChange={(e) => setSearchQuery(e.target.value)}
+                  value={searchInput}
+                  onChange={(e) => setSearchInput(e.target.value)}
                   className="pl-8"
                 />
               </div>
@@ -696,9 +647,9 @@ export function WorkflowsPage() {
           </div>
         </CardHeader>
         <CardContent>
-          {isLoading ? (
+          {isLoading && !isFetching ? (
             <div className="text-center py-8">Loading workflows...</div>
-          ) : totalWorkflows === 0 ? (
+          ) : totalWorkflows === 0 && !isFetching ? (
             <div className="text-center py-8 text-muted-foreground">
               {hasActiveFilters ? 'No workflows match your filters' : 'No workflows found'}
             </div>
@@ -725,7 +676,7 @@ export function WorkflowsPage() {
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {paginatedWorkflows.map((workflow) => (
+                {displayWorkflows.map((workflow) => (
                   <TableRow key={workflow.id}>
                     <TableCell className="font-medium">
                       <Link
@@ -830,11 +781,14 @@ export function WorkflowsPage() {
               </div>
 
               <div className="flex items-center gap-2">
+                {isFetching && (
+                  <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
+                )}
                 <Button
                   variant="outline"
                   size="sm"
                   onClick={() => setCurrentPage(1)}
-                  disabled={currentPage === 1}
+                  disabled={currentPage === 1 || isFetching}
                 >
                   First
                 </Button>
@@ -842,20 +796,20 @@ export function WorkflowsPage() {
                   variant="outline"
                   size="sm"
                   onClick={() => setCurrentPage(currentPage - 1)}
-                  disabled={currentPage === 1}
+                  disabled={currentPage === 1 || isFetching}
                 >
                   Previous
                 </Button>
                 <div className="flex items-center gap-1">
                   <span className="text-sm">
-                    Page {currentPage} of {totalPages}
+                    Page {currentPage} of {totalPages || 1}
                   </span>
                 </div>
                 <Button
                   variant="outline"
                   size="sm"
                   onClick={() => setCurrentPage(currentPage + 1)}
-                  disabled={currentPage === totalPages}
+                  disabled={currentPage >= totalPages || isFetching}
                 >
                   Next
                 </Button>
@@ -863,7 +817,7 @@ export function WorkflowsPage() {
                   variant="outline"
                   size="sm"
                   onClick={() => setCurrentPage(totalPages)}
-                  disabled={currentPage === totalPages}
+                  disabled={currentPage >= totalPages || isFetching}
                 >
                   Last
                 </Button>

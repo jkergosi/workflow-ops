@@ -175,7 +175,54 @@ n8n-ops-backend/
 
 ## Testing
 
-### Test N8N Connection
+### E2E Tests
+
+Comprehensive end-to-end tests for critical MVP flows. See [`tests/e2e/README.md`](tests/e2e/README.md) for full documentation.
+
+#### Running E2E Tests
+
+```bash
+cd n8n-ops-backend
+
+# All E2E tests
+pytest tests/e2e/ -v
+
+# Specific flow
+pytest tests/e2e/test_promotion_e2e.py -v
+
+# With coverage
+pytest tests/e2e/ --cov=app --cov-report=html
+```
+
+#### E2E Test Coverage
+
+✅ **5 Critical Flows Covered**:
+1. **Promotion Flow**: Pipeline creation → workflow promotion → verification
+2. **Drift Detection**: Detect drift → incident lifecycle → reconciliation
+3. **Canonical Onboarding**: Preflight → inventory → workflow linking
+4. **Downgrade Flow**: Stripe webhook → over-limit detection → enforcement
+5. **Impersonation**: Platform admin impersonation → audit → security checks
+
+**Mock Strategy**: All external APIs (n8n, GitHub, Stripe) are mocked at HTTP boundary using `respx`. No real external dependencies required.
+
+**Testkit**: Reusable factories and golden JSON fixtures in [`tests/testkit/`](tests/testkit/README.md)
+
+### Unit & Integration Tests
+
+```bash
+# All tests
+pytest
+
+# Specific test file
+pytest tests/test_promotion_service.py -v
+
+# With coverage report
+pytest --cov=app --cov-report=html
+```
+
+### API Testing
+
+#### Test N8N Connection
 
 ```bash
 curl -X POST "http://localhost:8000/api/v1/environments/test-connection" \
@@ -183,13 +230,13 @@ curl -X POST "http://localhost:8000/api/v1/environments/test-connection" \
   -d '{"base_url": "https://ns8i839t.rpcld.net", "api_key": "123"}'
 ```
 
-### Get Workflows
+#### Get Workflows
 
 ```bash
 curl "http://localhost:8000/api/v1/workflows?environment=dev"
 ```
 
-### Upload Workflow
+#### Upload Workflow
 
 ```bash
 curl -X POST "http://localhost:8000/api/v1/workflows/upload?environment=dev" \

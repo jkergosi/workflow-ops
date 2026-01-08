@@ -1,0 +1,42 @@
+{
+  "data": [
+    {
+      "id": "exec-1",
+      "workflowId": "1",
+      "mode": "webhook",
+      "startedAt": "2024-01-01T10:00:00.000Z",
+      "stoppedAt": "2024-01-01T10:00:05.000Z",
+      "finished": true,
+      "status": "success",
+      "retryOf": null,
+      "retrySuccessId": null,
+      "waitTill": null
+    },
+    {
+      "id": "exec-2",
+      "workflowId": "1",
+      "mode": "manual",
+      "startedAt": "2024-01-01T11:00:00.000Z",
+      "stoppedAt": "2024-01-01T11:00:10.000Z",
+      "finished": true,
+      "status": "error",
+      "retryOf": null,
+      "retrySuccessId": null,
+      "waitTill": null
+    },
+    {
+      "id": "exec-3",
+      "workflowId": "2",
+      "mode": "trigger",
+      "startedAt": "2024-01-01T12:00:00.000Z",
+      "stoppedAt": "2024-01-01T12:00:03.000Z",
+      "finished": true,
+      "status": "success",
+      "retryOf": null,
+      "retrySuccessId": null,
+      "waitTill": null
+    }
+  ],
+  "nextCursor": null
+}
+

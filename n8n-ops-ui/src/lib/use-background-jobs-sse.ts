@@ -41,6 +41,7 @@ interface UseBackgroundJobsSSEOptions {
   environmentId?: string; // For filtering by environment
   jobId?: string; // For filtering by specific job
   onLogMessage?: (message: LogMessage) => void; // Callback for log messages
+  onProgressEvent?: (eventType: string, payload: any) => void; // Callback for parsed SSE events
 }
 
 export type LogMessage = {
@@ -59,7 +60,7 @@ interface UseBackgroundJobsSSEReturn {
 export function useBackgroundJobsSSE(
   options: UseBackgroundJobsSSEOptions = {}
 ): UseBackgroundJobsSSEReturn {
-  const { enabled = true, environmentId, jobId, onLogMessage } = options;
+  const { enabled = true, environmentId, jobId, onLogMessage, onProgressEvent } = options;
   const queryClient = useQueryClient();
   
   // Helper to emit log messages
@@ -78,7 +79,6 @@ export function useBackgroundJobsSSE(
   const eventSourceRef = useRef<EventSource | null>(null);
   const reconnectTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const reconnectAttemptRef = useRef(0);
-  const lastEventIdRef = useRef<string | null>(null);
 
   const [isConnected, setIsConnected] = useState(false);
   const [connectionError, setConnectionError] = useState<string | null>(null);
@@ -101,6 +101,7 @@ export function useBackgroundJobsSSE(
       const sseData = transformKeys(data);
       const envId = sseData.environmentId || environmentId;
       const jId = sseData.jobId || jobId;
+      onProgressEvent?.('sync.progress', sseData);
       
       // Emit log message for this progress event
       const logLevel: LogMessage['level'] = sseData.status === 'failed' ? 'error' : 
@@ -168,7 +169,7 @@ export function useBackgroundJobsSSE(
         });
       }
     },
-    [queryClient, environmentId, jobId, emitLog]
+    [queryClient, environmentId, jobId, emitLog, onProgressEvent]
   );
 
   const handleBackupProgress = useCallback(
@@ -176,6 +177,7 @@ export function useBackgroundJobsSSE(
       const progress = transformKeys(data);
       const envId = progress.environmentId || environmentId;
       const jId = progress.jobId || jobId;
+      onProgressEvent?.('backup.progress', progress);
 
       // Emit log message for this progress event
       const logLevel: LogMessage['level'] = progress.status === 'failed' ? 'error' :
@@ -218,7 +220,7 @@ export function useBackgroundJobsSSE(
         });
       }
     },
-    [queryClient, environmentId, jobId, emitLog]
+    [queryClient, environmentId, jobId, emitLog, onProgressEvent]
   );
 
   const handleRestoreProgress = useCallback(
@@ -226,6 +228,7 @@ export function useBackgroundJobsSSE(
       const progress = transformKeys(data);
       const envId = progress.environmentId || environmentId;
       const jId = progress.jobId || jobId;
+      onProgressEvent?.('restore.progress', progress);
 
       // Emit log message for this progress event
       const logLevel: LogMessage['level'] = progress.status === 'failed' ? 'error' :
@@ -268,7 +271,7 @@ export function useBackgroundJobsSSE(
         });
       }
     },
-    [queryClient, environmentId, jobId, emitLog]
+    [queryClient, environmentId, jobId, emitLog, onProgressEvent]
   );
 
   const connect = useCallback(() => {
@@ -293,7 +296,7 @@ export function useBackgroundJobsSSE(
       eventSourceRef.current.close();
     }
 
-    const eventSource = new EventSource(url);
+    const eventSource = new EventSource(url, { withCredentials: true });
     eventSourceRef.current = eventSource;
 
     eventSource.onopen = () => {
@@ -311,6 +314,10 @@ export function useBackgroundJobsSSE(
       // Attempt reconnection
       if (reconnectAttemptRef.current < MAX_RECONNECT_ATTEMPTS) {
         const delay = getReconnectDelay();
+        emitLog('warn', 'SSE connection lost, attempting to reconnect', 'reconnect', {
+          attempt: reconnectAttemptRef.current + 1,
+          delayMs: delay,
+        });
         reconnectAttemptRef.current += 1;
 
         reconnectTimeoutRef.current = setTimeout(() => {
@@ -318,6 +325,9 @@ export function useBackgroundJobsSSE(
         }, delay);
       } else {
         setConnectionError('Max reconnection attempts reached');
+        emitLog('error', 'Max SSE reconnection attempts reached', 'reconnect', {
+          attempts: reconnectAttemptRef.current,
+        });
       }
     };
 

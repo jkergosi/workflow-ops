@@ -1,0 +1,19 @@
+schemaname,tablename,policyname,permissive,roles,cmd,qual,with_check
+public,audit_logs,audit_logs_superuser_policy,PERMISSIVE,{public},ALL,true,null
+public,canonical_workflow_git_state,canonical_git_state_tenant_isolation,PERMISSIVE,{public},ALL,"(tenant_id = (current_setting('app.tenant_id'::text, true))::uuid)","(tenant_id = (current_setting('app.tenant_id'::text, true))::uuid)"
+public,canonical_workflows,canonical_workflows_tenant_isolation,PERMISSIVE,{public},ALL,"(tenant_id = (current_setting('app.tenant_id'::text, true))::uuid)","(tenant_id = (current_setting('app.tenant_id'::text, true))::uuid)"
+public,features,features_select_policy,PERMISSIVE,{public},SELECT,true,null
+public,n8n_users,Tenant isolation for n8n_users,PERMISSIVE,{public},ALL,"(tenant_id IN ( SELECT tenants.id
+   FROM tenants
+  WHERE (tenants.id = n8n_users.tenant_id)))",null
+public,plan_features,plan_features_select_policy,PERMISSIVE,{public},SELECT,true,null
+public,provider_plans,provider_plans_select_policy,PERMISSIVE,{public},SELECT,true,null
+public,providers,providers_select_policy,PERMISSIVE,{public},SELECT,true,null
+public,tenant_notes,tenant_notes_superuser_policy,PERMISSIVE,{public},ALL,true,null
+public,tenant_provider_subscriptions,tenant_provider_subs_delete_policy,PERMISSIVE,{public},DELETE,true,null
+public,tenant_provider_subscriptions,tenant_provider_subs_insert_policy,PERMISSIVE,{public},INSERT,null,true
+public,tenant_provider_subscriptions,tenant_provider_subs_select_policy,PERMISSIVE,{public},SELECT,true,null
+public,tenant_provider_subscriptions,tenant_provider_subs_update_policy,PERMISSIVE,{public},UPDATE,true,null
+public,workflow_diff_state,workflow_diff_state_tenant_isolation,PERMISSIVE,{public},ALL,"(tenant_id = (current_setting('app.tenant_id'::text, true))::uuid)","(tenant_id = (current_setting('app.tenant_id'::text, true))::uuid)"
+public,workflow_env_map,workflow_env_map_tenant_isolation,PERMISSIVE,{public},ALL,"(tenant_id = (current_setting('app.tenant_id'::text, true))::uuid)","(tenant_id = (current_setting('app.tenant_id'::text, true))::uuid)"
+public,workflow_link_suggestions,workflow_link_suggestions_tenant_isolation,PERMISSIVE,{public},ALL,"(tenant_id = (current_setting('app.tenant_id'::text, true))::uuid)","(tenant_id = (current_setting('app.tenant_id'::text, true))::uuid)"

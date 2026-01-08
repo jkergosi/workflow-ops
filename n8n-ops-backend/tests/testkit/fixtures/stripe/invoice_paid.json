@@ -1,0 +1,23 @@
+{
+  "id": "evt_invoice_paid",
+  "object": "event",
+  "api_version": "2023-10-16",
+  "created": 1704067200,
+  "data": {
+    "object": {
+      "id": "in_test123",
+      "object": "invoice",
+      "customer": "cus_test123",
+      "subscription": "sub_test123",
+      "status": "paid",
+      "amount_paid": 4900,
+      "amount_due": 4900,
+      "currency": "usd",
+      "paid": true,
+      "period_start": 1704067200,
+      "period_end": 1706745600
+    }
+  },
+  "type": "invoice.paid"
+}
+

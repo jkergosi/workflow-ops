@@ -1,0 +1,39 @@
+{
+  "id": "evt_test_webhook",
+  "object": "event",
+  "api_version": "2023-10-16",
+  "created": 1704067200,
+  "data": {
+    "object": {
+      "id": "sub_test123",
+      "object": "subscription",
+      "customer": "cus_test123",
+      "status": "active",
+      "items": {
+        "data": [
+          {
+            "id": "si_test123",
+            "price": {
+              "id": "price_pro_monthly",
+              "product": "prod_n8n",
+              "unit_amount": 4900,
+              "currency": "usd",
+              "recurring": {
+                "interval": "month"
+              },
+              "metadata": {
+                "plan_name": "pro",
+                "provider": "n8n"
+              }
+            }
+          }
+        ]
+      },
+      "current_period_start": 1704067200,
+      "current_period_end": 1706745600,
+      "cancel_at_period_end": false
+    }
+  },
+  "type": "customer.subscription.created"
+}
+

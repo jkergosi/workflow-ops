@@ -244,7 +244,19 @@ class EntitlementsService:
         if current_count < limit:
             return True, "", current_count, limit
 
+        # Get current plan to provide specific upgrade guidance
+        entitlements = await self.get_tenant_entitlements(tenant_id)
+        current_plan = entitlements.get("plan_name", "free")
+
         display_name = FEATURE_DISPLAY_NAMES.get(feature_name, feature_name)
+
+        # Provide plan-specific upgrade message for environment limits
+        if feature_name == "environment_limits":
+            if current_plan == "free":
+                return False, f"{display_name} reached ({limit}). Upgrade to Pro plan for up to 3 environments, or Agency/Enterprise for unlimited environments.", current_count, limit
+            elif current_plan == "pro":
+                return False, f"{display_name} reached ({limit}). Upgrade to Agency or Enterprise plan for unlimited environments.", current_count, limit
+
         return False, f"{display_name} limit reached ({limit}). Upgrade your plan to increase this limit.", current_count, limit
 
     async def enforce_flag(
@@ -356,11 +368,34 @@ class EntitlementsService:
         await self.enforce_limit(tenant_id, "workflow_limits", current_count)
 
     async def get_environment_count(self, tenant_id: str) -> int:
-        """Get current environment count for a tenant."""
+        """
+        Get current environment count for a tenant.
+
+        Counts all environments that are not soft-deleted, including:
+        - Active environments
+        - Inactive environments
+        - Read-only environments (in grace period after downgrade)
+
+        This ensures proper enforcement of plan limits even when environments
+        are in a grace period state.
+        """
         try:
-            response = db_service.client.table("environments").select(
+            # Count all environments that are not soft-deleted
+            # Note: We include read-only environments (grace period) in the count
+            # because they still exist and consume the limit
+            query = db_service.client.table("environments").select(
                 "id", count="exact"
-            ).eq("tenant_id", tenant_id).execute()
+            ).eq("tenant_id", tenant_id)
+
+            # Exclude soft-deleted environments if is_deleted field exists
+            # Check if the field exists by attempting to filter
+            try:
+                query = query.neq("is_deleted", True)
+            except Exception:
+                # Field doesn't exist or query failed, continue without filter
+                pass
+
+            response = query.execute()
             return response.count or 0
         except Exception as e:
             logger.error(f"Failed to get environment count: {e}")
@@ -375,6 +410,87 @@ class EntitlementsService:
         """Enforce environment limit before creating new environment."""
         current_count = await self.get_environment_count(tenant_id)
         await self.enforce_limit(tenant_id, "environment_limits", current_count)
+
+    async def get_team_member_count(self, tenant_id: str) -> int:
+        """
+        Get current active team member count for a tenant.
+
+        Counts all team members with status='active'.
+        """
+        try:
+            # Count active team members
+            query = db_service.client.table("users").select(
+                "id", count="exact"
+            ).eq("tenant_id", tenant_id).eq("status", "active")
+
+            response = query.execute()
+            return response.count or 0
+        except Exception as e:
+            logger.error(f"Failed to get team member count: {e}")
+            return 0
+
+    async def can_add_team_member(self, tenant_id: str) -> Tuple[bool, str, int, int]:
+        """Check if tenant can add another team member."""
+        current_count = await self.get_team_member_count(tenant_id)
+
+        # Get team member limit from entitlements
+        # Team member limits are stored in provider_plans.features as max_team_members
+        from app.services.feature_service import feature_service
+        features = await feature_service.get_tenant_features(tenant_id)
+        max_members = features.get("max_team_members", 1)
+
+        # Check if unlimited
+        if max_members == "unlimited" or max_members >= 9999:
+            return True, "", current_count, max_members if isinstance(max_members, int) else 9999
+
+        # Check limit
+        if current_count >= max_members:
+            # Get current plan to provide specific upgrade guidance
+            entitlements = await self.get_tenant_entitlements(tenant_id)
+            current_plan = entitlements.get("plan_name", "free")
+
+            if current_plan == "free":
+                return False, f"Team member limit reached ({max_members}). Upgrade to Pro plan for up to 10 team members, or Agency/Enterprise for unlimited team members.", current_count, max_members
+            elif current_plan == "pro":
+                return False, f"Team member limit reached ({max_members}). Upgrade to Agency or Enterprise plan for unlimited team members.", current_count, max_members
+            else:
+                return False, f"Team member limit reached ({max_members}). Upgrade your plan to add more team members.", current_count, max_members
+
+        return True, "", current_count, max_members
+
+    async def enforce_team_member_limit(self, tenant_id: str, user_id: Optional[str] = None, endpoint: Optional[str] = None) -> None:
+        """
+        Enforce team member limit before adding new team member.
+
+        This method implements server-side enforcement of plan-based
+        team member limits, preventing tenants from adding more members
+        than allowed by their subscription plan.
+        """
+        can_add, message, current, limit = await self.can_add_team_member(tenant_id)
+
+        if not can_add:
+            # Log limit exceeded to audit log
+            await audit_service.log_limit_exceeded(
+                tenant_id=tenant_id,
+                feature_key="max_team_members",
+                current_value=current,
+                limit_value=limit,
+                user_id=user_id,
+                endpoint=endpoint,
+                resource_type="team_member",
+            )
+
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail={
+                    "error": "team_member_limit_reached",
+                    "feature": "max_team_members",
+                    "feature_display_name": "Team Member Limit",
+                    "current_count": current,
+                    "limit": limit,
+                    "message": message,
+                }
+            )
 
     # Private helper methods
 
