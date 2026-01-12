@@ -950,6 +950,17 @@ class ApiClient {
     return { data: response.data };
   }
 
+  async cancelBackgroundJob(jobId: string): Promise<{
+    data: {
+      id: string;
+      status: string;
+      error_message?: string;
+    };
+  }> {
+    const response = await this.client.post(`/background-jobs/${jobId}/cancel`);
+    return { data: response.data };
+  }
+
   async syncUsersOnly(environmentId: string): Promise<{
     data: {
       success: boolean;

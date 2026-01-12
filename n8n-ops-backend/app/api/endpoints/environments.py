@@ -517,13 +517,14 @@ async def _sync_environment_background(
             # Use canonical workflow system for syncing
             from app.services.canonical_env_sync_service import CanonicalEnvSyncService
             from app.services.canonical_reconciliation_service import CanonicalReconciliationService
-            
+
             # Sync using canonical workflow system
             env_sync_result = await CanonicalEnvSyncService.sync_environment(
                 tenant_id=tenant_id,
                 environment_id=environment_id,
                 environment=environment,
-                job_id=job_id
+                job_id=job_id,
+                tenant_id_for_sse=tenant_id  # Enable SSE events for live log streaming
             )
             
             sync_results["workflows"]["synced"] = env_sync_result.get("workflows_synced", 0)

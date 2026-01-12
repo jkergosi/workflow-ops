@@ -1,5 +1,9 @@
 """
 Unit tests for the sync status service - workflow sync status computation.
+
+NOTE: The sync_status_service now uses normalize_workflow_for_comparison
+from promotion_service.py for consistent normalization across the sync pipeline.
+Tests for normalization behavior are in test_promotion_service.py.
 """
 import pytest
 import json
@@ -8,8 +12,8 @@ from datetime import datetime, timezone, timedelta
 from app.services.sync_status_service import (
     SyncStatus,
     compute_sync_status,
-    _normalize_workflow_json,
 )
+from app.services.promotion_service import normalize_workflow_for_comparison
 
 
 class TestSyncStatusEnum:
@@ -24,14 +28,19 @@ class TestSyncStatusEnum:
         assert SyncStatus.CONFLICT.value == "conflict"
 
 
-class TestNormalizeWorkflowJson:
-    """Tests for _normalize_workflow_json helper."""
+class TestNormalizeWorkflowForComparison:
+    """Tests for normalize_workflow_for_comparison used by sync status service.
+
+    NOTE: This function is defined in promotion_service.py but is the canonical
+    normalization function used across the sync pipeline. These tests verify
+    the behavior relevant to sync status computation.
+    """
 
     @pytest.mark.unit
     def test_removes_id_field(self):
         """Should remove id field from workflow."""
         workflow = {"id": "wf-1", "name": "Test", "nodes": []}
-        result = _normalize_workflow_json(workflow)
+        result = normalize_workflow_for_comparison(workflow)
         assert "id" not in result
         assert result["name"] == "Test"
 
@@ -44,7 +53,7 @@ class TestNormalizeWorkflowJson:
             "createdAt": "2024-01-01T10:00:00Z",
             "nodes": []
         }
-        result = _normalize_workflow_json(workflow)
+        result = normalize_workflow_for_comparison(workflow)
         assert "updatedAt" not in result
         assert "createdAt" not in result
 
@@ -52,7 +61,7 @@ class TestNormalizeWorkflowJson:
     def test_removes_version_id(self):
         """Should remove versionId field."""
         workflow = {"name": "Test", "versionId": "v123", "nodes": []}
-        result = _normalize_workflow_json(workflow)
+        result = normalize_workflow_for_comparison(workflow)
         assert "versionId" not in result
 
     @pytest.mark.unit
@@ -71,7 +80,8 @@ class TestNormalizeWorkflowJson:
                 }
             ]
         }
-        result = _normalize_workflow_json(workflow)
+        result = normalize_workflow_for_comparison(workflow)
+        # Nodes are sorted by name, so we can access by index
         node = result["nodes"][0]
         assert "position" not in node
         assert "positionAbsolute" not in node
@@ -90,20 +100,18 @@ class TestNormalizeWorkflowJson:
                     "parameters": {"values": {"key": "value"}}
                 }
             ],
-            "connections": {"1": {"main": []}},
-            "settings": {"executionOrder": "v1"}
+            "connections": {"1": {"main": []}}
         }
-        result = _normalize_workflow_json(workflow)
+        result = normalize_workflow_for_comparison(workflow)
         assert result["name"] == "Test Workflow"
         assert result["nodes"][0]["parameters"] == {"values": {"key": "value"}}
         assert result["connections"] == {"1": {"main": []}}
-        assert result["settings"] == {"executionOrder": "v1"}
 
     @pytest.mark.unit
     def test_does_not_modify_original(self):
         """Should not modify the original workflow object."""
         workflow = {"id": "wf-1", "name": "Test", "nodes": []}
-        _normalize_workflow_json(workflow)
+        normalize_workflow_for_comparison(workflow)
         assert "id" in workflow  # Original should still have id
 
 
@@ -437,8 +445,13 @@ class TestSyncStatusEdgeCases:
         assert result == SyncStatus.LOCAL_CHANGES.value
 
     @pytest.mark.unit
-    def test_array_order_matters(self):
-        """Should detect changes in array order."""
+    def test_node_order_normalized(self):
+        """Should normalize node order by sorting by name.
+
+        The canonical normalize_workflow_for_comparison function sorts nodes
+        by name for consistent comparison, so different node ordering should
+        result in IN_SYNC status.
+        """
         n8n_workflow = {
             "name": "Test",
             "nodes": [
@@ -460,5 +473,5 @@ class TestSyncStatusEdgeCases:
             n8n_updated_at="2024-01-20T10:00:00Z",
             github_updated_at="2024-01-10T10:00:00Z"
         )
-        # Array order difference should be detected
-        assert result == SyncStatus.LOCAL_CHANGES.value
+        # Node order is normalized by sorting, so these are considered in sync
+        assert result == SyncStatus.IN_SYNC.value

@@ -67,22 +67,37 @@ async def _process_repo_sync_scheduler():
                             metadata={"trigger": "scheduled_sync"}
                         )
                         
-                        # Run sync
-                        await CanonicalRepoSyncService.sync_repository(
+                        # Run sync (repo sync doesn't support job_id/SSE yet)
+                        repo_sync_result = await CanonicalRepoSyncService.sync_repository(
                             tenant_id=tenant_id,
                             environment_id=environment_id,
                             environment=env
                         )
-                        
+
                         # Trigger reconciliation
                         await CanonicalReconciliationService.reconcile_all_pairs_for_environment(
                             tenant_id=tenant_id,
                             changed_env_id=environment_id
                         )
-                        
+
+                        # Complete the job successfully
+                        await background_job_service.complete_job(
+                            job_id=job["id"],
+                            result=repo_sync_result
+                        )
+
                         logger.info(f"Scheduled repo sync completed for environment {environment_id}")
                     except Exception as e:
                         logger.error(f"Scheduled repo sync failed for environment {environment_id}: {str(e)}")
+                        # Fail the job with error details
+                        try:
+                            await background_job_service.fail_job(
+                                job_id=job["id"],
+                                error_message=str(e),
+                                error_details={"exception_type": type(e).__name__}
+                            )
+                        except Exception as fail_err:
+                            logger.error(f"Failed to mark job as failed: {str(fail_err)}")
             
             # Wait before next cycle
             await asyncio.sleep(REPO_SYNC_INTERVAL)
@@ -124,14 +139,15 @@ async def _process_env_sync_scheduler():
                             metadata={"trigger": "scheduled_sync"}
                         )
                         
-                        # Run sync
-                        await CanonicalEnvSyncService.sync_environment(
+                        # Run sync with SSE support for live logs
+                        sync_result = await CanonicalEnvSyncService.sync_environment(
                             tenant_id=tenant_id,
                             environment_id=environment_id,
                             environment=env,
-                            job_id=job["id"]
+                            job_id=job["id"],
+                            tenant_id_for_sse=tenant_id  # Enable SSE events for live log streaming
                         )
-                        
+
                         # Update last_sync_at on successful sync
                         try:
                             await db_service.update_environment(
@@ -141,16 +157,31 @@ async def _process_env_sync_scheduler():
                             )
                         except Exception as sync_err:
                             logger.warning(f"Failed to update last_sync_at for scheduled sync: {str(sync_err)}")
-                        
+
                         # Trigger reconciliation
                         await CanonicalReconciliationService.reconcile_all_pairs_for_environment(
                             tenant_id=tenant_id,
                             changed_env_id=environment_id
                         )
-                        
+
+                        # Complete the job successfully
+                        await background_job_service.complete_job(
+                            job_id=job["id"],
+                            result=sync_result
+                        )
+
                         logger.info(f"Scheduled env sync completed for environment {environment_id}")
                     except Exception as e:
                         logger.error(f"Scheduled env sync failed for environment {environment_id}: {str(e)}")
+                        # Fail the job with error details
+                        try:
+                            await background_job_service.fail_job(
+                                job_id=job["id"],
+                                error_message=str(e),
+                                error_details={"exception_type": type(e).__name__}
+                            )
+                        except Exception as fail_err:
+                            logger.error(f"Failed to mark job as failed: {str(fail_err)}")
             
             # Wait before next cycle
             await asyncio.sleep(ENV_SYNC_INTERVAL)

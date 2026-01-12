@@ -92,21 +92,21 @@ async def get_background_job(
                 detail="Authentication required"
             )
         tenant_id = tenant["id"]
-        
+
         job = await background_job_service.get_job(job_id)
         if not job:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="Job not found"
             )
-        
+
         # Verify job belongs to the tenant
         if job.get("tenant_id") != tenant_id:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="Job not found"
             )
-        
+
         return job
     except HTTPException:
         raise
@@ -114,5 +114,67 @@ async def get_background_job(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to get job: {str(e)}"
+        )
+
+
+@router.post("/{job_id}/cancel")
+async def cancel_background_job(
+    job_id: str,
+    user_info: dict = Depends(require_entitlement("environment_basic"))
+):
+    """
+    Cancel a running or pending background job.
+
+    This operation is safe and idempotent:
+    - Only marks the job as CANCELLED in the database
+    - Does NOT forcefully kill processes or threads
+    - Workers must cooperatively check status and exit gracefully
+    - Emits SSE event to notify clients and workers
+    """
+    import logging
+    logger = logging.getLogger(__name__)
+
+    try:
+        # Get tenant_id from authenticated user
+        tenant = user_info.get("tenant")
+        if not tenant:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Authentication required"
+            )
+        tenant_id = tenant["id"]
+
+        # Get job and verify it belongs to the tenant
+        job = await background_job_service.get_job(job_id)
+        if not job:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Job not found"
+            )
+
+        if job.get("tenant_id") != tenant_id:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Job not found"
+            )
+
+        # Cancel the job
+        try:
+            updated_job = await background_job_service.cancel_job(job_id)
+            logger.info(f"Job {job_id} cancelled by user from tenant {tenant_id}")
+            return updated_job
+        except ValueError as ve:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=str(ve)
+            )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to cancel job {job_id}: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to cancel job: {str(e)}"
         )
 

@@ -902,7 +902,7 @@ class ObservabilityService:
                 uptime_task = db_service.get_uptime_stats(tenant_id, env_id, since_24h)
                 deployments_task = db_service.get_deployments(tenant_id)
                 snapshots_task = db_service.get_snapshots(tenant_id, environment_id=env_id)
-                workflows_task = db_service.get_workflows(tenant_id, env_id)
+                workflows_task = db_service.get_workflows_from_canonical(tenant_id, env_id)
                 credentials_task = db_service.get_credentials(tenant_id, env_id)
 
                 # Await all in parallel

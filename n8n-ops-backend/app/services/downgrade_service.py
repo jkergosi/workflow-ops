@@ -105,9 +105,9 @@ class DowngradeService:
         """
         try:
             # Get current team member count and IDs
-            response = self.db_service.client.table("tenant_users").select(
+            response = self.db_service.client.table("users").select(
                 "id, created_at"
-            ).eq("tenant_id", tenant_id).order("created_at", desc=False).execute()
+            ).eq("tenant_id", tenant_id).eq("status", "active").order("created_at", desc=False).execute()
 
             members = response.data or []
             current_count = len(members)
@@ -153,26 +153,21 @@ class DowngradeService:
             Tuple of (is_over_limit, current_count, limit, over_limit_ids)
         """
         try:
-            # Get unique canonical workflows
-            response = self.db_service.client.table("workflow_env_map").select(
+            # Get unique canonical workflows with their created_at from canonical_workflows table
+            response = self.db_service.client.table("canonical_workflows").select(
                 "canonical_id, created_at"
-            ).eq("tenant_id", tenant_id).execute()
+            ).eq("tenant_id", tenant_id).is_("deleted_at", "null").execute()
 
             workflows = response.data or []
 
-            # Get unique canonical IDs with their earliest created_at
+            # Build map of canonical_id to created_at
             canonical_workflows = {}
             for workflow in workflows:
                 canonical_id = workflow.get("canonical_id")
                 created_at = workflow.get("created_at")
 
                 if canonical_id:
-                    if canonical_id not in canonical_workflows:
-                        canonical_workflows[canonical_id] = created_at
-                    else:
-                        # Keep the earliest created_at
-                        if created_at < canonical_workflows[canonical_id]:
-                            canonical_workflows[canonical_id] = created_at
+                    canonical_workflows[canonical_id] = created_at
 
             current_count = len(canonical_workflows)
 
@@ -769,11 +764,9 @@ class DowngradeService:
         now = datetime.now(timezone.utc)
 
         if action == DowngradeAction.DISABLE.value:
-            # Disable team member access
-            response = self.db_service.client.table("tenant_users").update({
-                "is_active": False,
-                "deactivated_at": now.isoformat(),
-                "deactivation_reason": "Plan limit exceeded - grace period expired",
+            # Disable team member access by setting status to inactive
+            response = self.db_service.client.table("users").update({
+                "status": "inactive",
                 "updated_at": now.isoformat(),
             }).eq("id", member_id).eq("tenant_id", tenant_id).execute()
 
@@ -781,10 +774,11 @@ class DowngradeService:
             return bool(response.data)
 
         elif action == DowngradeAction.SCHEDULE_DELETION.value:
-            # Remove team member (soft delete)
-            response = self.db_service.client.table("tenant_users").delete().eq(
-                "id", member_id
-            ).eq("tenant_id", tenant_id).execute()
+            # Remove team member (soft delete) by setting status to inactive
+            response = self.db_service.client.table("users").update({
+                "status": "inactive",
+                "updated_at": now.isoformat(),
+            }).eq("id", member_id).eq("tenant_id", tenant_id).execute()
 
             logger.info(f"Removed team member {member_id}")
             return bool(response.data)
@@ -946,11 +940,9 @@ class DowngradeService:
         try:
             now = datetime.now(timezone.utc)
 
-            # Clear all downgrade-related flags
-            response = self.db_service.client.table("tenant_users").update({
-                "is_active": True,
-                "deactivated_at": None,
-                "deactivation_reason": None,
+            # Re-enable by setting status back to active
+            response = self.db_service.client.table("users").update({
+                "status": "active",
                 "updated_at": now.isoformat(),
             }).eq("id", member_id).eq("tenant_id", tenant_id).execute()
 

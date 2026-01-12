@@ -296,19 +296,53 @@ class BackgroundJobService:
 
     @staticmethod
     async def cancel_job(job_id: str) -> Dict[str, Any]:
-        """Cancel a running job"""
+        """
+        Cancel a running or pending job.
+
+        Safety: This method sets the job status to CANCELLED in the database.
+        Workers must cooperatively check the job status and exit gracefully when cancelled.
+        This method does NOT forcefully kill threads or processes.
+
+        Args:
+            job_id: Job ID to cancel
+
+        Returns:
+            Updated job record
+
+        Raises:
+            ValueError: If job not found or cannot be cancelled
+        """
+        from app.services.sse_pubsub_service import sse_pubsub
+
         job = await BackgroundJobService.get_job(job_id)
         if not job:
             raise ValueError(f"Job {job_id} not found")
-        
+
         if job.get("status") not in [BackgroundJobStatus.PENDING, BackgroundJobStatus.RUNNING]:
             raise ValueError(f"Cannot cancel job in status: {job.get('status')}")
-        
-        return await BackgroundJobService.update_job_status(
+
+        updated_job = await BackgroundJobService.update_job_status(
             job_id=job_id,
             status=BackgroundJobStatus.CANCELLED,
             error_message="Job cancelled by user"
         )
+
+        # Emit SSE event to notify clients and workers
+        await sse_pubsub.publish(
+            tenant_id=job.get("tenant_id"),
+            event_type="job.status_changed",
+            data={
+                "job_id": job_id,
+                "status": BackgroundJobStatus.CANCELLED,
+                "job_type": job.get("job_type"),
+                "resource_id": job.get("resource_id"),
+                "resource_type": job.get("resource_type"),
+                "error_message": "Job cancelled by user"
+            }
+        )
+
+        logger.info(f"Job {job_id} cancelled by user")
+        return updated_job
 
     @staticmethod
     async def update_progress(
@@ -320,19 +354,19 @@ class BackgroundJobService:
     ) -> Dict[str, Any]:
         """
         Update job progress.
-        
+
         Args:
             job_id: Job ID
             current: Current item number
             total: Total items
             percentage: Progress percentage (0-100)
             message: Progress message
-            
+
         Returns:
             Updated job record
         """
         progress: Dict[str, Any] = {}
-        
+
         if current is not None:
             progress["current"] = current
         if total is not None:
@@ -341,13 +375,106 @@ class BackgroundJobService:
             progress["percentage"] = percentage
         if message is not None:
             progress["message"] = message
-        
+
         # Calculate percentage if not provided but current and total are
         if "percentage" not in progress and "current" in progress and "total" in progress:
             if progress["total"] > 0:
                 progress["percentage"] = round((progress["current"] / progress["total"]) * 100, 2)
-        
+
         return await BackgroundJobService.update_job_status(job_id, BackgroundJobStatus.RUNNING, progress=progress)
+
+    @staticmethod
+    async def complete_job(
+        job_id: str,
+        result: Optional[Dict[str, Any]] = None
+    ) -> Dict[str, Any]:
+        """
+        Mark a job as completed successfully.
+
+        Args:
+            job_id: Job ID
+            result: Final result data
+
+        Returns:
+            Updated job record
+        """
+        from app.services.sse_pubsub_service import sse_pubsub
+
+        job = await BackgroundJobService.get_job(job_id)
+        if not job:
+            raise ValueError(f"Job {job_id} not found")
+
+        result_data = result or {}
+        result_data["completed_at"] = datetime.utcnow().isoformat()
+
+        updated_job = await BackgroundJobService.update_job_status(
+            job_id=job_id,
+            status=BackgroundJobStatus.COMPLETED,
+            result=result_data
+        )
+
+        # Emit SSE event to notify clients
+        await sse_pubsub.publish(
+            tenant_id=job.get("tenant_id"),
+            event_type="job.status_changed",
+            data={
+                "job_id": job_id,
+                "status": BackgroundJobStatus.COMPLETED,
+                "job_type": job.get("job_type"),
+                "resource_id": job.get("resource_id"),
+                "resource_type": job.get("resource_type")
+            }
+        )
+
+        logger.info(f"Job {job_id} marked as completed")
+        return updated_job
+
+    @staticmethod
+    async def fail_job(
+        job_id: str,
+        error_message: str,
+        error_details: Optional[Dict[str, Any]] = None
+    ) -> Dict[str, Any]:
+        """
+        Mark a job as failed.
+
+        Args:
+            job_id: Job ID
+            error_message: Error message
+            error_details: Detailed error information
+
+        Returns:
+            Updated job record
+        """
+        from app.services.sse_pubsub_service import sse_pubsub
+
+        job = await BackgroundJobService.get_job(job_id)
+        if not job:
+            raise ValueError(f"Job {job_id} not found")
+
+        updated_job = await BackgroundJobService.update_job_status(
+            job_id=job_id,
+            status=BackgroundJobStatus.FAILED,
+            error_message=error_message,
+            error_details=error_details or {}
+        )
+
+        # Emit SSE event to notify clients
+        await sse_pubsub.publish(
+            tenant_id=job.get("tenant_id"),
+            event_type="job.status_changed",
+            data={
+                "job_id": job_id,
+                "status": BackgroundJobStatus.FAILED,
+                "job_type": job.get("job_type"),
+                "resource_id": job.get("resource_id"),
+                "resource_type": job.get("resource_type"),
+                "error_message": error_message
+            }
+        )
+
+        logger.error(f"Job {job_id} marked as failed: {error_message}")
+        return updated_job
 
     @staticmethod
     async def cleanup_stale_jobs(
@@ -358,19 +485,94 @@ class BackgroundJobService:
         Clean up stale jobs that have been running too long.
         This should be called on startup and periodically to handle cases where
         the server crashed or restarted while jobs were running.
-        
+
         Args:
             max_runtime_hours: Maximum hours a job should run before being marked as failed
             tenant_id: Optional tenant ID to filter by (None = all tenants)
-            
+
         Returns:
             Dictionary with counts of cleaned up jobs
         """
         from datetime import timedelta
-        
+        from app.services.sse_pubsub_service import sse_pubsub
+
         cutoff_time = datetime.utcnow() - timedelta(hours=max_runtime_hours)
         cutoff_iso = cutoff_time.isoformat()
-        
+
+        cleaned_count = 0
+        failed_count = 0
+        completed_count = 0
+
+        # First, handle jobs at 100% completion that should be marked as completed
+        completed_query = (
+            db_service.client.table("background_jobs")
+            .select("*")
+            .eq("status", BackgroundJobStatus.RUNNING)
+        )
+
+        if tenant_id:
+            completed_query = completed_query.eq("tenant_id", tenant_id)
+
+        completed_result = completed_query.execute()
+        running_jobs = completed_result.data or []
+
+        # Check for jobs at 100% that have been sitting for >5 minutes
+        five_min_ago = datetime.utcnow() - timedelta(minutes=5)
+
+        for job in running_jobs:
+            job_id = job.get("id")
+            progress = job.get("progress", {})
+            percentage = progress.get("percentage", 0)
+            updated_at_str = job.get("updated_at") or job.get("started_at")
+
+            # Check if job is at 100% or if current == total
+            is_complete = False
+            if percentage >= 100:
+                is_complete = True
+            elif progress.get("current") and progress.get("total"):
+                if progress["current"] >= progress["total"]:
+                    is_complete = True
+
+            if is_complete and updated_at_str:
+                try:
+                    from dateutil import parser as date_parser
+                    updated_at = date_parser.parse(updated_at_str)
+                    # Make timezone-aware if needed
+                    if updated_at.tzinfo is None:
+                        from datetime import timezone
+                        updated_at = updated_at.replace(tzinfo=timezone.utc)
+
+                    # If job has been at 100% for >5 minutes, mark as completed
+                    if updated_at < five_min_ago.replace(tzinfo=updated_at.tzinfo):
+                        result_data = job.get("result", {})
+                        if not result_data.get("completed_at"):
+                            result_data["completed_at"] = datetime.utcnow().isoformat()
+
+                        await BackgroundJobService.update_job_status(
+                            job_id=job_id,
+                            status=BackgroundJobStatus.COMPLETED,
+                            result=result_data
+                        )
+
+                        # Emit SSE event
+                        await sse_pubsub.publish(
+                            tenant_id=job.get("tenant_id"),
+                            event_type="job.status_changed",
+                            data={
+                                "job_id": job_id,
+                                "status": BackgroundJobStatus.COMPLETED,
+                                "job_type": job.get("job_type"),
+                                "resource_id": job.get("resource_id"),
+                                "resource_type": job.get("resource_type")
+                            }
+                        )
+
+                        cleaned_count += 1
+                        completed_count += 1
+                        logger.info(f"Marked job {job_id} as completed (was at 100% for >5min)")
+                except Exception as parse_error:
+                    logger.debug(f"Could not parse date for job {job_id}: {str(parse_error)}")
+
         # Find jobs that are still running but started too long ago
         query = (
             db_service.client.table("background_jobs")
@@ -378,16 +580,13 @@ class BackgroundJobService:
             .eq("status", BackgroundJobStatus.RUNNING)
             .lt("started_at", cutoff_iso)
         )
-        
+
         if tenant_id:
             query = query.eq("tenant_id", tenant_id)
-        
+
         result = query.execute()
         stale_jobs = result.data or []
-        
-        cleaned_count = 0
-        failed_count = 0
-        
+
         for job in stale_jobs:
             job_id = job.get("id")
             try:
@@ -402,7 +601,21 @@ class BackgroundJobService:
                         "marked_stale_at": datetime.utcnow().isoformat()
                     }
                 )
-                
+
+                # Emit SSE event
+                await sse_pubsub.publish(
+                    tenant_id=job.get("tenant_id"),
+                    event_type="job.status_changed",
+                    data={
+                        "job_id": job_id,
+                        "status": BackgroundJobStatus.FAILED,
+                        "job_type": job.get("job_type"),
+                        "resource_id": job.get("resource_id"),
+                        "resource_type": job.get("resource_type"),
+                        "error_message": f"Job timed out after running for more than {max_runtime_hours} hours"
+                    }
+                )
+
                 # Also update associated deployment if this is a promotion job
                 if job.get("resource_type") == "promotion" and job.get("result", {}).get("deployment_id"):
                     deployment_id = job.get("result", {}).get("deployment_id")
@@ -419,13 +632,13 @@ class BackgroundJobService:
                         logger.info(f"Marked associated deployment {deployment_id} as failed due to stale job")
                     except Exception as dep_error:
                         logger.error(f"Failed to update deployment {deployment_id} for stale job: {str(dep_error)}")
-                
+
                 cleaned_count += 1
                 failed_count += 1
                 logger.warning(f"Marked stale job {job_id} as failed (running for >{max_runtime_hours}h)")
             except Exception as e:
                 logger.error(f"Failed to mark stale job {job_id} as failed: {str(e)}")
-        
+
         # Also handle jobs that are pending but were created too long ago (likely never started)
         pending_cutoff = datetime.utcnow() - timedelta(hours=1)  # 1 hour for pending jobs
         pending_query = (
@@ -434,13 +647,13 @@ class BackgroundJobService:
             .eq("status", BackgroundJobStatus.PENDING)
             .lt("created_at", pending_cutoff.isoformat())
         )
-        
+
         if tenant_id:
             pending_query = pending_query.eq("tenant_id", tenant_id)
-        
+
         pending_result = pending_query.execute()
         stale_pending = pending_result.data or []
-        
+
         for job in stale_pending:
             job_id = job.get("id")
             try:
@@ -453,15 +666,31 @@ class BackgroundJobService:
                         "marked_stale_at": datetime.utcnow().isoformat()
                     }
                 )
+
+                # Emit SSE event
+                await sse_pubsub.publish(
+                    tenant_id=job.get("tenant_id"),
+                    event_type="job.status_changed",
+                    data={
+                        "job_id": job_id,
+                        "status": BackgroundJobStatus.FAILED,
+                        "job_type": job.get("job_type"),
+                        "resource_id": job.get("resource_id"),
+                        "resource_type": job.get("resource_type"),
+                        "error_message": "Job was pending for more than 1 hour and never started"
+                    }
+                )
+
                 cleaned_count += 1
                 failed_count += 1
                 logger.warning(f"Marked stale pending job {job_id} as failed")
             except Exception as e:
                 logger.error(f"Failed to mark stale pending job {job_id} as failed: {str(e)}")
-        
+
         return {
             "cleaned_count": cleaned_count,
             "failed_count": failed_count,
+            "completed_count": completed_count,
             "stale_running": len(stale_jobs),
             "stale_pending": len(stale_pending)
         }

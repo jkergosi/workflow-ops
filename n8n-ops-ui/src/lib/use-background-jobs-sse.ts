@@ -360,7 +360,67 @@ export function useBackgroundJobsSSE(
         console.error('Failed to parse restore.progress event:', error);
       }
     });
-  }, [enabled, environmentId, jobId, handleSyncProgress, handleBackupProgress, handleRestoreProgress, getReconnectDelay, emitLog]);
+
+    // Handle job status changed events
+    eventSource.addEventListener('job.status_changed', (event: MessageEvent) => {
+      try {
+        const data = JSON.parse(event.data);
+        const sseData = transformKeys(data);
+        const jId = sseData.jobId || jobId;
+
+        onProgressEvent?.('job.status_changed', sseData);
+
+        // Emit log message
+        const logLevel: LogMessage['level'] = sseData.status === 'failed' ? 'error' :
+                                               sseData.status === 'cancelled' ? 'warn' :
+                                               sseData.status === 'completed' ? 'info' : 'info';
+        const logMessage = sseData.errorMessage || `Job status changed to: ${sseData.status}`;
+        emitLog(logLevel, logMessage, 'status_change', {
+          jobId: jId,
+          status: sseData.status,
+          jobType: sseData.jobType,
+        });
+
+        // Update job status in cache
+        if (jId) {
+          queryClient.setQueryData(['background-job', jId], (old: any) => {
+            if (!old) return { data: sseData };
+            return {
+              ...old,
+              data: {
+                ...old.data,
+                status: sseData.status,
+                error_message: sseData.errorMessage,
+              },
+            };
+          });
+
+          // Invalidate to trigger refetch
+          queryClient.invalidateQueries({ queryKey: ['background-job', jId] });
+          queryClient.invalidateQueries({ queryKey: ['all-background-jobs'] });
+        }
+
+        // Update environment jobs list
+        if (sseData.resourceId) {
+          queryClient.setQueryData(['environment-jobs', sseData.resourceId], (old: any) => {
+            if (!old?.data) return old;
+            return {
+              ...old,
+              data: old.data.map((job: any) =>
+                job.id === jId ? {
+                  ...job,
+                  status: sseData.status,
+                  error_message: sseData.errorMessage,
+                } : job
+              ),
+            };
+          });
+        }
+      } catch (error) {
+        console.error('Failed to parse job.status_changed event:', error);
+      }
+    });
+  }, [enabled, environmentId, jobId, handleSyncProgress, handleBackupProgress, handleRestoreProgress, getReconnectDelay, emitLog, onProgressEvent, queryClient]);
 
   useEffect(() => {
     if (enabled) {

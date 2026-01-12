@@ -1020,9 +1020,9 @@ class DatabaseService:
         n8n_workflow_ids = {workflow.get("id") for workflow in n8n_workflows}
 
         # Mark workflows as deleted if they no longer exist in N8N
-        existing_workflows = await self.get_workflows(tenant_id, environment_id)
+        existing_workflows = await self.get_workflows_from_canonical(tenant_id, environment_id)
         for existing in existing_workflows:
-            if existing["n8n_workflow_id"] not in n8n_workflow_ids:
+            if existing["id"] not in n8n_workflow_ids:
                 self.client.table("workflows").update({
                     "is_deleted": True,
                     "last_synced_at": datetime.utcnow().isoformat()

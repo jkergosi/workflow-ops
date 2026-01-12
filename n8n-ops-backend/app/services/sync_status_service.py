@@ -1,10 +1,15 @@
 """
 Service for computing workflow sync status between N8N runtime and GitHub
+
+This service uses the canonical normalization function from promotion_service
+to ensure consistent comparisons across the entire sync pipeline.
 """
 from typing import Dict, Any, Optional
 import json
 from datetime import datetime
 from enum import Enum
+
+from app.services.promotion_service import normalize_workflow_for_comparison
 
 
 class SyncStatus(str, Enum):
@@ -24,6 +29,9 @@ def compute_sync_status(
     """
     Compute sync status for a workflow by comparing N8N runtime with GitHub.
 
+    Uses the canonical normalize_workflow_for_comparison function to ensure
+    consistent normalization with the rest of the sync pipeline.
+
     Args:
         n8n_workflow: Workflow data from N8N runtime
         github_workflow: Workflow data from GitHub (None if not in GitHub)
@@ -34,8 +42,8 @@ def compute_sync_status(
     Returns:
         Sync status: 'in_sync', 'local_changes', 'update_available', or 'conflict'
     """
-    # Normalize workflow JSON for comparison (remove metadata that doesn't affect functionality)
-    n8n_json = _normalize_workflow_json(n8n_workflow)
+    # Use canonical normalization function for consistent comparison
+    n8n_json = normalize_workflow_for_comparison(n8n_workflow)
 
     # If workflow doesn't exist in GitHub
     if github_workflow is None:
@@ -44,8 +52,8 @@ def compute_sync_status(
             return SyncStatus.LOCAL_CHANGES.value
         # If it was synced before but no longer in GitHub, treat as local changes
         return SyncStatus.LOCAL_CHANGES.value
-    
-    github_json = _normalize_workflow_json(github_workflow)
+
+    github_json = normalize_workflow_for_comparison(github_workflow)
 
     # Compare normalized JSON
     n8n_json_str = json.dumps(n8n_json, sort_keys=True)
@@ -101,39 +109,9 @@ def compute_sync_status(
     return SyncStatus.LOCAL_CHANGES.value
 
 
-def _normalize_workflow_json(workflow: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    Normalize workflow JSON for comparison by removing metadata fields
-    that don't affect functionality.
-    """
-    # Create a copy to avoid modifying the original
-    normalized = json.loads(json.dumps(workflow))
-    
-    # Remove metadata fields that don't affect workflow functionality
-    metadata_fields = [
-        'id',  # ID might differ but workflow is the same
-        'updatedAt',  # Timestamp doesn't affect functionality
-        'createdAt',  # Timestamp doesn't affect functionality
-        'versionId',  # Version ID is metadata
-        'versionCounter',  # Version counter is metadata
-        '_comment',  # Added by GitHub sync, not part of original workflow
-        'meta',  # Workflow meta info (instanceId, etc.)
-        'pinData',  # Pin data is runtime state
-        'staticData',  # Static data is runtime state
-        'shared',  # Project sharing info, not workflow functionality
-        'description',  # May or may not be present
-    ]
-
-    for field in metadata_fields:
-        normalized.pop(field, None)
-
-    # Also normalize nodes - remove position and other UI metadata
-    if 'nodes' in normalized and isinstance(normalized['nodes'], list):
-        for node in normalized['nodes']:
-            # Remove position and other UI-specific fields
-            ui_fields = ['position', 'positionAbsolute', 'selected', 'selectedNodes', 'id']
-            for field in ui_fields:
-                node.pop(field, None)
-
-    return normalized
+# Note: The _normalize_workflow_json function has been removed.
+# We now use the canonical normalize_workflow_for_comparison function
+# from promotion_service.py to ensure consistent normalization across
+# the entire sync pipeline. This eliminates potential hash mismatches
+# caused by different normalization logic.
 

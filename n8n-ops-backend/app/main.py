@@ -411,20 +411,55 @@ async def health_check():
     return {"status": "healthy"}
 
 
+async def periodic_job_cleanup():
+    """
+    Periodically clean up stale jobs (runs every 5 minutes).
+    This handles jobs stuck at 100% completion, jobs that timed out, and pending jobs that never started.
+    """
+    import asyncio
+    while True:
+        try:
+            await asyncio.sleep(300)  # 5 minutes
+            logger.debug("Running periodic job cleanup...")
+            cleanup_result = await background_job_service.cleanup_stale_jobs(max_runtime_hours=24)
+            if cleanup_result['cleaned_count'] > 0:
+                logger.info(
+                    f"Periodic cleanup: {cleanup_result['cleaned_count']} jobs cleaned "
+                    f"({cleanup_result.get('completed_count', 0)} completed, "
+                    f"{cleanup_result['failed_count']} failed, "
+                    f"{cleanup_result['stale_running']} stale running, "
+                    f"{cleanup_result['stale_pending']} stale pending)"
+                )
+        except asyncio.CancelledError:
+            logger.info("Periodic job cleanup task cancelled")
+            break
+        except Exception as e:
+            logger.error(f"Error in periodic job cleanup: {str(e)}", exc_info=True)
+
+
 @app.on_event("startup")
 async def startup_event():
     """
     Cleanup stale background jobs and deployments on startup.
     This handles cases where the server crashed or restarted while jobs were running.
-    Also starts the deployment scheduler.
+    Also starts the deployment scheduler and periodic cleanup task.
     """
     try:
         logger.info("Cleaning up stale background jobs on startup...")
         cleanup_result = await background_job_service.cleanup_stale_jobs(max_runtime_hours=24)
         logger.info(
             f"Startup cleanup complete: {cleanup_result['cleaned_count']} jobs cleaned "
-            f"({cleanup_result['stale_running']} running, {cleanup_result['stale_pending']} pending)"
+            f"({cleanup_result.get('completed_count', 0)} completed, "
+            f"{cleanup_result['failed_count']} failed, "
+            f"{cleanup_result['stale_running']} running, {cleanup_result['stale_pending']} pending)"
         )
+
+        # Start periodic job cleanup task
+        import asyncio
+        cleanup_task = asyncio.create_task(periodic_job_cleanup())
+        # Store the task so it doesn't get garbage collected
+        app.state.cleanup_task = cleanup_task
+        logger.info("Periodic job cleanup task started (runs every 5 minutes)")
         
         # Start deployment scheduler
         from app.services.deployment_scheduler import start_scheduler
@@ -504,6 +539,15 @@ async def startup_event():
 @app.on_event("shutdown")
 async def shutdown_event():
     """Stop all schedulers on shutdown."""
+    # Stop periodic job cleanup task
+    if hasattr(app.state, 'cleanup_task'):
+        app.state.cleanup_task.cancel()
+        try:
+            await app.state.cleanup_task
+        except Exception:
+            pass
+        logger.info("Periodic job cleanup task stopped")
+
     try:
         from app.services.deployment_scheduler import stop_scheduler
         await stop_scheduler()

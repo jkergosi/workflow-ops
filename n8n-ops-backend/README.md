@@ -290,6 +290,44 @@ To promote workflows through multiple environments, create separate pipelines fo
 
 This approach provides full traceability and allows different approval workflows at each stage.
 
+## Troubleshooting
+
+### Corrupted Python Packages
+
+If you see warnings like:
+```
+WARNING: Ignoring invalid distribution ~angchain (F:\Python312\Lib\site-packages)
+WARNING: Ignoring invalid distribution ~penai (F:\Python312\Lib\site-packages)
+```
+
+These indicate corrupted package installations. We provide automated fix scripts:
+
+**Quick Fix (Python)**:
+```bash
+python fix_corrupted_packages.py
+```
+
+**Quick Fix (PowerShell)**:
+```powershell
+.\fix_corrupted_packages.ps1
+```
+
+For detailed information, see [FIX_CORRUPTED_PACKAGES_README.md](FIX_CORRUPTED_PACKAGES_README.md)
+
+### Virtual Environment Recommended
+
+To avoid future issues, use a virtual environment:
+```bash
+# Create virtual environment
+python -m venv .venv
+
+# Activate (Windows PowerShell)
+.\.venv\Scripts\Activate.ps1
+
+# Install dependencies
+pip install -r requirements.txt
+```
+
 ## Next Steps
 
 1. Set up Supabase project and apply schema

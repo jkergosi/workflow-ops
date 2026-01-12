@@ -291,6 +291,9 @@ export function EnvironmentsPage() {
             message: status === 'already_running' ? 'Sync already in progress...' : 'Starting sync...',
           },
         }));
+
+        // Redirect to activity page to view sync progress in real-time
+        navigate(`/activity/${job_id}`);
       } else {
         toast.error(message || 'Failed to start sync');
       }

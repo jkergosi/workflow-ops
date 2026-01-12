@@ -194,3 +194,39 @@ cd n8n-ops-ui && npm run lint                   # Lint check
 - Frontend docs: `n8n-ops-ui/CLAUDE.md`
 - API docs: `http://localhost:4000/docs`
 - [FastAPI](https://fastapi.tiangolo.com/) | [N8N API](https://docs.n8n.io/api/) | [Supabase](https://supabase.com/docs) | [TanStack Query](https://tanstack.com/query) | [shadcn/ui](https://ui.shadcn.com/)
+
+---
+
+## Active Instruction Context: Unqork Documentation Crawling
+
+> **When working on Unqork docs.unqork.io crawling diagnostics, use `rnd/rnd.md` as the active instruction file.**
+
+### Scope
+
+The `rnd/rnd.md` file contains specialized guidance for diagnosing and debugging documentation crawling issues specific to `docs.unqork.io`. This includes:
+
+- Debug playbook and practical checklist
+- Edge case handling (404 pages, WAF/bot-challenge detection)
+- Classification verification (NOT_FOUND, AUTH_REQUIRED, BLOCKED, RATE_LIMITED)
+- Incremental crawling and anti-bot hygiene rules
+- Output contract recommendations
+
+### Constraints (Diagnostic-Only Mode)
+
+When `rnd.md` is the active context, the following constraints apply:
+
+- **No new URL discovery** — Work only with known/provided URLs
+- **No URL guessing** — Do not infer or construct URLs
+- **Diagnostic-only mode** — Focus on analyzing and debugging existing crawl results
+
+### Supporting Documents
+
+| Document | Purpose |
+|----------|---------|
+| `rnd/rnd.md` | Active instruction file — debug playbook and edge cases |
+| `rnd/1_extract.md` | Extraction rules and content processing guidelines |
+| `rnd/2_reconcile.md` | Reconciliation rules for comparing crawl results |
+
+### Usage
+
+For Unqork crawling diagnostic sessions, reference `rnd/rnd.md` first. The core N8N Ops platform instructions above remain applicable for all other development work.

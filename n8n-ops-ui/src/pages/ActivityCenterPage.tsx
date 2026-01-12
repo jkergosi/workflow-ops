@@ -3,7 +3,7 @@
  */
 
 import { useEffect, useState, useRef, useMemo } from 'react';
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useSearchParams, useNavigate, Link } from 'react-router-dom';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
@@ -23,9 +23,20 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from '@/components/ui/alert-dialog';
 import { apiClient } from '@/lib/api-client';
 import { useBackgroundJobsSSE } from '@/lib/use-background-jobs-sse';
-import { Activity, Loader2, CheckCircle2, XCircle, Clock, RefreshCw, Server, AlertTriangle } from 'lucide-react';
+import { Activity, Loader2, CheckCircle2, XCircle, Clock, RefreshCw, Server, AlertTriangle, Ban } from 'lucide-react';
+import { useToast } from '@/hooks/use-toast';
 
 // Helper function to format relative time
 function formatRelativeTime(date: Date): string {
@@ -63,13 +74,39 @@ interface Job {
 
 export function ActivityCenterPage() {
   const navigate = useNavigate();
+  const queryClient = useQueryClient();
+  const { toast } = useToast();
   const [searchParams, setSearchParams] = useSearchParams();
   const [jobTypeFilter, setJobTypeFilter] = useState<string>('all');
   const [statusFilter, setStatusFilter] = useState<string>('all');
+  const [jobToCancel, setJobToCancel] = useState<Job | null>(null);
   const selectedJobIdRef = useRef<string | null>(null);
 
   // Get job_id from URL query param for pre-selection
   const jobIdFromUrl = searchParams.get('jobId') || searchParams.get('job_id');
+
+  // Cancel job mutation
+  const cancelJobMutation = useMutation({
+    mutationFn: (jobId: string) => apiClient.cancelBackgroundJob(jobId),
+    onSuccess: () => {
+      toast({
+        title: 'Job cancelled',
+        description: 'The job has been cancelled successfully.',
+      });
+      // Invalidate and refetch jobs
+      queryClient.invalidateQueries({ queryKey: ['all-background-jobs'] });
+      queryClient.invalidateQueries({ queryKey: ['background-job'] });
+      setJobToCancel(null);
+    },
+    onError: (error: any) => {
+      toast({
+        title: 'Failed to cancel job',
+        description: error?.response?.data?.detail || error?.message || 'An error occurred',
+        variant: 'destructive',
+      });
+      setJobToCancel(null);
+    },
+  });
 
   useEffect(() => {
     document.title = 'Activity Center - WorkflowOps';
@@ -354,15 +391,17 @@ export function ActivityCenterPage() {
                   <TableHead>Duration</TableHead>
                   <TableHead>Started</TableHead>
                   <TableHead>Error</TableHead>
+                  <TableHead className="text-right">Actions</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {jobs.map((job) => (
-                  <TableRow 
-                    key={job.id} 
+                {jobs.map((job) => {
+                  const canCancel = job.status === 'pending' || job.status === 'running';
+                  return (
+                  <TableRow
+                    key={job.id}
                     id={`job-${job.id}`}
-                    className={`cursor-pointer hover:bg-muted/50 ${job.id === jobIdFromUrl ? 'bg-blue-50 dark:bg-blue-950/30' : ''}`}
-                    onClick={() => navigate(`/activity/${job.id}`)}
+                    className={`${job.id === jobIdFromUrl ? 'bg-blue-50 dark:bg-blue-950/30' : ''}`}
                   >
                     <TableCell className="font-medium">
                       {getJobTypeLabel(job.job_type)}
@@ -439,13 +478,77 @@ export function ActivityCenterPage() {
                         '—'
                       )}
                     </TableCell>
+                    <TableCell className="text-right">
+                      <div className="flex justify-end gap-2">
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            navigate(`/activity/${job.id}`);
+                          }}
+                        >
+                          View
+                        </Button>
+                        {canCancel && (
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setJobToCancel(job);
+                            }}
+                            disabled={cancelJobMutation.isPending}
+                          >
+                            <Ban className="h-4 w-4 mr-1" />
+                            Cancel
+                          </Button>
+                        )}
+                      </div>
+                    </TableCell>
                   </TableRow>
-                ))}
+                  );
+                })}
               </TableBody>
             </Table>
           )}
         </CardContent>
       </Card>
+
+      {/* Cancel Confirmation Dialog */}
+      <AlertDialog open={!!jobToCancel} onOpenChange={(open) => !open && setJobToCancel(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Cancel Job</AlertDialogTitle>
+            <AlertDialogDescription>
+              Are you sure you want to cancel this job?
+              <br />
+              <br />
+              <strong>Job Type:</strong> {jobToCancel && getJobTypeLabel(jobToCancel.job_type)}
+              <br />
+              <strong>Status:</strong> {jobToCancel?.status}
+              <br />
+              <br />
+              <span className="text-xs text-muted-foreground">
+                Note: The job will be marked as cancelled in the database. Workers must cooperatively check the status and exit gracefully. This does not forcefully terminate running processes.
+              </span>
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>No, keep running</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => {
+                if (jobToCancel) {
+                  cancelJobMutation.mutate(jobToCancel.id);
+                }
+              }}
+              className="bg-red-600 hover:bg-red-700"
+            >
+              Yes, cancel job
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }
