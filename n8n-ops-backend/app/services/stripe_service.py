@@ -196,25 +196,46 @@ class StripeService:
     async def list_invoices(
         self,
         customer_id: str,
-        limit: int = 10
-    ) -> list[Dict[str, Any]]:
-        """List invoices for a customer"""
+        limit: int = 10,
+        starting_after: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """
+        List invoices for a customer with pagination support.
+
+        Stripe automatically returns invoices ordered by creation date (newest first),
+        providing deterministic date-based ordering.
+
+        Args:
+            customer_id: Stripe customer ID
+            limit: Number of invoices to return (max 100)
+            starting_after: Cursor for pagination (invoice ID to start after)
+
+        Returns:
+            Dictionary with 'data' (list of invoices) and 'has_more' (bool)
+        """
         try:
-            invoices = stripe.Invoice.list(
-                customer=customer_id,
-                limit=limit
-            )
-            return [{
-                "id": invoice.id,
-                "number": getattr(invoice, "number", invoice.id),
-                "amount_paid": invoice.amount_paid / 100,
-                "amount_paid_cents": invoice.amount_paid,
-                "currency": invoice.currency,
-                "status": invoice.status,
-                "created": invoice.created,
-                "invoice_pdf": invoice.invoice_pdf,
-                "hosted_invoice_url": invoice.hosted_invoice_url
-            } for invoice in invoices.data]
+            params = {
+                "customer": customer_id,
+                "limit": limit
+            }
+            if starting_after:
+                params["starting_after"] = starting_after
+
+            invoices = stripe.Invoice.list(**params)
+            return {
+                "data": [{
+                    "id": invoice.id,
+                    "number": getattr(invoice, "number", invoice.id),
+                    "amount_paid": invoice.amount_paid / 100,
+                    "amount_paid_cents": invoice.amount_paid,
+                    "currency": invoice.currency,
+                    "status": invoice.status,
+                    "created": invoice.created,
+                    "invoice_pdf": invoice.invoice_pdf,
+                    "hosted_invoice_url": invoice.hosted_invoice_url
+                } for invoice in invoices.data],
+                "has_more": invoices.has_more
+            }
         except stripe.error.StripeError as e:
             raise Exception(f"Failed to list invoices: {str(e)}")
 

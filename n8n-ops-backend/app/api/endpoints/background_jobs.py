@@ -4,6 +4,8 @@ from typing import Optional
 
 from app.services.background_job_service import background_job_service
 from app.core.entitlements_gate import require_entitlement
+from app.schemas.pagination import PaginatedResponse, DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE
+from app.schemas.background_job import BackgroundJobResponse
 
 router = APIRouter()
 
@@ -14,22 +16,41 @@ async def test_background_jobs_endpoint():
     return {"status": "ok", "message": "Background jobs router is working"}
 
 
-@router.get("")
-@router.get("/")
+@router.get("", response_model=PaginatedResponse[dict])
+@router.get("/", response_model=PaginatedResponse[dict])
 async def get_background_jobs(
-    resource_type: Optional[str] = Query(None),
-    resource_id: Optional[str] = Query(None),
-    job_type: Optional[str] = Query(None),
-    status: Optional[str] = Query(None),
-    limit: int = Query(50, ge=1, le=100),
-    offset: int = Query(0, ge=0),
+    resource_type: Optional[str] = Query(None, description="Filter by resource type"),
+    resource_id: Optional[str] = Query(None, description="Filter by resource ID"),
+    job_type: Optional[str] = Query(None, description="Filter by job type"),
+    status: Optional[str] = Query(None, description="Filter by status"),
+    page: int = Query(1, ge=1, description="Page number (1-indexed)"),
+    page_size: int = Query(DEFAULT_PAGE_SIZE, ge=1, le=MAX_PAGE_SIZE, description="Items per page"),
     user_info: dict = Depends(require_entitlement("environment_basic"))
 ):
-    """Get background jobs with optional filters"""
+    """
+    Get background jobs with pagination and optional filters.
+
+    Returns a paginated list of background jobs with the standard pagination envelope.
+    Jobs are ordered by created_at DESC (newest first) for deterministic pagination.
+
+    Query Parameters:
+    - page: Page number (1-indexed, default: 1)
+    - page_size: Items per page (default: 50, max: 100)
+    - resource_type: Filter by resource type (optional)
+    - resource_id: Filter by specific resource (optional)
+    - job_type: Filter by job type (optional)
+    - status: Filter by status (optional)
+
+    Returns:
+    PaginatedResponse with items, total, page, pageSize, totalPages, hasMore
+    """
     import logging
     logger = logging.getLogger(__name__)
-    
+
     try:
+        # Validate page_size
+        page_size = max(1, min(page_size, MAX_PAGE_SIZE))
+
         # Get tenant_id from authenticated user
         tenant = user_info.get("tenant")
         if not tenant:
@@ -38,16 +59,19 @@ async def get_background_jobs(
                 detail="Authentication required"
             )
         tenant_id = tenant["id"]
-        
-        logger.info(f"Fetching background jobs for tenant_id={tenant_id}, filters: resource_type={resource_type}, resource_id={resource_id}, job_type={job_type}, status={status}, limit={limit}, offset={offset}")
-        
+
+        # Calculate offset for database query
+        offset = (page - 1) * page_size
+
+        logger.info(f"Fetching background jobs for tenant_id={tenant_id}, page={page}, page_size={page_size}, filters: resource_type={resource_type}, resource_id={resource_id}, job_type={job_type}, status={status}")
+
         jobs = await background_job_service.get_jobs(
             tenant_id=tenant_id,
             resource_type=resource_type,
             resource_id=resource_id,
             job_type=job_type,
             status=status,
-            limit=limit,
+            limit=page_size,
             offset=offset
         )
         total = await background_job_service.count_jobs(
@@ -57,16 +81,16 @@ async def get_background_jobs(
             job_type=job_type,
             status=status
         )
-        
-        logger.info(f"Found {len(jobs)} jobs (total: {total}) for tenant_id={tenant_id}")
-        logger.info(f"Jobs data type: {type(jobs)}, Total type: {type(total)}")
-        
-        result = {
-            "jobs": jobs if jobs else [],
-            "total": total if total is not None else 0
-        }
-        logger.info(f"Returning result: {result}")
-        return result
+
+        logger.info(f"Found {len(jobs)} jobs on page {page} (total: {total}) for tenant_id={tenant_id}")
+
+        # Return standardized pagination response
+        return PaginatedResponse.create(
+            items=jobs if jobs else [],
+            total=total if total is not None else 0,
+            page=page,
+            page_size=page_size
+        )
     except HTTPException:
         raise
     except Exception as e:

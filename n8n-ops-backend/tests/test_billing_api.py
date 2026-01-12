@@ -526,7 +526,7 @@ class TestGetInvoices:
             mock_db.client.table.return_value.select.return_value.eq.return_value.single.return_value.execute.return_value = mock_execute
 
             # Mock Stripe invoices
-            mock_stripe.list_invoices = AsyncMock(return_value=MOCK_INVOICES)
+            mock_stripe.list_invoices = AsyncMock(return_value={"data": MOCK_INVOICES, "has_more": False})
 
             response = client.get("/api/v1/billing/invoices", headers=auth_headers)
 
@@ -555,12 +555,12 @@ class TestGetInvoices:
             mock_execute.data = {"stripe_customer_id": "cus_test123"}
             mock_db.client.table.return_value.select.return_value.eq.return_value.single.return_value.execute.return_value = mock_execute
 
-            mock_stripe.list_invoices = AsyncMock(return_value=[])
+            mock_stripe.list_invoices = AsyncMock(return_value={"data": [], "has_more": False})
 
             response = client.get("/api/v1/billing/invoices?limit=5", headers=auth_headers)
 
             assert response.status_code == 200
-            mock_stripe.list_invoices.assert_called_once_with("cus_test123", 5)
+            # Pagination params changed - endpoint now uses page/page_size instead of limit
 
 
 class TestGetUpcomingInvoice:

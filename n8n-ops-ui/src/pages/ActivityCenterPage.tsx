@@ -185,7 +185,19 @@ export function ActivityCenterPage() {
       }
     },
     enabled: !!jobIdFromUrl,
-    refetchInterval: 2000, // Poll every 2 seconds if job is running
+    // Smart polling: only poll active jobs, with exponential backoff
+    refetchInterval: (query) => {
+      const job = query.state.data;
+      if (!job) return false;
+      // Only poll if job is still active
+      if (job.status === 'pending' || job.status === 'running') {
+        // Start at 2s, max 10s based on how long job has been running
+        const elapsed = Date.now() - new Date(job.created_at || Date.now()).getTime();
+        const interval = Math.min(2000 + Math.floor(elapsed / 30000) * 2000, 10000);
+        return interval;
+      }
+      return false; // Stop polling when complete
+    },
   });
 
   // Merge selected job into jobs list if it's not already there

@@ -538,24 +538,27 @@ async def emit_sync_progress(
     """Emit a sync.progress event."""
     if not tenant_id:
         return
-    from app.schemas.sse import SyncProgressPayload
-    payload = SyncProgressPayload(
-        job_id=job_id,
-        environment_id=environment_id,
-        status=status,
-        current_step=current_step,
-        current=current,
-        total=total,
-        message=message,
-        errors=errors
-    )
-    event = SSEEvent(
-        type="sync.progress",
-        tenant_id=tenant_id,
-        env_id=environment_id,
-        payload=payload.model_dump()
-    )
-    await sse_pubsub.publish(event)
+    try:
+        from app.schemas.sse import SyncProgressPayload
+        payload = SyncProgressPayload(
+            job_id=job_id,
+            environment_id=environment_id,
+            status=status,
+            current_step=current_step,
+            current=current,
+            total=total,
+            message=message,
+            errors=errors
+        )
+        event = SSEEvent(
+            type="sync.progress",
+            tenant_id=tenant_id,
+            env_id=environment_id,
+            payload=payload.model_dump()
+        )
+        await sse_pubsub.publish(event)
+    except Exception as e:
+        logger.error(f"Failed to emit sync progress SSE event: {str(e)}", exc_info=True)
 
 
 async def emit_backup_progress(
@@ -572,24 +575,27 @@ async def emit_backup_progress(
     """Emit a backup.progress event."""
     if not tenant_id:
         return
-    from app.schemas.sse import BackupProgressPayload
-    payload = BackupProgressPayload(
-        job_id=job_id,
-        environment_id=environment_id,
-        status=status,
-        current=current,
-        total=total,
-        current_workflow_name=current_workflow_name,
-        message=message,
-        errors=errors
-    )
-    event = SSEEvent(
-        type="backup.progress",
-        tenant_id=tenant_id,
-        env_id=environment_id,
-        payload=payload.model_dump()
-    )
-    await sse_pubsub.publish(event)
+    try:
+        from app.schemas.sse import BackupProgressPayload
+        payload = BackupProgressPayload(
+            job_id=job_id,
+            environment_id=environment_id,
+            status=status,
+            current=current,
+            total=total,
+            current_workflow_name=current_workflow_name,
+            message=message,
+            errors=errors
+        )
+        event = SSEEvent(
+            type="backup.progress",
+            tenant_id=tenant_id,
+            env_id=environment_id,
+            payload=payload.model_dump()
+        )
+        await sse_pubsub.publish(event)
+    except Exception as e:
+        logger.error(f"Failed to emit backup progress SSE event: {str(e)}", exc_info=True)
 
 
 async def emit_restore_progress(
@@ -606,24 +612,27 @@ async def emit_restore_progress(
     """Emit a restore.progress event."""
     if not tenant_id:
         return
-    from app.schemas.sse import RestoreProgressPayload
-    payload = RestoreProgressPayload(
-        job_id=job_id,
-        environment_id=environment_id,
-        status=status,
-        current=current,
-        total=total,
-        current_workflow_name=current_workflow_name,
-        message=message,
-        errors=errors
-    )
-    event = SSEEvent(
-        type="restore.progress",
-        tenant_id=tenant_id,
-        env_id=environment_id,
-        payload=payload.model_dump()
-    )
-    await sse_pubsub.publish(event)
+    try:
+        from app.schemas.sse import RestoreProgressPayload
+        payload = RestoreProgressPayload(
+            job_id=job_id,
+            environment_id=environment_id,
+            status=status,
+            current=current,
+            total=total,
+            current_workflow_name=current_workflow_name,
+            message=message,
+            errors=errors
+        )
+        event = SSEEvent(
+            type="restore.progress",
+            tenant_id=tenant_id,
+            env_id=environment_id,
+            payload=payload.model_dump()
+        )
+        await sse_pubsub.publish(event)
+    except Exception as e:
+        logger.error(f"Failed to emit restore progress SSE event: {str(e)}", exc_info=True)
 
 
 async def emit_bulk_operation_progress(
@@ -660,25 +669,28 @@ async def emit_bulk_operation_progress(
     """
     if not tenant_id:
         return
-    from app.schemas.sse import BulkOperationProgressPayload
-    payload = BulkOperationProgressPayload(
-        job_id=job_id,
-        operation_type=operation_type,
-        status=status,
-        current=current,
-        total=total,
-        succeeded=succeeded,
-        failed=failed,
-        current_workflow_id=current_workflow_id,
-        message=message,
-        percentage=percentage
-    )
-    event = SSEEvent(
-        type="bulk_operation.progress",
-        tenant_id=tenant_id,
-        payload=payload.model_dump()
-    )
-    await sse_pubsub.publish(event)
+    try:
+        from app.schemas.sse import BulkOperationProgressPayload
+        payload = BulkOperationProgressPayload(
+            job_id=job_id,
+            operation_type=operation_type,
+            status=status,
+            current=current,
+            total=total,
+            succeeded=succeeded,
+            failed=failed,
+            current_workflow_id=current_workflow_id,
+            message=message,
+            percentage=percentage
+        )
+        event = SSEEvent(
+            type="bulk_operation.progress",
+            tenant_id=tenant_id,
+            payload=payload.model_dump()
+        )
+        await sse_pubsub.publish(event)
+    except Exception as e:
+        logger.error(f"Failed to emit bulk operation progress SSE event: {str(e)}", exc_info=True)
 
 
 @router.get("/stream")

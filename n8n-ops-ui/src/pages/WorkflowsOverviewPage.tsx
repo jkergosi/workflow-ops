@@ -75,13 +75,16 @@ export function WorkflowsOverviewPage() {
 
       toast.info(`Syncing ${environmentName}...`);
 
-      // Poll for job completion
+      // Poll for job completion with exponential backoff
       let completed = false;
       let attempts = 0;
-      const maxAttempts = 60; // Max 2 minutes of polling at 2s intervals
+      const maxAttempts = 60;
+      let delay = 1000; // Start at 1 second
+      const maxDelay = 10000; // Max 10 seconds
+      const backoffFactor = 1.5;
 
       while (!completed && attempts < maxAttempts) {
-        await new Promise((resolve) => setTimeout(resolve, 2000)); // Wait 2 seconds
+        await new Promise((resolve) => setTimeout(resolve, delay));
         attempts++;
 
         try {
@@ -96,7 +99,8 @@ export function WorkflowsOverviewPage() {
             const errorMessage = jobStatus.data.error_message || 'Sync failed';
             toast.error(`Sync failed for ${environmentName}: ${errorMessage}`);
           }
-          // If status is 'pending' or 'running', continue polling
+          // If status is 'pending' or 'running', continue polling with backoff
+          delay = Math.min(delay * backoffFactor, maxDelay);
         } catch (pollError) {
           // If we can't get job status, assume it completed and reload
           console.error('Error polling job status:', pollError);

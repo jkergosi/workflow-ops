@@ -918,37 +918,27 @@ class ApiClient {
   }
 
   async getAllBackgroundJobs(params?: {
-    resource_type?: string;
-    resource_id?: string;
-    job_type?: string;
+    resourceType?: string;
+    resourceId?: string;
+    jobType?: string;
     status?: string;
-    limit?: number;
-    offset?: number;
-  }): Promise<{
-    data: {
-      jobs: Array<{
-        id: string;
-        job_type: string;
-        status: string;
-        resource_type: string;
-        resource_id: string;
-        progress: {
-          current: number;
-          total: number;
-          percentage: number;
-          message: string;
-        };
-        created_at: string;
-        started_at?: string;
-        completed_at?: string;
-        error_message?: string;
-      }>;
-      total: number;
-    };
-  }> {
-    const response = await this.client.get(`/background-jobs`, { params });
+    page?: number;
+    pageSize?: number;
+  }): Promise<{ data: PaginatedResponse<any> }> {
+    const queryParams: any = {};
+    if (params?.resourceType) queryParams.resource_type = params.resourceType;
+    if (params?.resourceId) queryParams.resource_id = params.resourceId;
+    if (params?.jobType) queryParams.job_type = params.jobType;
+    if (params?.status) queryParams.status = params.status;
+    if (params?.page) queryParams.page = params.page;
+    if (params?.pageSize) queryParams.page_size = params.pageSize;
+
+    const response = await this.client.get<PaginatedResponse<any>>('/background-jobs', {
+      params: queryParams
+    });
     return { data: response.data };
   }
+
 
   async cancelBackgroundJob(jobId: string): Promise<{
     data: {
@@ -3006,6 +2996,26 @@ class ApiClient {
     return { data: response.data };
   }
 
+  async getInvoices(params?: { page?: number; pageSize?: number }): Promise<{ data: PaginatedResponse<any> }> {
+    const response = await this.client.get<PaginatedResponse<any>>('/billing/invoices', {
+      params: {
+        page: params?.page || 1,
+        page_size: params?.pageSize || 50,
+      },
+    });
+    return { data: response.data };
+  }
+
+  async getPaymentHistoryPaginated(params?: { page?: number; pageSize?: number }): Promise<{ data: PaginatedResponse<PaymentHistory> }> {
+    const response = await this.client.get<PaginatedResponse<PaymentHistory>>('/billing/payment-history', {
+      params: {
+        page: params?.page || 1,
+        page_size: params?.pageSize || 50,
+      },
+    });
+    return { data: response.data };
+  }
+
   // Observability endpoints
   async getObservabilityOverview(timeRange: TimeRange = '24h', environmentId?: string): Promise<{ data: ObservabilityOverview }> {
     const params: any = { time_range: timeRange };
@@ -4318,9 +4328,18 @@ class ApiClient {
     return { data: response.data };
   }
 
-  async getCanonicalWorkflows(includeDeleted?: boolean): Promise<{ data: any[] }> {
-    const response = await this.client.get('/canonical/canonical-workflows', {
-      params: { include_deleted: includeDeleted }
+  async getCanonicalWorkflows(params?: {
+    includeDeleted?: boolean;
+    page?: number;
+    pageSize?: number;
+  }): Promise<{ data: PaginatedResponse<any> }> {
+    const queryParams: any = {};
+    if (params?.includeDeleted) queryParams.include_deleted = params.includeDeleted;
+    if (params?.page) queryParams.page = params.page;
+    if (params?.pageSize) queryParams.page_size = params.pageSize;
+
+    const response = await this.client.get<PaginatedResponse<any>>('/canonical/canonical-workflows', {
+      params: queryParams
     });
     return { data: response.data };
   }
@@ -4334,8 +4353,19 @@ class ApiClient {
     environmentId?: string;
     canonicalId?: string;
     status?: string;
-  }): Promise<{ data: any[] }> {
-    const response = await this.client.get('/canonical/workflow-mappings', { params });
+    page?: number;
+    pageSize?: number;
+  }): Promise<{ data: PaginatedResponse<any> }> {
+    const queryParams: any = {};
+    if (params?.environmentId) queryParams.environment_id = params.environmentId;
+    if (params?.canonicalId) queryParams.canonical_id = params.canonicalId;
+    if (params?.status) queryParams.status = params.status;
+    if (params?.page) queryParams.page = params.page;
+    if (params?.pageSize) queryParams.page_size = params.pageSize;
+
+    const response = await this.client.get<PaginatedResponse<any>>('/canonical/workflow-mappings', {
+      params: queryParams
+    });
     return { data: response.data };
   }
 
@@ -4362,8 +4392,19 @@ class ApiClient {
     sourceEnvId?: string;
     targetEnvId?: string;
     canonicalId?: string;
-  }): Promise<{ data: any[] }> {
-    const response = await this.client.get('/canonical/diff-states', { params });
+    page?: number;
+    pageSize?: number;
+  }): Promise<{ data: PaginatedResponse<any> }> {
+    const queryParams: any = {};
+    if (params?.sourceEnvId) queryParams.source_env_id = params.sourceEnvId;
+    if (params?.targetEnvId) queryParams.target_env_id = params.targetEnvId;
+    if (params?.canonicalId) queryParams.canonical_id = params.canonicalId;
+    if (params?.page) queryParams.page = params.page;
+    if (params?.pageSize) queryParams.page_size = params.pageSize;
+
+    const response = await this.client.get<PaginatedResponse<any>>('/canonical/diff-states', {
+      params: queryParams
+    });
     return { data: response.data };
   }
 

@@ -299,6 +299,34 @@ export function AdminDashboardPage() {
         <p className="text-muted-foreground">Organization health, usage, and governance at a glance</p>
       </div>
 
+      {/* Admin Shortcuts */}
+      <div className="flex flex-wrap gap-2">
+        <Button variant="outline" size="sm" asChild>
+          <Link to="/admin/members">
+            <Users className="h-4 w-4 mr-2" />
+            Members
+          </Link>
+        </Button>
+        <Button variant="outline" size="sm" asChild>
+          <Link to="/admin/usage">
+            <BarChart3 className="h-4 w-4 mr-2" />
+            Usage
+          </Link>
+        </Button>
+        <Button variant="outline" size="sm" asChild>
+          <Link to="/admin/providers">
+            <CreditCard className="h-4 w-4 mr-2" />
+            Billing & Plans
+          </Link>
+        </Button>
+        <Button variant="outline" size="sm" asChild>
+          <Link to="/admin/settings">
+            <Settings className="h-4 w-4 mr-2" />
+            Settings
+          </Link>
+        </Button>
+      </div>
+
       {/* Org Health Tiles */}
       <div>
         <h2 className="text-lg font-semibold mb-3">Organization Health</h2>
@@ -394,41 +422,6 @@ export function AdminDashboardPage() {
               No governance issues detected
             </p>
           )}
-        </CardContent>
-      </Card>
-
-      {/* Admin Shortcuts */}
-      <Card>
-        <CardHeader className="pb-3">
-          <CardTitle className="text-lg">Admin Shortcuts</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <div className="flex flex-wrap gap-2">
-            <Button variant="outline" size="sm" asChild>
-              <Link to="/admin/members">
-                <Users className="h-4 w-4 mr-2" />
-                Members
-              </Link>
-            </Button>
-            <Button variant="outline" size="sm" asChild>
-              <Link to="/admin/usage">
-                <BarChart3 className="h-4 w-4 mr-2" />
-                Usage
-              </Link>
-            </Button>
-            <Button variant="outline" size="sm" asChild>
-              <Link to="/admin/providers">
-                <CreditCard className="h-4 w-4 mr-2" />
-                Billing & Plans
-              </Link>
-            </Button>
-            <Button variant="outline" size="sm" asChild>
-              <Link to="/admin/settings">
-                <Settings className="h-4 w-4 mr-2" />
-                Settings
-              </Link>
-            </Button>
-          </div>
         </CardContent>
       </Card>
     </div>

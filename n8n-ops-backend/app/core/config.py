@@ -38,6 +38,10 @@ class Settings(BaseSettings):
     # Downgrade Enforcement Configuration
     DOWNGRADE_ENFORCEMENT_INTERVAL_SECONDS: int = 3600  # Default: 1 hour
 
+    # Sync Scheduler Configuration
+    # Disabled by default for MVP - set to true to enable automatic sync
+    SYNC_SCHEDULER_ENABLED: bool = False
+
     # Security
     SECRET_KEY: str
     ALGORITHM: str = "HS256"

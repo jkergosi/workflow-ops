@@ -7,6 +7,7 @@ import { Badge } from '@/components/ui/badge';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
+import { PaginationControls } from '@/components/ui/pagination-controls';
 import { CheckCircle2, AlertCircle, RefreshCw, GitBranch, Link2, FileText, AlertTriangle } from 'lucide-react';
 import { toast } from 'sonner';
 import { useAuth } from '@/lib/auth';
@@ -15,7 +16,8 @@ import type {
   CanonicalWorkflow,
   WorkflowEnvMap,
   WorkflowDiffState,
-  Environment
+  Environment,
+  PaginatedResponse
 } from '@/types';
 
 export function CanonicalWorkflowsPage() {
@@ -28,21 +30,34 @@ export function CanonicalWorkflowsPage() {
   const [isLoading, setIsLoading] = useState(true);
   const [selectedEnv, setSelectedEnv] = useState<string>('');
 
+  // Pagination state
+  const [currentPage, setCurrentPage] = useState(1);
+  const [pageSize, setPageSize] = useState(50);
+  const [totalItems, setTotalItems] = useState(0);
+  const [totalPages, setTotalPages] = useState(0);
+
   useEffect(() => {
     document.title = 'Canonical Workflows - WorkflowOps';
     loadData();
-  }, []);
+  }, [currentPage, pageSize]);
 
   const loadData = async () => {
     setIsLoading(true);
     try {
       const [workflowsRes, mappingsRes, envsRes] = await Promise.all([
-        apiClient.get('/canonical/canonical-workflows'),
+        apiClient.getCanonicalWorkflows({
+          page: currentPage,
+          pageSize: pageSize
+        }),
         apiClient.get('/canonical/workflow-mappings'),
         apiClient.get('/environments')
       ]);
 
-      setWorkflows(workflowsRes.data);
+      const paginatedData = workflowsRes.data as PaginatedResponse<CanonicalWorkflow>;
+      setWorkflows(paginatedData.items);
+      setTotalItems(paginatedData.total);
+      setTotalPages(paginatedData.totalPages);
+
       setMappings(mappingsRes.data);
       setEnvironments(envsRes.data);
 
@@ -82,23 +97,46 @@ export function CanonicalWorkflowsPage() {
   };
 
   const pollJobStatus = async (jobId: string) => {
-    const interval = setInterval(async () => {
+    // Exponential backoff: start at 1s, max 10s, factor 1.5
+    let delay = 1000;
+    const maxDelay = 10000;
+    const backoffFactor = 1.5;
+    let attempts = 0;
+    const maxAttempts = 60; // ~2-3 minutes max
+
+    const poll = async () => {
+      if (attempts >= maxAttempts) {
+        toast.error('Sync is taking too long. Check Activity Center for status.');
+        return;
+      }
+      attempts++;
+
       try {
         const response = await apiClient.get(`/background-jobs/${jobId}`);
         const job = response.data;
 
         if (job.status === 'completed') {
-          clearInterval(interval);
           toast.success('Sync completed');
           loadData();
+          return;
         } else if (job.status === 'failed') {
-          clearInterval(interval);
           toast.error('Sync failed: ' + (job.error_message || 'Unknown error'));
+          return;
         }
+
+        // Still running - schedule next poll with exponential backoff
+        delay = Math.min(delay * backoffFactor, maxDelay);
+        setTimeout(poll, delay);
       } catch (error) {
         console.error('Error polling job status:', error);
+        // On error, still retry with backoff
+        delay = Math.min(delay * backoffFactor, maxDelay);
+        setTimeout(poll, delay);
       }
-    }, 2000);
+    };
+
+    // Start polling after initial delay
+    setTimeout(poll, delay);
   };
 
   const getMappingForWorkflow = (canonicalId: string, envId: string): WorkflowEnvMap | undefined => {
@@ -193,7 +231,7 @@ export function CanonicalWorkflowsPage() {
         {/* Workflows Table */}
         <Card>
           <CardHeader>
-            <CardTitle>Canonical Workflows ({workflows.length})</CardTitle>
+            <CardTitle>Canonical Workflows ({totalItems})</CardTitle>
             <CardDescription>Workflows with canonical identity</CardDescription>
           </CardHeader>
           <CardContent>
@@ -286,6 +324,20 @@ export function CanonicalWorkflowsPage() {
                 )}
               </TableBody>
             </Table>
+
+            <PaginationControls
+              currentPage={currentPage}
+              totalPages={totalPages}
+              total={totalItems}
+              pageSize={pageSize}
+              onPageChange={setCurrentPage}
+              onPageSizeChange={(newSize) => {
+                setPageSize(newSize);
+                setCurrentPage(1); // Reset to first page when page size changes
+              }}
+              isLoading={isLoading}
+              itemLabel="workflows"
+            />
           </CardContent>
         </Card>
       </div>

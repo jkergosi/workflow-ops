@@ -19,6 +19,7 @@ from app.schemas.canonical_workflow import (
     OnboardingCompleteCheck,
     WorkflowMappingStatus
 )
+from app.schemas.pagination import PaginatedResponse, DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE
 from app.services.canonical_workflow_service import CanonicalWorkflowService
 from app.services.canonical_repo_sync_service import CanonicalRepoSyncService
 from app.services.canonical_env_sync_service import CanonicalEnvSyncService
@@ -30,6 +31,7 @@ from app.services.background_job_service import (
     BackgroundJobType,
     BackgroundJobStatus
 )
+from app.services.sync_orchestrator_service import sync_orchestrator
 from app.core.entitlements_gate import require_entitlement
 from app.services.auth_service import get_current_user
 
@@ -185,63 +187,128 @@ async def check_onboarding_complete(
 
 # Canonical Workflow Endpoints
 
-@router.get("/canonical-workflows", response_model=List[CanonicalWorkflowResponse])
+@router.get("/canonical-workflows", response_model=PaginatedResponse[CanonicalWorkflowResponse])
 async def list_canonical_workflows(
+    page: int = 1,
+    page_size: int = DEFAULT_PAGE_SIZE,
     include_deleted: bool = False,
     user_info: dict = Depends(get_current_user),
     _: dict = Depends(require_entitlement("workflow_read"))
 ):
-    """List all canonical workflows for tenant with collision warnings"""
-    tenant_id = get_tenant_id(user_info)
-    workflows = await CanonicalWorkflowService.list_canonical_workflows(
-        tenant_id=tenant_id,
-        include_deleted=include_deleted
-    )
+    """
+    List canonical workflows for tenant with server-side pagination.
 
-    # Detect hash collisions across all environments
-    # Get all workflow mappings to build hash collision detection map
-    all_mappings = await db_service.get_workflow_mappings(tenant_id=tenant_id)
+    This endpoint returns paginated canonical workflows with collision detection.
+    - Returns only the requested page of workflows
+    - Performs filtering at the database level
+    - Uses standardized pagination envelope
 
-    # Build hash collision detection map per environment
-    # Map of environment_id -> content_hash -> list of canonical_ids
-    hash_to_canonical_map: Dict[str, Dict[str, List[str]]] = {}
-    for mapping in all_mappings:
-        env_id = mapping.get("environment_id")
-        content_hash = mapping.get("env_content_hash")
-        canonical_id = mapping.get("canonical_id")
+    Query params:
+        page: Page number (1-indexed, default 1)
+        page_size: Items per page (default 50, max 100)
+        include_deleted: Include deleted workflows (default false)
 
-        if env_id and content_hash and canonical_id:
-            if env_id not in hash_to_canonical_map:
-                hash_to_canonical_map[env_id] = {}
-            if content_hash not in hash_to_canonical_map[env_id]:
-                hash_to_canonical_map[env_id][content_hash] = []
-            if canonical_id not in hash_to_canonical_map[env_id][content_hash]:
-                hash_to_canonical_map[env_id][content_hash].append(canonical_id)
+    Returns:
+        Standardized pagination envelope:
+        {
+            "items": [...],
+            "total": int,
+            "page": int,
+            "pageSize": int,
+            "totalPages": int,
+            "hasMore": bool
+        }
+    """
+    try:
+        tenant_id = get_tenant_id(user_info)
 
-    # Enrich workflows with collision warnings
-    for workflow in workflows:
-        canonical_id = workflow.get("canonical_id")
-        if not canonical_id:
-            continue
+        # Limit page_size to prevent abuse
+        page_size = min(max(page_size, 1), MAX_PAGE_SIZE)
 
-        # Check for hash collisions across all environments
-        collision_warnings = []
-        for env_id, hash_map in hash_to_canonical_map.items():
-            for content_hash, canonical_ids in hash_map.items():
-                if canonical_id in canonical_ids and len(canonical_ids) > 1:
-                    # Collision detected
-                    other_workflows = [cid for cid in canonical_ids if cid != canonical_id]
-                    collision_warnings.append(
-                        f"Environment {env_id}: Hash collision with {len(other_workflows)} other workflow(s) (hash: {content_hash[:12]}...)"
-                    )
+        # Calculate offset
+        offset = (page - 1) * page_size
 
-        # Add collision_warnings field to workflow
-        if collision_warnings:
-            workflow["collision_warnings"] = collision_warnings
-        else:
-            workflow["collision_warnings"] = None
+        # Build query with pagination
+        query = (
+            db_service.client.table("canonical_workflows")
+            .select("*", count="exact")
+            .eq("tenant_id", tenant_id)
+        )
 
-    return workflows
+        if not include_deleted:
+            query = query.is_("deleted_at", "null")
+
+        # Add deterministic ordering by created_at DESC
+        query = query.order("created_at", desc=True)
+
+        # Apply pagination
+        query = query.range(offset, offset + page_size - 1)
+
+        # Execute query
+        response = query.execute()
+
+        workflows = response.data or []
+        total = response.count if response.count is not None else 0
+
+        # Detect hash collisions across all environments
+        # Get all workflow mappings to build hash collision detection map
+        all_mappings = await db_service.get_workflow_mappings(tenant_id=tenant_id)
+
+        # Build hash collision detection map per environment
+        # Map of environment_id -> content_hash -> list of canonical_ids
+        hash_to_canonical_map: Dict[str, Dict[str, List[str]]] = {}
+        for mapping in all_mappings:
+            env_id = mapping.get("environment_id")
+            content_hash = mapping.get("env_content_hash")
+            canonical_id = mapping.get("canonical_id")
+
+            if env_id and content_hash and canonical_id:
+                if env_id not in hash_to_canonical_map:
+                    hash_to_canonical_map[env_id] = {}
+                if content_hash not in hash_to_canonical_map[env_id]:
+                    hash_to_canonical_map[env_id][content_hash] = []
+                if canonical_id not in hash_to_canonical_map[env_id][content_hash]:
+                    hash_to_canonical_map[env_id][content_hash].append(canonical_id)
+
+        # Enrich workflows with collision warnings
+        for workflow in workflows:
+            canonical_id = workflow.get("canonical_id")
+            if not canonical_id:
+                continue
+
+            # Check for hash collisions across all environments
+            collision_warnings = []
+            for env_id, hash_map in hash_to_canonical_map.items():
+                for content_hash, canonical_ids in hash_map.items():
+                    if canonical_id in canonical_ids and len(canonical_ids) > 1:
+                        # Collision detected
+                        other_workflows = [cid for cid in canonical_ids if cid != canonical_id]
+                        collision_warnings.append(
+                            f"Environment {env_id}: Hash collision with {len(other_workflows)} other workflow(s) (hash: {content_hash[:12]}...)"
+                        )
+
+            # Add collision_warnings field to workflow
+            if collision_warnings:
+                workflow["collision_warnings"] = collision_warnings
+            else:
+                workflow["collision_warnings"] = None
+
+        # Return standardized paginated response
+        return PaginatedResponse.create(
+            items=workflows,
+            page=page,
+            page_size=page_size,
+            total=total
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to list canonical workflows: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to list canonical workflows: {str(e)}"
+        )
 
 
 @router.get("/canonical-workflows/{canonical_id}", response_model=CanonicalWorkflowResponse)
@@ -310,23 +377,94 @@ async def get_canonical_workflow(
 
 # Workflow Environment Mapping Endpoints
 
-@router.get("/workflow-mappings", response_model=List[WorkflowEnvMapResponse])
+@router.get("/workflow-mappings", response_model=PaginatedResponse[WorkflowEnvMapResponse])
 async def list_workflow_mappings(
+    page: int = 1,
+    page_size: int = DEFAULT_PAGE_SIZE,
     environment_id: Optional[str] = None,
     canonical_id: Optional[str] = None,
     status: Optional[str] = None,
     user_info: dict = Depends(get_current_user),
     _: dict = Depends(require_entitlement("workflow_read"))
 ):
-    """List workflow environment mappings"""
-    tenant_id = get_tenant_id(user_info)
-    mappings = await db_service.get_workflow_mappings(
-        tenant_id=tenant_id,
-        environment_id=environment_id,
-        canonical_id=canonical_id,
-        status=status
-    )
-    return mappings
+    """
+    List workflow environment mappings with server-side pagination.
+
+    This endpoint returns paginated workflow environment mappings with filters.
+    - Returns only the requested page of mappings
+    - Performs filtering at the database level
+    - Uses standardized pagination envelope
+
+    Query params:
+        page: Page number (1-indexed, default 1)
+        page_size: Items per page (default 50, max 100)
+        environment_id: Optional filter by environment ID
+        canonical_id: Optional filter by canonical workflow ID
+        status: Optional filter by mapping status
+
+    Returns:
+        Standardized pagination envelope:
+        {
+            "items": [...],
+            "total": int,
+            "page": int,
+            "pageSize": int,
+            "totalPages": int,
+            "hasMore": bool
+        }
+    """
+    try:
+        tenant_id = get_tenant_id(user_info)
+
+        # Limit page_size to prevent abuse
+        page_size = min(max(page_size, 1), MAX_PAGE_SIZE)
+
+        # Calculate offset
+        offset = (page - 1) * page_size
+
+        # Build query with pagination
+        query = (
+            db_service.client.table("workflow_env_map")
+            .select("*", count="exact")
+            .eq("tenant_id", tenant_id)
+        )
+
+        # Apply optional filters
+        if environment_id:
+            query = query.eq("environment_id", environment_id)
+        if canonical_id:
+            query = query.eq("canonical_id", canonical_id)
+        if status:
+            query = query.eq("status", status)
+
+        # Add deterministic ordering by last_env_sync_at DESC, then by canonical_id
+        query = query.order("last_env_sync_at", desc=True).order("canonical_id", desc=False)
+
+        # Apply pagination
+        query = query.range(offset, offset + page_size - 1)
+
+        # Execute query
+        response = query.execute()
+
+        mappings = response.data or []
+        total = response.count if response.count is not None else 0
+
+        # Return standardized paginated response
+        return PaginatedResponse.create(
+            items=mappings,
+            page=page,
+            page_size=page_size,
+            total=total
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to list workflow mappings: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to list workflow mappings: {str(e)}"
+        )
 
 
 # Sync Endpoints
@@ -453,18 +591,21 @@ async def sync_environment(
 ):
     """
     Sync workflows from n8n environment to database.
-    
+
+    IDEMPOTENT: If a sync job is already queued or running for this environment,
+    returns the existing job ID instead of creating a duplicate.
+
     For DEV environments with Git configured, sync triggers a separate background job
     to commit changes to Git. This provides the path to create Git state for workflows.
     STAGING/PROD environments do not commit to Git.
     """
     try:
         tenant_id = get_tenant_id(user_info)
-        
+
         # Get user ID from user_info
         user = user_info.get("user", {})
         user_id = user.get("id", "00000000-0000-0000-0000-000000000000")
-        
+
         # Get environment
         environment = await db_service.get_environment(environment_id, tenant_id)
         if not environment:
@@ -472,41 +613,28 @@ async def sync_environment(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="Environment not found"
             )
-        
-        # Check for existing running sync job for this environment
-        from app.services.background_job_service import BackgroundJobStatus
-        existing_jobs = await background_job_service.get_jobs_by_resource(
-            resource_type="environment",
-            resource_id=environment_id,
+
+        # Use sync orchestrator for idempotent job creation
+        job, is_new = await sync_orchestrator.request_sync(
             tenant_id=tenant_id,
-            job_type=BackgroundJobType.CANONICAL_ENV_SYNC,
-            status=BackgroundJobStatus.RUNNING,
-            limit=1
-        )
-        
-        if existing_jobs:
-            # Return existing job_id with already_running status
-            return {
-                "status": "already_running",
-                "job_id": existing_jobs[0]["id"]
-            }
-        
-        # Create background job
-        job = await background_job_service.create_job(
-            tenant_id=tenant_id,
-            job_type=BackgroundJobType.CANONICAL_ENV_SYNC,
-            resource_id=environment_id,
-            resource_type="environment",
+            environment_id=environment_id,
             created_by=user_id
         )
-        
+
         if not job or not job.get("id"):
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail="Failed to create background job"
+                detail="Failed to create or find sync job"
             )
-        
-        # Enqueue background task
+
+        # If this is an existing job, return with already_running status
+        if not is_new:
+            return {
+                "status": "already_running",
+                "job_id": job["id"]
+            }
+
+        # Enqueue background task for new jobs only
         background_tasks.add_task(
             _run_env_sync_background,
             job["id"],
@@ -514,7 +642,7 @@ async def sync_environment(
             environment_id,
             environment
         )
-        
+
         return {"job_id": job["id"], "status": "pending"}
     except HTTPException:
         raise
@@ -1440,23 +1568,94 @@ async def _run_reconciliation_background(
 
 # Diff State Endpoints
 
-@router.get("/diff-states", response_model=List[WorkflowDiffStateResponse])
+@router.get("/diff-states", response_model=PaginatedResponse[WorkflowDiffStateResponse])
 async def list_diff_states(
+    page: int = 1,
+    page_size: int = DEFAULT_PAGE_SIZE,
     source_env_id: Optional[str] = None,
     target_env_id: Optional[str] = None,
     canonical_id: Optional[str] = None,
     user_info: dict = Depends(get_current_user),
     _: dict = Depends(require_entitlement("workflow_read"))
 ):
-    """List workflow diff states"""
-    tenant_id = get_tenant_id(user_info)
-    diff_states = await db_service.get_workflow_diff_states(
-        tenant_id=tenant_id,
-        source_env_id=source_env_id,
-        target_env_id=target_env_id,
-        canonical_id=canonical_id
-    )
-    return diff_states
+    """
+    List workflow diff states with server-side pagination.
+
+    This endpoint returns paginated workflow diff states between environments.
+    - Returns only the requested page of diff states
+    - Performs filtering at the database level
+    - Uses standardized pagination envelope
+
+    Query params:
+        page: Page number (1-indexed, default 1)
+        page_size: Items per page (default 50, max 100)
+        source_env_id: Optional filter by source environment ID
+        target_env_id: Optional filter by target environment ID
+        canonical_id: Optional filter by canonical workflow ID
+
+    Returns:
+        Standardized pagination envelope:
+        {
+            "items": [...],
+            "total": int,
+            "page": int,
+            "pageSize": int,
+            "totalPages": int,
+            "hasMore": bool
+        }
+    """
+    try:
+        tenant_id = get_tenant_id(user_info)
+
+        # Limit page_size to prevent abuse
+        page_size = min(max(page_size, 1), MAX_PAGE_SIZE)
+
+        # Calculate offset
+        offset = (page - 1) * page_size
+
+        # Build query with pagination
+        query = (
+            db_service.client.table("workflow_diff_state")
+            .select("*", count="exact")
+            .eq("tenant_id", tenant_id)
+        )
+
+        # Apply optional filters
+        if source_env_id:
+            query = query.eq("source_env_id", source_env_id)
+        if target_env_id:
+            query = query.eq("target_env_id", target_env_id)
+        if canonical_id:
+            query = query.eq("canonical_id", canonical_id)
+
+        # Add deterministic ordering by computed_at DESC, then by canonical_id
+        query = query.order("computed_at", desc=True).order("canonical_id", desc=False)
+
+        # Apply pagination
+        query = query.range(offset, offset + page_size - 1)
+
+        # Execute query
+        response = query.execute()
+
+        diff_states = response.data or []
+        total = response.count if response.count is not None else 0
+
+        # Return standardized paginated response
+        return PaginatedResponse.create(
+            items=diff_states,
+            page=page,
+            page_size=page_size,
+            total=total
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to list workflow diff states: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to list workflow diff states: {str(e)}"
+        )
 
 
 # Link Suggestions Endpoints

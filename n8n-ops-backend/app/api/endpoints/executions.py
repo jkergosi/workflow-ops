@@ -17,6 +17,66 @@ def get_tenant_id(user_info: dict) -> str:
     return tenant_id
 
 
+@router.get("/")
+async def get_executions(
+    environment_id: Optional[str] = None,
+    workflow_id: Optional[str] = None,
+    limit: int = 100,
+    user_info: dict = Depends(get_current_user)
+):
+    """
+    Get executions for the current tenant.
+
+    Query params:
+        environment_id: Optional filter by environment
+        workflow_id: Optional filter by workflow
+        limit: Maximum number of executions to return (default 100, max 1000)
+
+    Returns:
+        List of executions in camelCase format
+    """
+    try:
+        tenant_id = get_tenant_id(user_info)
+
+        # Cap limit at 1000
+        limit = min(max(limit, 1), 1000)
+
+        executions = await db_service.get_executions(
+            tenant_id=tenant_id,
+            environment_id=environment_id,
+            workflow_id=workflow_id,
+            limit=limit
+        )
+
+        # Transform snake_case to camelCase for frontend
+        transformed = []
+        for execution in executions:
+            transformed.append({
+                "id": execution.get("id"),
+                "executionId": execution.get("execution_id"),
+                "workflowId": execution.get("workflow_id"),
+                "workflowName": execution.get("workflow_name"),
+                "status": execution.get("status"),
+                "mode": execution.get("mode"),
+                "startedAt": execution.get("started_at"),
+                "finishedAt": execution.get("finished_at"),
+                "executionTime": execution.get("execution_time"),
+                "tenantId": execution.get("tenant_id"),
+                "environmentId": execution.get("environment_id"),
+            })
+
+        return transformed
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to get executions: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to get executions: {str(e)}"
+        )
+
+
 @router.get("/paginated")
 async def get_executions_paginated(
     environment_id: str,
@@ -120,49 +180,6 @@ async def get_executions_paginated(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to get executions: {str(e)}"
-        )
-
-
-@router.get("/{execution_id}", response_model=Dict[str, Any])
-async def get_execution(
-    execution_id: str,
-    user_info: dict = Depends(get_current_user)
-):
-    """Get a specific execution by ID"""
-    try:
-        tenant_id = get_tenant_id(user_info)
-        execution = await db_service.get_execution(execution_id, tenant_id)
-
-        if not execution:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Execution not found"
-            )
-
-        # Transform snake_case to camelCase for frontend
-        return {
-            "id": execution.get("id"),
-            "executionId": execution.get("execution_id"),
-            "workflowId": execution.get("workflow_id"),
-            "workflowName": execution.get("workflow_name"),
-            "status": execution.get("status"),
-            "mode": execution.get("mode"),
-            "startedAt": execution.get("started_at"),
-            "finishedAt": execution.get("finished_at"),
-            "executionTime": execution.get("execution_time"),
-            "data": execution.get("data"),
-            "tenantId": execution.get("tenant_id"),
-            "environmentId": execution.get("environment_id"),
-            "createdAt": execution.get("created_at"),
-            "updatedAt": execution.get("updated_at"),
-        }
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to fetch execution: {str(e)}"
         )
 
 
@@ -297,4 +314,47 @@ async def get_execution_analytics(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to fetch execution analytics: {str(e)}"
+        )
+
+
+@router.get("/{execution_id}", response_model=Dict[str, Any])
+async def get_execution(
+    execution_id: str,
+    user_info: dict = Depends(get_current_user)
+):
+    """Get a specific execution by ID"""
+    try:
+        tenant_id = get_tenant_id(user_info)
+        execution = await db_service.get_execution(execution_id, tenant_id)
+
+        if not execution:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Execution not found"
+            )
+
+        # Transform snake_case to camelCase for frontend
+        return {
+            "id": execution.get("id"),
+            "executionId": execution.get("execution_id"),
+            "workflowId": execution.get("workflow_id"),
+            "workflowName": execution.get("workflow_name"),
+            "status": execution.get("status"),
+            "mode": execution.get("mode"),
+            "startedAt": execution.get("started_at"),
+            "finishedAt": execution.get("finished_at"),
+            "executionTime": execution.get("execution_time"),
+            "data": execution.get("data"),
+            "tenantId": execution.get("tenant_id"),
+            "environmentId": execution.get("environment_id"),
+            "createdAt": execution.get("created_at"),
+            "updatedAt": execution.get("updated_at"),
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to fetch execution: {str(e)}"
         )

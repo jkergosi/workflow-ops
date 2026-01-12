@@ -11,7 +11,7 @@ from app.schemas.canonical_workflow import WorkflowDiffStatus
 
 logger = logging.getLogger(__name__)
 
-RECONCILIATION_DEBOUNCE_SECONDS = 15  # 15 second debounce window
+RECONCILIATION_DEBOUNCE_SECONDS = 60  # 60 second debounce window (increased to reduce overhead)
 
 
 class CanonicalReconciliationService:
@@ -478,39 +478,51 @@ class CanonicalReconciliationService:
     ) -> Dict[str, Any]:
         """
         Recompute diffs for all environment pairs involving the changed environment.
-        
+
         Called after repo sync or env sync completes.
+
+        Note: Reconciliation is debounced per environment pair to reduce overhead.
         """
         # Get all environments for tenant
         environments = await db_service.get_environments(tenant_id)
         env_ids = [env["id"] for env in environments]
-        
+
+        # Filter out the changed environment
+        other_env_ids = [env_id for env_id in env_ids if env_id != changed_env_id]
+
+        # Early exit if no other environments to reconcile with
+        if not other_env_ids:
+            logger.debug(f"No other environments to reconcile with for {changed_env_id}")
+            return {"pairs_reconciled": 0, "errors": []}
+
+        logger.info(f"Reconciling {len(other_env_ids)} environment pairs for changed env {changed_env_id}")
+
         results = {
             "pairs_reconciled": 0,
             "errors": []
         }
-        
+
         # Recompute for all pairs involving changed_env_id
-        for env_id in env_ids:
-            if env_id == changed_env_id:
-                continue
-            
+        for env_id in other_env_ids:
             try:
                 # Reconcile source -> target
-                await CanonicalReconciliationService.reconcile_environment_pair(
+                result = await CanonicalReconciliationService.reconcile_environment_pair(
                     tenant_id, changed_env_id, env_id
                 )
-                results["pairs_reconciled"] += 1
-                
+                if not result.get("skipped"):
+                    results["pairs_reconciled"] += 1
+
                 # Reconcile target -> source (reverse direction)
-                await CanonicalReconciliationService.reconcile_environment_pair(
+                result = await CanonicalReconciliationService.reconcile_environment_pair(
                     tenant_id, env_id, changed_env_id
                 )
-                results["pairs_reconciled"] += 1
+                if not result.get("skipped"):
+                    results["pairs_reconciled"] += 1
             except Exception as e:
                 error_msg = f"Error reconciling pair ({changed_env_id}, {env_id}): {str(e)}"
                 logger.error(error_msg)
                 results["errors"].append(error_msg)
-        
+
+        logger.info(f"Reconciliation complete: {results['pairs_reconciled']} pairs processed")
         return results
 

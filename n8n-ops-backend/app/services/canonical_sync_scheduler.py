@@ -2,12 +2,16 @@
 Canonical Workflow Sync Scheduler
 
 Scheduled safety sync for repository and environment syncs.
+
+NOTE: For MVP, automatic sync is DISABLED by default.
+Set SYNC_SCHEDULER_ENABLED=true in environment to enable.
 """
 import asyncio
 import logging
 from datetime import datetime, timezone, timedelta
 from typing import Dict, Any, List
 
+from app.core.config import settings
 from app.services.database import db_service
 from app.services.canonical_repo_sync_service import CanonicalRepoSyncService
 from app.services.canonical_env_sync_service import CanonicalEnvSyncService
@@ -29,34 +33,49 @@ _env_sync_scheduler_task = None
 
 # Sync intervals (in seconds)
 REPO_SYNC_INTERVAL = 30 * 60  # 30 minutes
-ENV_SYNC_INTERVAL = 15 * 60   # 15 minutes
+ENV_SYNC_INTERVAL = 30 * 60   # 30 minutes (increased from 15 to reduce frequency)
+
+# Debounce tracking to prevent concurrent syncs for same environment
+_repo_sync_in_progress: Dict[str, datetime] = {}
+_env_sync_in_progress: Dict[str, datetime] = {}
+SYNC_DEBOUNCE_SECONDS = 60  # Prevent re-triggering same env sync within 60 seconds
 
 
 async def _process_repo_sync_scheduler():
     """Process scheduled repository syncs"""
-    global _repo_sync_scheduler_running
-    
+    global _repo_sync_scheduler_running, _repo_sync_in_progress
+
     while _repo_sync_scheduler_running:
         try:
             # Get all environments with Git configured
             all_environments = db_service.client.table("environments").select("*").execute()
-            
+
             for env in (all_environments.data or []):
                 if not env.get("git_repo_url") or not env.get("git_folder"):
                     continue
-                
+
                 tenant_id = env.get("tenant_id")
                 environment_id = env.get("id")
-                
+
                 if not tenant_id or not environment_id:
                     continue
-                
-                # Check last sync time
-                last_sync = await _get_last_repo_sync_time(tenant_id, environment_id)
+
+                # Check debounce - skip if sync already in progress or recently completed
+                debounce_key = f"{tenant_id}:{environment_id}"
                 now = datetime.now(timezone.utc)
-                
+                if debounce_key in _repo_sync_in_progress:
+                    last_attempt = _repo_sync_in_progress[debounce_key]
+                    if (now - last_attempt).total_seconds() < SYNC_DEBOUNCE_SECONDS:
+                        logger.debug(f"Skipping repo sync for {environment_id} (debounced)")
+                        continue
+
+                # Check last sync time from environment record
+                last_sync = await _get_last_repo_sync_time(tenant_id, environment_id)
+
                 # Sync if last sync was more than REPO_SYNC_INTERVAL ago
                 if not last_sync or (now - last_sync).total_seconds() > REPO_SYNC_INTERVAL:
+                    # Mark as in progress
+                    _repo_sync_in_progress[debounce_key] = now
                     try:
                         # Create background job
                         job = await background_job_service.create_job(
@@ -98,6 +117,10 @@ async def _process_repo_sync_scheduler():
                             )
                         except Exception as fail_err:
                             logger.error(f"Failed to mark job as failed: {str(fail_err)}")
+                    finally:
+                        # Clear debounce after sync attempt (success or failure)
+                        # Keep debounce for a short time to prevent immediate retry
+                        pass
             
             # Wait before next cycle
             await asyncio.sleep(REPO_SYNC_INTERVAL)
@@ -109,26 +132,36 @@ async def _process_repo_sync_scheduler():
 
 async def _process_env_sync_scheduler():
     """Process scheduled environment syncs"""
-    global _env_sync_scheduler_running
-    
+    global _env_sync_scheduler_running, _env_sync_in_progress
+
     while _env_sync_scheduler_running:
         try:
             # Get all environments
             all_environments = db_service.client.table("environments").select("*").execute()
-            
+
             for env in (all_environments.data or []):
                 tenant_id = env.get("tenant_id")
                 environment_id = env.get("id")
-                
+
                 if not tenant_id or not environment_id:
                     continue
-                
-                # Check last sync time
-                last_sync = await _get_last_env_sync_time(tenant_id, environment_id)
+
+                # Check debounce - skip if sync already in progress or recently completed
+                debounce_key = f"{tenant_id}:{environment_id}"
                 now = datetime.now(timezone.utc)
-                
+                if debounce_key in _env_sync_in_progress:
+                    last_attempt = _env_sync_in_progress[debounce_key]
+                    if (now - last_attempt).total_seconds() < SYNC_DEBOUNCE_SECONDS:
+                        logger.debug(f"Skipping env sync for {environment_id} (debounced)")
+                        continue
+
+                # Check last sync time from environment record (not per-workflow)
+                last_sync = await _get_last_env_sync_time(tenant_id, environment_id)
+
                 # Sync if last sync was more than ENV_SYNC_INTERVAL ago
                 if not last_sync or (now - last_sync).total_seconds() > ENV_SYNC_INTERVAL:
+                    # Mark as in progress
+                    _env_sync_in_progress[debounce_key] = now
                     try:
                         # Create background job
                         job = await background_job_service.create_job(
@@ -158,11 +191,14 @@ async def _process_env_sync_scheduler():
                         except Exception as sync_err:
                             logger.warning(f"Failed to update last_sync_at for scheduled sync: {str(sync_err)}")
 
-                        # Trigger reconciliation
-                        await CanonicalReconciliationService.reconcile_all_pairs_for_environment(
-                            tenant_id=tenant_id,
-                            changed_env_id=environment_id
-                        )
+                        # Trigger reconciliation (with error isolation)
+                        try:
+                            await CanonicalReconciliationService.reconcile_all_pairs_for_environment(
+                                tenant_id=tenant_id,
+                                changed_env_id=environment_id
+                            )
+                        except Exception as recon_err:
+                            logger.warning(f"Reconciliation failed after env sync (non-fatal): {str(recon_err)}")
 
                         # Complete the job successfully
                         await background_job_service.complete_job(
@@ -182,6 +218,10 @@ async def _process_env_sync_scheduler():
                             )
                         except Exception as fail_err:
                             logger.error(f"Failed to mark job as failed: {str(fail_err)}")
+                    finally:
+                        # Clear debounce after sync attempt (success or failure)
+                        # Keep debounce for a short time to prevent immediate retry
+                        pass
             
             # Wait before next cycle
             await asyncio.sleep(ENV_SYNC_INTERVAL)
@@ -214,38 +254,53 @@ async def _get_last_repo_sync_time(tenant_id: str, environment_id: str) -> datet
 
 
 async def _get_last_env_sync_time(tenant_id: str, environment_id: str) -> datetime | None:
-    """Get last env sync time for an environment"""
+    """
+    Get last env sync time for an environment.
+
+    Uses environment-level last_sync_at timestamp instead of per-workflow timestamps
+    to prevent premature sync triggers when individual workflows are updated.
+    """
     try:
-        # Get most recent env map sync time
+        # Get environment's last_sync_at timestamp (environment-level tracking)
         response = (
-            db_service.client.table("workflow_env_map")
-            .select("last_env_sync_at")
+            db_service.client.table("environments")
+            .select("last_sync_at")
             .eq("tenant_id", tenant_id)
-            .eq("environment_id", environment_id)
-            .order("last_env_sync_at", desc=True)
-            .limit(1)
+            .eq("id", environment_id)
+            .single()
             .execute()
         )
-        
-        if response.data and response.data[0].get("last_env_sync_at"):
-            return datetime.fromisoformat(response.data[0]["last_env_sync_at"].replace("Z", "+00:00"))
-        
+
+        if response.data and response.data.get("last_sync_at"):
+            return datetime.fromisoformat(response.data["last_sync_at"].replace("Z", "+00:00"))
+
         return None
-    except Exception:
+    except Exception as e:
+        logger.debug(f"Could not get last_sync_at for environment {environment_id}: {str(e)}")
         return None
 
 
 async def start_canonical_sync_schedulers():
-    """Start all canonical sync schedulers"""
+    """
+    Start all canonical sync schedulers.
+
+    NOTE: For MVP, automatic sync is DISABLED by default.
+    Set SYNC_SCHEDULER_ENABLED=true in environment to enable.
+    """
     global _repo_sync_scheduler_running, _repo_sync_scheduler_task
     global _env_sync_scheduler_running, _env_sync_scheduler_task
-    
+
+    # Check if scheduler is enabled via environment variable
+    if not settings.SYNC_SCHEDULER_ENABLED:
+        logger.info("Canonical sync schedulers DISABLED (set SYNC_SCHEDULER_ENABLED=true to enable)")
+        return
+
     # Start repo sync scheduler
     if not _repo_sync_scheduler_running:
         _repo_sync_scheduler_running = True
         _repo_sync_scheduler_task = asyncio.create_task(_process_repo_sync_scheduler())
         logger.info("Canonical repo sync scheduler started")
-    
+
     # Start env sync scheduler
     if not _env_sync_scheduler_running:
         _env_sync_scheduler_running = True

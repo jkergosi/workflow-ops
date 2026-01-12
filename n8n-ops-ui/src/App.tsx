@@ -40,6 +40,8 @@ import { PipelineEditorPage } from '@/pages/PipelineEditorPage';
 import { PromotePage } from '@/pages/PromotePage';
 import { CanonicalOnboardingPage } from '@/pages/CanonicalOnboardingPage';
 import { CanonicalWorkflowsPage } from '@/pages/CanonicalWorkflowsPage';
+import { WorkflowMappingsPage } from '@/pages/WorkflowMappingsPage';
+import { DiffStatesPage } from '@/pages/DiffStatesPage';
 import { UntrackedWorkflowsPage } from '@/pages/UntrackedWorkflowsPage';
 import { WorkflowsOverviewPage } from '@/pages/WorkflowsOverviewPage';
 import { TechnicalDifficultiesPage } from '@/pages/TechnicalDifficultiesPage';
@@ -116,15 +118,17 @@ function ProtectedRoute({ children }: { children: React.ReactNode }) {
     );
   }
 
+  // PRIORITY: If backend is unavailable, show technical difficulties page immediately
+  // This must be checked BEFORE any auth redirects to prevent sending users to login
+  if (backendUnavailable) {
+    console.log('[ProtectedRoute] Backend unavailable, showing technical difficulties page');
+    return <TechnicalDifficultiesPage />;
+  }
+
   // Check if user is authenticated (login completed)
   // isAuthenticated is true when user is logged in AND has completed onboarding
   // Only redirect if we're not already on login or onboarding page to prevent loops
   if (!isAuthenticated && !needsOnboarding && currentPath !== '/login' && currentPath !== '/onboarding') {
-    // Show technical difficulties page instead of redirecting if backend is down
-    if (backendUnavailable) {
-      console.log('[ProtectedRoute] Backend unavailable, showing technical difficulties page');
-      return <TechnicalDifficultiesPage />;
-    }
     console.log('[ProtectedRoute] Not authenticated, redirecting to login');
     return <Navigate to="/login" replace />;
   }
@@ -302,6 +306,8 @@ function App() {
                 <Route path="/deployments/new" element={<Navigate to="/promote" replace />} />
                 <Route path="/canonical/onboarding" element={<RoleProtectedRoute><CanonicalOnboardingPage /></RoleProtectedRoute>} />
                 <Route path="/canonical/workflows" element={<RoleProtectedRoute><CanonicalWorkflowsPage /></RoleProtectedRoute>} />
+                <Route path="/canonical/mappings" element={<RoleProtectedRoute><WorkflowMappingsPage /></RoleProtectedRoute>} />
+                <Route path="/canonical/diff-states" element={<RoleProtectedRoute><DiffStatesPage /></RoleProtectedRoute>} />
                 <Route path="/canonical/untracked" element={<RoleProtectedRoute><UntrackedWorkflowsPage /></RoleProtectedRoute>} />
                 <Route path="/workflows-overview" element={<RoleProtectedRoute><WorkflowsOverviewPage /></RoleProtectedRoute>} />
                 <Route path="/observability" element={<RoleProtectedRoute><ObservabilityPage /></RoleProtectedRoute>} />

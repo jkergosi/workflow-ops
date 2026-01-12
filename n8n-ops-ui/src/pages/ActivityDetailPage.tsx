@@ -51,9 +51,17 @@ export function ActivityDetailPage() {
       return response.data;
     },
     enabled: !!id,
-    refetchInterval: (data) => {
-      // Poll every 2 seconds if job is running, otherwise every 10 seconds
-      return data?.status === 'running' || data?.status === 'pending' ? 2000 : 10000;
+    refetchInterval: (query) => {
+      const job = query.state.data;
+      if (!job) return 2000;
+      // Only poll if job is still active, with exponential backoff
+      if (job.status === 'pending' || job.status === 'running') {
+        // Start at 2s, increase based on job age, max 10s
+        const elapsed = Date.now() - new Date(job.created_at || Date.now()).getTime();
+        const interval = Math.min(2000 + Math.floor(elapsed / 30000) * 2000, 10000);
+        return interval;
+      }
+      return false; // Stop polling when complete/failed
     },
   });
 
@@ -475,6 +483,31 @@ export function ActivityDetailPage() {
                   )}
                 </div>
               </div>
+            ) : job.status === 'failed' ? (
+              // Failed Job Summary
+              <div className="space-y-3">
+                <div className="flex items-center gap-2">
+                  <XCircle className="h-5 w-5 text-red-500" />
+                  <h3 className="font-semibold text-red-600 dark:text-red-400">Job failed</h3>
+                </div>
+                <div className="space-y-2 pl-7">
+                  {progress.current_step && (
+                    <p className="text-sm">
+                      Failed during: <span className="font-medium">{getPhaseLabel(progress.current_step)}</span>
+                    </p>
+                  )}
+                  {progress.current !== undefined && progress.total !== undefined && progress.total > 0 && (
+                    <p className="text-sm text-muted-foreground">
+                      Processed {progress.current} of {progress.total} workflow(s) before failure
+                    </p>
+                  )}
+                  {progress.message && (
+                    <p className="text-sm text-muted-foreground">
+                      {progress.message}
+                    </p>
+                  )}
+                </div>
+              </div>
             ) : (
               // Running Progress
               <>
@@ -498,9 +531,9 @@ export function ActivityDetailPage() {
                         {progress.current} / {progress.total} ({progress.percentage || Math.round((progress.current / progress.total) * 100)}%)
                       </span>
                     </div>
-                    <Progress 
-                      value={progress.percentage || (progress.total > 0 ? (progress.current / progress.total) * 100 : 0)} 
-                      className="h-2" 
+                    <Progress
+                      value={progress.percentage || (progress.total > 0 ? (progress.current / progress.total) * 100 : 0)}
+                      className="h-2"
                     />
                   </div>
                 )}

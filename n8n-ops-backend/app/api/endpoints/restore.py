@@ -12,6 +12,7 @@ from app.services.environment_action_guard import (
     ActionGuardError
 )
 from app.schemas.environment import EnvironmentClass
+from app.schemas.pagination import PaginatedResponse, DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE
 from app.services.auth_service import get_current_user
 
 router = APIRouter()
@@ -427,13 +428,71 @@ async def execute_restore(
         )
 
 
-@router.get("/snapshots/{workflow_id}", response_model=List[SnapshotResponse])
-async def get_workflow_snapshots(workflow_id: str, user_info: dict = Depends(get_current_user)):
-    """Get all snapshots for a specific workflow"""
-    try:
-        snapshots = await db_service.get_workflow_snapshots(get_tenant_id(user_info), workflow_id)
+@router.get("/snapshots/{workflow_id}", response_model=PaginatedResponse[SnapshotResponse])
+async def get_workflow_snapshots(
+    workflow_id: str,
+    page: int = 1,
+    page_size: int = DEFAULT_PAGE_SIZE,
+    user_info: dict = Depends(get_current_user)
+):
+    """
+    Get snapshots for a specific workflow with server-side pagination.
 
-        return [
+    This endpoint returns paginated workflow snapshots with deterministic ordering.
+    - Returns only the requested page of snapshots
+    - Performs filtering at the database level
+    - Uses standardized pagination envelope
+    - Ordered by created_at DESC (newest first), then by version DESC
+
+    Path params:
+        workflow_id: ID of the workflow to get snapshots for
+
+    Query params:
+        page: Page number (1-indexed, default 1)
+        page_size: Items per page (default 50, max 100)
+
+    Returns:
+        Standardized pagination envelope:
+        {
+            "items": [...],
+            "total": int,
+            "page": int,
+            "pageSize": int,
+            "totalPages": int,
+            "hasMore": bool
+        }
+    """
+    try:
+        tenant_id = get_tenant_id(user_info)
+
+        # Limit page_size to prevent abuse
+        page_size = min(max(page_size, 1), MAX_PAGE_SIZE)
+
+        # Calculate offset
+        offset = (page - 1) * page_size
+
+        # Build query with pagination and deterministic ordering
+        query = (
+            db_service.client.table("workflow_snapshots")
+            .select("*", count="exact")
+            .eq("tenant_id", tenant_id)
+            .eq("workflow_id", workflow_id)
+        )
+
+        # Add deterministic ordering: created_at DESC (newest first), then version DESC as tiebreaker
+        query = query.order("created_at", desc=True).order("version", desc=True)
+
+        # Apply pagination
+        query = query.range(offset, offset + page_size - 1)
+
+        # Execute query
+        response = query.execute()
+
+        snapshots = response.data or []
+        total = response.count if response.count is not None else 0
+
+        # Transform to response models
+        snapshot_items = [
             SnapshotResponse(
                 id=snap.get("id"),
                 workflow_id=snap.get("workflow_id"),
@@ -444,6 +503,14 @@ async def get_workflow_snapshots(workflow_id: str, user_info: dict = Depends(get
             )
             for snap in snapshots
         ]
+
+        # Return standardized paginated response
+        return PaginatedResponse.create(
+            items=snapshot_items,
+            page=page,
+            page_size=page_size,
+            total=total
+        )
 
     except Exception as e:
         raise HTTPException(

@@ -100,7 +100,20 @@ export function CanonicalOnboardingPage() {
   };
 
   const pollInventoryProgress = async (jobId: string) => {
-    const interval = setInterval(async () => {
+    // Exponential backoff: start at 1s, max 10s, factor 1.5
+    let delay = 1000;
+    const maxDelay = 10000;
+    const backoffFactor = 1.5;
+    let attempts = 0;
+    const maxAttempts = 120; // ~5 minutes max for inventory
+
+    const poll = async () => {
+      if (attempts >= maxAttempts) {
+        toast.error('Inventory is taking too long. Please try again.');
+        return;
+      }
+      attempts++;
+
       try {
         const response = await apiClient.get(`/background-jobs/${jobId}`);
         const job = response.data;
@@ -110,7 +123,6 @@ export function CanonicalOnboardingPage() {
         }
 
         if (job.status === 'completed') {
-          clearInterval(interval);
           setInventoryProgress(100);
 
           // Capture inventory results from job result field
@@ -125,14 +137,25 @@ export function CanonicalOnboardingPage() {
             const slug = tenant.name.toLowerCase().replace(/[^a-z0-9-]/g, '-').replace(/-+/g, '-');
             setTenantSlug(slug);
           }
+          return;
         } else if (job.status === 'failed') {
-          clearInterval(interval);
           toast.error('Inventory failed: ' + (job.error_message || 'Unknown error'));
+          return;
         }
+
+        // Still running - schedule next poll with exponential backoff
+        delay = Math.min(delay * backoffFactor, maxDelay);
+        setTimeout(poll, delay);
       } catch (error) {
         console.error('Error polling inventory progress:', error);
+        // On error, still retry with backoff
+        delay = Math.min(delay * backoffFactor, maxDelay);
+        setTimeout(poll, delay);
       }
-    }, 2000);
+    };
+
+    // Start polling after initial delay
+    setTimeout(poll, delay);
   };
 
   const createMigrationPR = async () => {

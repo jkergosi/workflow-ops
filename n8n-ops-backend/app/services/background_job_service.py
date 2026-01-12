@@ -6,6 +6,7 @@ from typing import Dict, Any, Optional, List
 from datetime import datetime
 from uuid import uuid4
 from app.services.database import db_service
+from app.services.sse_pubsub_service import SSEEvent
 
 logger = logging.getLogger(__name__)
 
@@ -329,16 +330,18 @@ class BackgroundJobService:
 
         # Emit SSE event to notify clients and workers
         await sse_pubsub.publish(
-            tenant_id=job.get("tenant_id"),
-            event_type="job.status_changed",
-            data={
-                "job_id": job_id,
-                "status": BackgroundJobStatus.CANCELLED,
-                "job_type": job.get("job_type"),
-                "resource_id": job.get("resource_id"),
-                "resource_type": job.get("resource_type"),
-                "error_message": "Job cancelled by user"
-            }
+            SSEEvent(
+                type="job.status_changed",
+                tenant_id=job.get("tenant_id"),
+                payload={
+                    "job_id": job_id,
+                    "status": BackgroundJobStatus.CANCELLED,
+                    "job_type": job.get("job_type"),
+                    "resource_id": job.get("resource_id"),
+                    "resource_type": job.get("resource_type"),
+                    "error_message": "Job cancelled by user"
+                }
+            )
         )
 
         logger.info(f"Job {job_id} cancelled by user")
@@ -415,15 +418,17 @@ class BackgroundJobService:
 
         # Emit SSE event to notify clients
         await sse_pubsub.publish(
-            tenant_id=job.get("tenant_id"),
-            event_type="job.status_changed",
-            data={
-                "job_id": job_id,
-                "status": BackgroundJobStatus.COMPLETED,
-                "job_type": job.get("job_type"),
-                "resource_id": job.get("resource_id"),
-                "resource_type": job.get("resource_type")
-            }
+            SSEEvent(
+                type="job.status_changed",
+                tenant_id=job.get("tenant_id"),
+                payload={
+                    "job_id": job_id,
+                    "status": BackgroundJobStatus.COMPLETED,
+                    "job_type": job.get("job_type"),
+                    "resource_id": job.get("resource_id"),
+                    "resource_type": job.get("resource_type")
+                }
+            )
         )
 
         logger.info(f"Job {job_id} marked as completed")
@@ -461,16 +466,18 @@ class BackgroundJobService:
 
         # Emit SSE event to notify clients
         await sse_pubsub.publish(
-            tenant_id=job.get("tenant_id"),
-            event_type="job.status_changed",
-            data={
-                "job_id": job_id,
-                "status": BackgroundJobStatus.FAILED,
-                "job_type": job.get("job_type"),
-                "resource_id": job.get("resource_id"),
-                "resource_type": job.get("resource_type"),
-                "error_message": error_message
-            }
+            SSEEvent(
+                type="job.status_changed",
+                tenant_id=job.get("tenant_id"),
+                payload={
+                    "job_id": job_id,
+                    "status": BackgroundJobStatus.FAILED,
+                    "job_type": job.get("job_type"),
+                    "resource_id": job.get("resource_id"),
+                    "resource_type": job.get("resource_type"),
+                    "error_message": error_message
+                }
+            )
         )
 
         logger.error(f"Job {job_id} marked as failed: {error_message}")
@@ -556,15 +563,17 @@ class BackgroundJobService:
 
                         # Emit SSE event
                         await sse_pubsub.publish(
-                            tenant_id=job.get("tenant_id"),
-                            event_type="job.status_changed",
-                            data={
-                                "job_id": job_id,
-                                "status": BackgroundJobStatus.COMPLETED,
-                                "job_type": job.get("job_type"),
-                                "resource_id": job.get("resource_id"),
-                                "resource_type": job.get("resource_type")
-                            }
+                            SSEEvent(
+                                type="job.status_changed",
+                                tenant_id=job.get("tenant_id"),
+                                payload={
+                                    "job_id": job_id,
+                                    "status": BackgroundJobStatus.COMPLETED,
+                                    "job_type": job.get("job_type"),
+                                    "resource_id": job.get("resource_id"),
+                                    "resource_type": job.get("resource_type")
+                                }
+                            )
                         )
 
                         cleaned_count += 1
@@ -604,16 +613,18 @@ class BackgroundJobService:
 
                 # Emit SSE event
                 await sse_pubsub.publish(
-                    tenant_id=job.get("tenant_id"),
-                    event_type="job.status_changed",
-                    data={
-                        "job_id": job_id,
-                        "status": BackgroundJobStatus.FAILED,
-                        "job_type": job.get("job_type"),
-                        "resource_id": job.get("resource_id"),
-                        "resource_type": job.get("resource_type"),
-                        "error_message": f"Job timed out after running for more than {max_runtime_hours} hours"
-                    }
+                    SSEEvent(
+                        type="job.status_changed",
+                        tenant_id=job.get("tenant_id"),
+                        payload={
+                            "job_id": job_id,
+                            "status": BackgroundJobStatus.FAILED,
+                            "job_type": job.get("job_type"),
+                            "resource_id": job.get("resource_id"),
+                            "resource_type": job.get("resource_type"),
+                            "error_message": f"Job timed out after running for more than {max_runtime_hours} hours"
+                        }
+                    )
                 )
 
                 # Also update associated deployment if this is a promotion job
@@ -669,16 +680,18 @@ class BackgroundJobService:
 
                 # Emit SSE event
                 await sse_pubsub.publish(
-                    tenant_id=job.get("tenant_id"),
-                    event_type="job.status_changed",
-                    data={
-                        "job_id": job_id,
-                        "status": BackgroundJobStatus.FAILED,
-                        "job_type": job.get("job_type"),
-                        "resource_id": job.get("resource_id"),
-                        "resource_type": job.get("resource_type"),
-                        "error_message": "Job was pending for more than 1 hour and never started"
-                    }
+                    SSEEvent(
+                        type="job.status_changed",
+                        tenant_id=job.get("tenant_id"),
+                        payload={
+                            "job_id": job_id,
+                            "status": BackgroundJobStatus.FAILED,
+                            "job_type": job.get("job_type"),
+                            "resource_id": job.get("resource_id"),
+                            "resource_type": job.get("resource_type"),
+                            "error_message": "Job was pending for more than 1 hour and never started"
+                        }
+                    )
                 )
 
                 cleaned_count += 1

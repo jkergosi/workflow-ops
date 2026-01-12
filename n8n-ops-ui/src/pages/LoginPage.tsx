@@ -10,6 +10,7 @@ import { Label } from '@/components/ui/label';
 import { Separator } from '@/components/ui/separator';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Loader2, Workflow, Mail, Github, AlertCircle } from 'lucide-react';
+import { TechnicalDifficultiesPage } from './TechnicalDifficultiesPage';
 
 /**
  * Get plan-based default landing page.
@@ -45,7 +46,7 @@ export function LoginPage() {
     };
   }, []);
 
-  const { isAuthenticated, isLoading, needsOnboarding, loginWithEmail, loginWithOAuth, signup } = useAuth();
+  const { isAuthenticated, isLoading, needsOnboarding, backendUnavailable, loginWithEmail, loginWithOAuth, signup } = useAuth();
   const { planName } = useFeatures();
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
@@ -142,6 +143,12 @@ export function LoginPage() {
         </div>
       </div>
     );
+  }
+
+  // Show technical difficulties page if backend is unavailable
+  if (backendUnavailable) {
+    console.log('[LoginPage] Backend unavailable, showing technical difficulties page');
+    return <TechnicalDifficultiesPage />;
   }
 
   if (signupSuccess) {

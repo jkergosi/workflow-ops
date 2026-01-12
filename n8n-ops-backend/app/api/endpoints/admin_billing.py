@@ -363,7 +363,8 @@ async def get_tenant_invoices(tenant_id: str, limit: int = Query(20, ge=1, le=10
             return []  # No Stripe customer, no invoices
 
         # Fetch from Stripe
-        invoices = await stripe_service.list_invoices(customer_id, limit)
+        result = await stripe_service.list_invoices(customer_id, limit)
+        invoices = result["data"]
 
         return [
             TenantInvoiceResponse(

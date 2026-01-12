@@ -157,7 +157,7 @@ export function BillingPage() {
       />
 
       {/* Invoices Table */}
-      <InvoicesTable invoices={data.invoices} />
+      <InvoicesTable />
 
       {/* Links to Admin Pages */}
       {(data.links.usage_limits_url || data.links.entitlements_audit_url) && (

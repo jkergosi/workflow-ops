@@ -3,6 +3,7 @@ from typing import List, Any, Optional, Dict
 from datetime import datetime
 import logging
 
+from app.schemas.pagination import PaginatedResponse, DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE
 from app.schemas.billing import (
     SubscriptionPlanResponse,
     SubscriptionResponse,
@@ -535,28 +536,101 @@ async def reactivate_subscription(
         )
 
 
-@router.get("/invoices", response_model=List[InvoiceResponse])
+@router.get("/invoices", response_model=PaginatedResponse[InvoiceResponse])
 async def get_invoices(
-    limit: int = 10,
+    page: int = 1,
+    page_size: int = DEFAULT_PAGE_SIZE,
     user_info: dict = Depends(get_current_user),
     _admin_guard: dict = Depends(require_tenant_admin()),
 ):
-    """Get invoices for current tenant"""
+    """
+    Get invoices for current tenant with server-side pagination.
+
+    This endpoint returns paginated invoices from Stripe with date-based ordering.
+    Stripe automatically orders invoices by creation date (newest first), providing
+    deterministic ordering.
+
+    Query params:
+        page: Page number (1-indexed, default 1)
+        page_size: Items per page (default 50, max 100)
+
+    Returns:
+        PaginatedResponse with invoices and pagination metadata
+    """
     try:
         tenant_id = user_info["tenant"]["id"]
+        
+        # Ensure page_size is within bounds
+        page_size = max(1, min(page_size, MAX_PAGE_SIZE))
+        page = max(1, page)
+        
         # Get subscription with customer ID
-        response = db_service.client.table("subscriptions").select("stripe_customer_id").eq("tenant_id", tenant_id).single().execute()
+        response = db_service.client.table("subscriptions").select("stripe_customer_id").eq("tenant_id", tenant_id).maybe_single().execute()
 
-        if not response.data or not response.data.get("stripe_customer_id"):
-            return []
+        if not response or not response.data or not response.data.get("stripe_customer_id"):
+            # No customer, return empty paginated response
+            return PaginatedResponse.create(
+                items=[],
+                page=page,
+                page_size=page_size,
+                total=0
+            )
 
         customer_id = response.data["stripe_customer_id"]
 
-        # Get invoices from Stripe
-        invoices = await stripe_service.list_invoices(customer_id, limit)
-        return invoices
+        # Stripe uses cursor-based pagination. To support page numbers, we need to:
+        # 1. For page 1: fetch directly
+        # 2. For page > 1: fetch all items up to the requested page (not efficient for large pages,
+        #    but necessary due to Stripe's cursor-based approach)
+        # Note: For production with many invoices, consider caching or switching to cursor-based pagination
+        
+        all_invoices = []
+        starting_after = None
+        items_to_fetch = page * page_size
+        
+        # Fetch invoices in batches until we have enough for the requested page
+        while len(all_invoices) < items_to_fetch:
+            batch_size = min(100, items_to_fetch - len(all_invoices))  # Stripe max is 100
+            result = await stripe_service.list_invoices(customer_id, batch_size, starting_after)
+            batch_invoices = result["data"]
+            
+            if not batch_invoices:
+                break
+                
+            all_invoices.extend(batch_invoices)
+            
+            # If there are no more invoices, stop
+            if not result["has_more"]:
+                break
+                
+            # Set cursor for next batch
+            starting_after = batch_invoices[-1]["id"]
+        
+        # Calculate pagination metadata
+        total = len(all_invoices)  # Note: This is a lower bound, actual total may be higher
+        
+        # If we got exactly the amount we requested and has_more is True, fetch one more to get accurate total
+        if len(all_invoices) == items_to_fetch and result.get("has_more", False):
+            # There are more invoices, so total is at least items_to_fetch + 1
+            # For simplicity, we'll just indicate has_more in the response
+            total = items_to_fetch + 1  # Minimum total
+        
+        # Extract the page of items
+        start_idx = (page - 1) * page_size
+        end_idx = start_idx + page_size
+        page_items = all_invoices[start_idx:end_idx]
+        
+        return PaginatedResponse.create(
+            items=page_items,
+            page=page,
+            page_size=page_size,
+            total=total
+        )
 
+    except HTTPException:
+        raise
     except Exception as e:
+        logger.error(f"Failed to fetch invoices: {str(e)}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to fetch invoices: {str(e)}"
@@ -602,22 +676,57 @@ async def get_upcoming_invoice(
         )
 
 
-@router.get("/payment-history", response_model=List[PaymentHistoryResponse])
+@router.get("/payment-history", response_model=PaginatedResponse[PaymentHistoryResponse])
 async def get_payment_history(
-    limit: int = 10,
+    page: int = 1,
+    page_size: int = DEFAULT_PAGE_SIZE,
     user_info: dict = Depends(get_current_user),
     _admin_guard: dict = Depends(require_tenant_admin()),
 ):
-    """Get payment history from database"""
+    """
+    Get payment history for current tenant with server-side pagination.
+
+    This endpoint returns paginated payment history from the database with date-based ordering.
+    Payments are ordered by creation date (newest first), providing deterministic ordering.
+
+    Query params:
+        page: Page number (1-indexed, default 1)
+        page_size: Items per page (default 50, max 100)
+
+    Returns:
+        PaginatedResponse with payment history records and pagination metadata
+    """
     try:
         tenant_id = user_info["tenant"]["id"]
+
+        # Ensure page_size is within bounds
+        page_size = max(1, min(page_size, MAX_PAGE_SIZE))
+        page = max(1, page)
+
+        # Calculate offset
+        offset = (page - 1) * page_size
+
+        # Get total count
+        count_response = db_service.client.table("payment_history").select(
+            "*", count="exact"
+        ).eq("tenant_id", tenant_id).execute()
+
+        total = count_response.count if count_response.count is not None else 0
+
+        # Get paginated data with date-based ordering (newest first)
         response = db_service.client.table("payment_history").select("*").eq(
             "tenant_id", tenant_id
-        ).order("created_at", desc=True).limit(limit).execute()
+        ).order("created_at", desc=True).range(offset, offset + page_size - 1).execute()
 
-        return response.data
+        return PaginatedResponse.create(
+            items=response.data or [],
+            page=page,
+            page_size=page_size,
+            total=total
+        )
 
     except Exception as e:
+        logger.error(f"Failed to fetch payment history: {str(e)}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to fetch payment history: {str(e)}"
@@ -739,7 +848,8 @@ async def get_billing_overview(
         if subscription_data.get("stripe_customer_id"):
             customer_id = subscription_data["stripe_customer_id"]
             try:
-                invoices = await stripe_service.list_invoices(customer_id, 10)
+                result = await stripe_service.list_invoices(customer_id, 10)
+                invoices = result["data"]
                 payment_method = await stripe_service.get_default_payment_method(customer_id)
             except Exception:
                 pass

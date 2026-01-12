@@ -22,6 +22,7 @@ from app.services.background_job_service import (
     BackgroundJobStatus,
     BackgroundJobType
 )
+from app.services.sync_orchestrator_service import sync_orchestrator
 from app.api.endpoints.sse import emit_sync_progress
 from app.services.environment_action_guard import (
     environment_action_guard,
@@ -996,6 +997,9 @@ async def sync_environment(
     """
     Sync workflows, executions, credentials, tags, and users from N8N to database.
     Returns immediately with job_id. Sync runs in background.
+
+    IDEMPOTENT: If a sync job is already queued or running for this environment,
+    returns the existing job ID instead of creating a duplicate.
     """
     try:
         # Get tenant_id from authenticated user
@@ -1009,7 +1013,7 @@ async def sync_environment(
         user = user_info.get("user", {})
         user_id = user.get("id", "00000000-0000-0000-0000-000000000000")
         user_role = user.get("role", "user")
-        
+
         # Get environment details
         environment = await db_service.get_environment(environment_id, tenant_id)
         if not environment:
@@ -1017,14 +1021,14 @@ async def sync_environment(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="Environment not found"
             )
-        
+
         # Check action guard
         env_class_str = environment.get("environment_class", "dev")
         try:
             env_class = EnvironmentClass(env_class_str)
         except ValueError:
             env_class = EnvironmentClass.DEV
-        
+
         try:
             environment_action_guard.assert_can_perform_action(
                 env_class=env_class,
@@ -1046,21 +1050,29 @@ async def sync_environment(
                 detail="Cannot connect to provider instance. Please check environment configuration."
             )
 
-        # Create background job
-        job = await background_job_service.create_job(
+        # Use sync orchestrator for idempotent job creation
+        job, is_new = await sync_orchestrator.request_sync(
             tenant_id=tenant_id,
-            job_type=BackgroundJobType.ENVIRONMENT_SYNC,
-            resource_id=environment_id,
-            resource_type="environment",
+            environment_id=environment_id,
             created_by=user_id,
-            initial_progress={
-                "current": 0,
-                "total": 5,
-                "percentage": 0,
-                "message": "Initializing sync..."
-            }
+            metadata={"sync_type": "legacy_environment_sync"}
         )
+
+        if not job or not job.get("id"):
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Failed to create or find sync job"
+            )
+
         job_id = job["id"]
+
+        # If this is an existing job, return with already_running status
+        if not is_new:
+            return {
+                "job_id": job_id,
+                "status": "already_running",
+                "message": "Sync already in progress"
+            }
 
         # Create audit log for sync start
         try:
