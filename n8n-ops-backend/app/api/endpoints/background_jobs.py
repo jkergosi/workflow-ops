@@ -5,7 +5,6 @@ from typing import Optional
 from app.services.background_job_service import background_job_service
 from app.core.entitlements_gate import require_entitlement
 from app.schemas.pagination import PaginatedResponse, DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE
-from app.schemas.background_job import BackgroundJobResponse
 
 router = APIRouter()
 

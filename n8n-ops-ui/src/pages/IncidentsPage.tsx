@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { useQuery, useMutation, useQueryClient, keepPreviousData } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
 import { formatDistanceToNow } from 'date-fns';
 import {
@@ -82,6 +82,8 @@ export function IncidentsPage() {
   const [actionReason, setActionReason] = useState('');
   const [actionTicketRef, setActionTicketRef] = useState('');
   const [resolutionType, setResolutionType] = useState<'promote' | 'revert' | 'replace' | 'acknowledge'>('promote');
+  const [currentPage, setCurrentPage] = useState(1);
+  const [pageSize, setPageSize] = useState(25);
 
   useEffect(() => {
     document.title = 'Incidents - WorkflowOps';
@@ -90,17 +92,23 @@ export function IncidentsPage() {
     };
   }, []);
 
+  // Reset to page 1 when filters change
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [selectedEnvironment, statusFilter]);
+
   // Check feature access
   const hasDriftIncidents = canUseFeature('drift_incidents');
 
   // Fetch incidents
-  const { data: incidentsData, isLoading, error, refetch } = useQuery({
-    queryKey: ['incidents', selectedEnvironment, statusFilter],
+  const { data: incidentsResponse, isLoading, isFetching, error, refetch } = useQuery({
+    queryKey: ['incidents', selectedEnvironment, statusFilter, currentPage, pageSize],
     queryFn: async () => {
       const response = await apiClient.getIncidents({
         environmentId: selectedEnvironment || undefined,
         status: statusFilter !== 'all' ? statusFilter : undefined,
-        limit: 100,
+        page: currentPage,
+        pageSize,
       });
       return response.data;
     },
@@ -110,8 +118,12 @@ export function IncidentsPage() {
       if ((error as any)?.response?.status === 503) return false;
       return failureCount < 2;
     },
-    keepPreviousData: true, // Cached data fallback
+    placeholderData: keepPreviousData,
   });
+
+  const incidentsData = incidentsResponse?.items || [];
+  const totalIncidents = incidentsResponse?.total || 0;
+  const totalPages = incidentsResponse?.totalPages || 1;
 
   // Fetch environments for lookup
   const { data: environments } = useQuery({
@@ -274,7 +286,7 @@ export function IncidentsPage() {
   }
 
   // Handle service errors with SmartEmptyState
-  if (error && !isLoading && !incidentsData) {
+  if (error && !isLoading && !incidentsResponse) {
     return (
       <div className="space-y-6">
         <div className="flex items-center justify-between">
@@ -387,13 +399,13 @@ export function IncidentsPage() {
         <CardHeader>
           <CardTitle>Incidents</CardTitle>
           <CardDescription>
-            {incidentsData?.length || 0} incident(s)
+            {totalIncidents} incident(s)
           </CardDescription>
         </CardHeader>
         <CardContent>
           {isLoading ? (
             <div className="text-center py-8 text-muted-foreground">Loading incidents...</div>
-          ) : !incidentsData?.length ? (
+          ) : !incidentsData.length ? (
             <IncidentsEmptyState size="lg" />
           ) : (
             <Table>
@@ -497,6 +509,79 @@ export function IncidentsPage() {
                 })}
               </TableBody>
             </Table>
+          )}
+
+          {/* Pagination Controls */}
+          {incidentsData.length > 0 && (
+            <div className="mt-4 flex items-center justify-between border-t pt-4">
+              <div className="flex items-center gap-4">
+                <div className="flex items-center gap-2">
+                  <Label htmlFor="pageSize" className="text-sm text-muted-foreground">
+                    Rows per page:
+                  </Label>
+                  <select
+                    id="pageSize"
+                    value={pageSize}
+                    onChange={(e) => {
+                      setPageSize(Number(e.target.value));
+                      setCurrentPage(1);
+                    }}
+                    className="h-8 w-20 rounded-md border border-input bg-background text-foreground px-2 py-1 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                  >
+                    <option value={10}>10</option>
+                    <option value={25}>25</option>
+                    <option value={50}>50</option>
+                    <option value={100}>100</option>
+                  </select>
+                </div>
+                <div className="text-sm text-muted-foreground">
+                  Showing {totalIncidents > 0 ? ((currentPage - 1) * pageSize) + 1 : 0} to {Math.min(currentPage * pageSize, totalIncidents)} of {totalIncidents} incidents
+                </div>
+              </div>
+
+              <div className="flex items-center gap-2">
+                {isFetching && (
+                  <span className="text-sm text-muted-foreground">Loading...</span>
+                )}
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setCurrentPage(1)}
+                  disabled={currentPage === 1 || isFetching}
+                >
+                  First
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setCurrentPage(currentPage - 1)}
+                  disabled={currentPage === 1 || isFetching}
+                >
+                  Previous
+                </Button>
+                <div className="flex items-center gap-1">
+                  <span className="text-sm">
+                    Page {currentPage} of {totalPages}
+                  </span>
+                </div>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setCurrentPage(currentPage + 1)}
+                  disabled={currentPage >= totalPages || isFetching}
+                >
+                  Next
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setCurrentPage(totalPages)}
+                  disabled={currentPage >= totalPages || isFetching}
+                >
+                  Last
+                </Button>
+              </div>
+            </div>
           )}
         </CardContent>
       </Card>

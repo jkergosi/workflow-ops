@@ -1,7 +1,7 @@
 """Add partial unique constraint to prevent duplicate sync jobs
 
 Revision ID: 20260112_sync_unique
-Revises: 20260112_fix_mv_ambiguous_column
+Revises: 20260112_fix_mv_ambiguous
 Create Date: 2026-01-12
 
 This migration adds a partial unique constraint on background_jobs to prevent
@@ -20,7 +20,7 @@ import sqlalchemy as sa
 
 # revision identifiers, used by Alembic.
 revision = '20260112_sync_unique'
-down_revision = '20260112_fix_mv_ambiguous_column'
+down_revision = '20260112_fix_mv_ambiguous'
 branch_labels = None
 depends_on = None
 

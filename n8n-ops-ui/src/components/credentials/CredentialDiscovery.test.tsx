@@ -1,6 +1,5 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { render, screen, waitFor } from '@/test/test-utils';
-import userEvent from '@testing-library/user-event';
 import { server } from '@/test/mocks/server';
 import { http, HttpResponse } from 'msw';
 import { CredentialDiscovery } from './CredentialDiscovery';
@@ -39,7 +38,7 @@ describe('CredentialDiscovery', () => {
         });
       }),
       http.post(`${API_BASE}/admin/credentials/logical`, async ({ request }) => {
-        const body = await request.json();
+        const body = await request.json() as Record<string, unknown>;
         return HttpResponse.json({
           id: `logical-${Date.now()}`,
           ...body,

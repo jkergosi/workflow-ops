@@ -29,7 +29,7 @@ import type {
 
 export function WorkflowMappingsPage() {
   const navigate = useNavigate();
-  const { tenant } = useAuth();
+  const { tenant: _tenant } = useAuth();
   const [searchParams, setSearchParams] = useSearchParams();
 
   // Data state
@@ -40,7 +40,7 @@ export function WorkflowMappingsPage() {
 
   // Pagination state
   const [currentPage, setCurrentPage] = useState(1);
-  const [pageSize, setPageSize] = useState(50);
+  const [pageSize, setPageSize] = useState(25);
   const [totalItems, setTotalItems] = useState(0);
   const [totalPages, setTotalPages] = useState(0);
 

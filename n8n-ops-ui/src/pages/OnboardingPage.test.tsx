@@ -1,6 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { screen, waitFor } from '@testing-library/react';
-import userEvent from '@testing-library/user-event';
 import { http, HttpResponse } from 'msw';
 import { OnboardingPage } from './OnboardingPage';
 import { render } from '@/test/test-utils';
@@ -10,7 +9,7 @@ const API_BASE = 'http://localhost:4000/api/v1';
 
 // Mock useAuth hook
 vi.mock('@/lib/auth', async (importOriginal) => {
-  const actual = await importOriginal();
+  const actual = await importOriginal() as Record<string, unknown>;
   return {
     ...actual,
     useAuth: () => ({

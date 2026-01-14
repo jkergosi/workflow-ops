@@ -2,7 +2,7 @@
 // TODO: Fix TypeScript errors in this file
 import { useState, useEffect } from 'react';
 import { useNavigate, useLocation, useSearchParams } from 'react-router-dom';
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { useQuery, useMutation, useQueryClient, keepPreviousData } from '@tanstack/react-query';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -62,6 +62,10 @@ export function DeploymentsPage() {
   const [rollbackDialogOpen, setRollbackDialogOpen] = useState(false);
   const [deploymentToRollback, setDeploymentToRollback] = useState<Deployment | null>(null);
 
+  // Pagination state
+  const [currentPage, setCurrentPage] = useState(1);
+  const [pageSize, setPageSize] = useState(25);
+
   const activeTab = searchParams.get('tab') || 'deployments';
   
   // Get plan and features for access control
@@ -104,9 +108,9 @@ export function DeploymentsPage() {
     };
   }, []);
 
-  const { data: deploymentsData, isLoading, error, refetch } = useQuery({
-    queryKey: ['deployments'],
-    queryFn: () => apiClient.getDeployments(),
+  const { data: deploymentsData, isLoading, isFetching, error, refetch } = useQuery({
+    queryKey: ['deployments', currentPage, pageSize],
+    queryFn: () => apiClient.getDeployments({ page: currentPage, pageSize }),
     // SSE handles real-time updates, so we can use longer stale time
     staleTime: 30000, // 30 seconds
     // Only refetch on window focus as a fallback
@@ -116,7 +120,7 @@ export function DeploymentsPage() {
       if ((error as any)?.response?.status === 503) return false;
       return failureCount < 2;
     },
-    keepPreviousData: true, // Cached data fallback
+    placeholderData: keepPreviousData, // Keep previous data while fetching
   });
 
   // Use SSE for real-time updates (replaces polling)
@@ -134,6 +138,8 @@ export function DeploymentsPage() {
   });
 
   const deployments = deploymentsData?.data?.deployments || [];
+  const totalDeployments = deploymentsData?.data?.total || 0;
+  const totalPages = Math.ceil(totalDeployments / pageSize) || 1;
   const summary = deploymentsData?.data || {
     thisWeekSuccessCount: 0,
     pendingApprovalsCount: 0,
@@ -141,7 +147,7 @@ export function DeploymentsPage() {
   };
 
   // Check if there are any active pipelines
-  const activePipelines = pipelines?.data?.filter(p => p.isActive) || [];
+  const activePipelines = pipelines?.data?.items?.filter(p => p.isActive) || [];
   const hasActivePipelines = activePipelines.length > 0;
 
   const getStatusVariant = (status: string) => {
@@ -210,7 +216,7 @@ export function DeploymentsPage() {
 
   const getPipelineName = (pipelineId?: string) => {
     if (!pipelineId) return '—';
-    return pipelines?.data?.find((p) => p.id === pipelineId)?.name || pipelineId;
+    return pipelines?.data?.items?.find((p) => p.id === pipelineId)?.name || pipelineId;
   };
 
   const getProgress = (deployment: Deployment) => {
@@ -575,6 +581,7 @@ export function DeploymentsPage() {
               size="md"
             />
           ) : (
+            <>
             <Table>
               <TableHeader>
                 <TableRow>
@@ -702,6 +709,80 @@ export function DeploymentsPage() {
                 })}
               </TableBody>
             </Table>
+
+            {/* Pagination Controls */}
+            {deployments.length > 0 && (
+              <div className="mt-4 flex items-center justify-between border-t pt-4">
+                <div className="flex items-center gap-4">
+                  <div className="flex items-center gap-2">
+                    <Label htmlFor="deploymentPageSize" className="text-sm text-muted-foreground">
+                      Rows per page:
+                    </Label>
+                    <select
+                      id="deploymentPageSize"
+                      value={pageSize}
+                      onChange={(e) => {
+                        setPageSize(Number(e.target.value));
+                        setCurrentPage(1);
+                      }}
+                      className="h-8 w-20 rounded-md border border-input bg-background text-foreground px-2 py-1 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                    >
+                      <option value={10} className="bg-background text-foreground">10</option>
+                      <option value={25} className="bg-background text-foreground">25</option>
+                      <option value={50} className="bg-background text-foreground">50</option>
+                      <option value={100} className="bg-background text-foreground">100</option>
+                    </select>
+                  </div>
+                  <div className="text-sm text-muted-foreground">
+                    Showing {totalDeployments > 0 ? ((currentPage - 1) * pageSize) + 1 : 0} to {Math.min(currentPage * pageSize, totalDeployments)} of {totalDeployments} deployments
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-2">
+                  {isFetching && (
+                    <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
+                  )}
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setCurrentPage(1)}
+                    disabled={currentPage === 1 || isFetching}
+                  >
+                    First
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setCurrentPage(currentPage - 1)}
+                    disabled={currentPage === 1 || isFetching}
+                  >
+                    Previous
+                  </Button>
+                  <div className="flex items-center gap-1">
+                    <span className="text-sm">
+                      Page {currentPage} of {totalPages}
+                    </span>
+                  </div>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setCurrentPage(currentPage + 1)}
+                    disabled={currentPage >= totalPages || isFetching}
+                  >
+                    Next
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setCurrentPage(totalPages)}
+                    disabled={currentPage >= totalPages || isFetching}
+                  >
+                    Last
+                  </Button>
+                </div>
+              </div>
+            )}
+            </>
           )}
         </CardContent>
       </Card>
@@ -908,7 +989,7 @@ export function DeploymentsPage() {
             <CardContent>
               {pipelinesLoading ? (
                 <div className="text-center py-8">Loading pipelines...</div>
-              ) : !pipelines?.data || pipelines.data.length === 0 ? (
+              ) : !pipelines?.data?.items || pipelines.data.items.length === 0 ? (
                 <PipelinesEmptyState
                   onCreatePipeline={() => navigate('/pipelines/new')}
                   size="lg"
@@ -925,7 +1006,7 @@ export function DeploymentsPage() {
                     </TableRow>
                   </TableHeader>
                   <TableBody>
-                    {pipelines.data.map((pipeline) => (
+                    {pipelines.data.items.map((pipeline) => (
                       <TableRow 
                         key={pipeline.id}
                         className={!pipeline.isActive ? 'opacity-60' : ''}

@@ -16,6 +16,7 @@ from app.services.environment_action_guard import (
     ActionGuardError
 )
 from app.schemas.environment import EnvironmentClass
+from app.schemas.pagination import PaginatedResponse
 from app.api.endpoints.admin_audit import create_audit_log, AuditActionType
 
 logger = logging.getLogger(__name__)
@@ -42,7 +43,7 @@ def get_tenant_id(user_info: dict) -> str:
     return tenant_id
 
 
-@router.get("/", response_model=List[SnapshotResponse])
+@router.get("/", response_model=PaginatedResponse[SnapshotResponse])
 async def get_snapshots(
     environment_id: Optional[str] = Query(None),
     type: Optional[SnapshotType] = Query(None),
@@ -59,7 +60,21 @@ async def get_snapshots(
     """
     try:
         tenant_id = get_tenant_id(user_info)
-        # Build query
+
+        # Build count query
+        count_query = db_service.client.table("snapshots").select("id", count="exact").eq("tenant_id", tenant_id)
+        if environment_id:
+            count_query = count_query.eq("environment_id", environment_id)
+        if type:
+            count_query = count_query.eq("type", type.value)
+        if from_date:
+            count_query = count_query.gte("created_at", from_date.isoformat())
+        if to_date:
+            count_query = count_query.lte("created_at", to_date.isoformat())
+        count_result = count_query.execute()
+        total = count_result.count if count_result.count is not None else 0
+
+        # Build data query
         query = db_service.client.table("snapshots").select("*").eq("tenant_id", tenant_id)
 
         if environment_id:
@@ -79,7 +94,17 @@ async def get_snapshots(
         result = query.execute()
         snapshots_data = result.data or []
 
-        return [SnapshotResponse(**snapshot) for snapshot in snapshots_data]
+        total_pages = (total + page_size - 1) // page_size if total > 0 else 1
+        has_more = page < total_pages
+
+        return {
+            "items": [SnapshotResponse(**snapshot) for snapshot in snapshots_data],
+            "total": total,
+            "page": page,
+            "page_size": page_size,
+            "total_pages": total_pages,
+            "hasMore": has_more,
+        }
 
     except Exception as e:
         raise HTTPException(

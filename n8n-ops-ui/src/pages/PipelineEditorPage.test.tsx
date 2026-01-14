@@ -1,8 +1,5 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { screen, waitFor } from '@testing-library/react';
-import userEvent from '@testing-library/user-event';
+import { describe, it, vi, beforeEach } from 'vitest';
 import { http, HttpResponse } from 'msw';
-import { render } from '@/test/test-utils';
 import { server } from '@/test/mocks/server';
 
 const API_BASE = 'http://localhost:4000/api/v1';
@@ -40,7 +37,7 @@ const mockEnvironments = {
 
 // Mock useParams
 vi.mock('react-router-dom', async () => {
-  const actual = await vi.importActual('react-router-dom');
+  const actual = await vi.importActual('react-router-dom') as Record<string, unknown>;
   return {
     ...actual,
     useParams: () => ({ id: 'pipeline-1' }),

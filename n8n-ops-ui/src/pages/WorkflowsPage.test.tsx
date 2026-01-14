@@ -5,13 +5,13 @@ import { http, HttpResponse } from 'msw';
 import { WorkflowsPage } from './WorkflowsPage';
 import { render } from '@/test/test-utils';
 import { server } from '@/test/mocks/server';
-import { mockWorkflows, mockEnvironments } from '@/test/mocks/handlers';
+import { mockWorkflows } from '@/test/mocks/handlers';
 
 const API_BASE = '/api/v1';
 
 // Workflows actions are role-gated; tests assume org admin user for mutation actions.
 vi.mock('@/lib/auth', async (importOriginal) => {
-  const actual = await importOriginal();
+  const actual = await importOriginal() as Record<string, unknown>;
   return {
     ...actual,
     useAuth: () => ({

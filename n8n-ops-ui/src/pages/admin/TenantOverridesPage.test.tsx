@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from 'vitest';
-import { render, screen, waitFor } from '@/test/test-utils';
+import { render, screen } from '@/test/test-utils';
 import { server } from '@/test/mocks/server';
 import { http, HttpResponse } from 'msw';
 import { TenantOverridesPage } from './TenantOverridesPage';

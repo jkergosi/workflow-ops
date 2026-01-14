@@ -10,7 +10,7 @@ const API_BASE = 'http://localhost:4000/api/v1';
 
 // Mock useParams and useSearchParams
 vi.mock('react-router-dom', async () => {
-  const actual = await vi.importActual('react-router-dom');
+  const actual = await vi.importActual('react-router-dom') as Record<string, unknown>;
   return {
     ...actual,
     useParams: () => ({}),
@@ -21,7 +21,7 @@ vi.mock('react-router-dom', async () => {
 
 // Mock useAuth
 vi.mock('@/lib/auth', async (importOriginal) => {
-  const actual = await importOriginal();
+  const actual = await importOriginal() as Record<string, unknown>;
   return {
     ...actual,
     useAuth: () => ({

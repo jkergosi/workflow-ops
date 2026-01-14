@@ -23,7 +23,7 @@ interface BackgroundJobProgressProps {
 }
 
 export function BackgroundJobProgress({
-  jobId,
+  jobId: _jobId,
   jobType,
   status,
   currentStep,
@@ -32,7 +32,7 @@ export function BackgroundJobProgress({
   message,
   currentWorkflowName,
   errors,
-  onDismiss,
+  onDismiss: _onDismiss,
 }: BackgroundJobProgressProps) {
   const percentage = total > 0 ? Math.round((current / total) * 100) : 0;
 

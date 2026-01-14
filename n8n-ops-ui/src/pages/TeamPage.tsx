@@ -1,7 +1,7 @@
 // @ts-nocheck
 // TODO: Fix TypeScript errors in this file
 import { useState, useEffect } from 'react';
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { useQuery, useMutation, useQueryClient, keepPreviousData } from '@tanstack/react-query';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -54,10 +54,19 @@ export function TeamPage() {
     status: 'active' as 'active' | 'pending' | 'inactive',
   });
 
-  const { data: teamMembers, isLoading } = useQuery({
-    queryKey: ['team-members'],
-    queryFn: () => api.getTeamMembers(),
+  // Pagination state
+  const [currentPage, setCurrentPage] = useState(1);
+  const [pageSize, setPageSize] = useState(25);
+
+  const { data: teamMembersData, isLoading, isFetching } = useQuery({
+    queryKey: ['team-members', currentPage, pageSize],
+    queryFn: () => api.getTeamMembers({ page: currentPage, pageSize }),
+    placeholderData: keepPreviousData,
   });
+
+  const teamMembers = teamMembersData?.data?.items || [];
+  const totalMembers = teamMembersData?.data?.total || 0;
+  const totalPages = teamMembersData?.data?.totalPages || 1;
 
   const { data: teamLimits } = useQuery({
     queryKey: ['team-limits'],
@@ -288,7 +297,7 @@ export function TeamPage() {
         <CardContent>
           {isLoading ? (
             <div className="text-center py-8">Loading team members...</div>
-          ) : teamMembers?.data && teamMembers.data.length > 0 ? (
+          ) : teamMembers.length > 0 ? (
             <Table>
               <TableHeader>
                 <TableRow>
@@ -301,7 +310,7 @@ export function TeamPage() {
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {teamMembers.data.map((member) => (
+                {teamMembers.map((member) => (
                   <TableRow key={member.id}>
                     <TableCell className="font-medium">{member.name}</TableCell>
                     <TableCell className="text-sm text-muted-foreground">
@@ -358,6 +367,79 @@ export function TeamPage() {
           ) : (
             <div className="text-center py-8 text-muted-foreground">
               No team members yet. Invite your first team member to get started.
+            </div>
+          )}
+
+          {/* Pagination Controls */}
+          {teamMembers.length > 0 && (
+            <div className="mt-4 flex items-center justify-between border-t pt-4">
+              <div className="flex items-center gap-4">
+                <div className="flex items-center gap-2">
+                  <Label htmlFor="pageSize" className="text-sm text-muted-foreground">
+                    Rows per page:
+                  </Label>
+                  <select
+                    id="pageSize"
+                    value={pageSize}
+                    onChange={(e) => {
+                      setPageSize(Number(e.target.value));
+                      setCurrentPage(1);
+                    }}
+                    className="h-8 w-20 rounded-md border border-input bg-background text-foreground px-2 py-1 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                  >
+                    <option value={10}>10</option>
+                    <option value={25}>25</option>
+                    <option value={50}>50</option>
+                    <option value={100}>100</option>
+                  </select>
+                </div>
+                <div className="text-sm text-muted-foreground">
+                  Showing {totalMembers > 0 ? ((currentPage - 1) * pageSize) + 1 : 0} to {Math.min(currentPage * pageSize, totalMembers)} of {totalMembers} members
+                </div>
+              </div>
+
+              <div className="flex items-center gap-2">
+                {isFetching && (
+                  <span className="text-sm text-muted-foreground">Loading...</span>
+                )}
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setCurrentPage(1)}
+                  disabled={currentPage === 1 || isFetching}
+                >
+                  First
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setCurrentPage(currentPage - 1)}
+                  disabled={currentPage === 1 || isFetching}
+                >
+                  Previous
+                </Button>
+                <div className="flex items-center gap-1">
+                  <span className="text-sm">
+                    Page {currentPage} of {totalPages}
+                  </span>
+                </div>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setCurrentPage(currentPage + 1)}
+                  disabled={currentPage >= totalPages || isFetching}
+                >
+                  Next
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setCurrentPage(totalPages)}
+                  disabled={currentPage >= totalPages || isFetching}
+                >
+                  Last
+                </Button>
+              </div>
             </div>
           )}
         </CardContent>

@@ -1,6 +1,5 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { render, screen, waitFor, within } from '@/test/test-utils';
-import userEvent from '@testing-library/user-event';
 import { server } from '@/test/mocks/server';
 import { http, HttpResponse } from 'msw';
 import { DeploymentsPage } from './DeploymentsPage';

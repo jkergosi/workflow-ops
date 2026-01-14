@@ -20,7 +20,6 @@ import { apiClient } from '@/lib/api-client';
 import type {
   UntrackedWorkflowsResponse,
   EnvironmentUntrackedWorkflows,
-  UntrackedWorkflowItem,
   OnboardWorkflowItem
 } from '@/types';
 

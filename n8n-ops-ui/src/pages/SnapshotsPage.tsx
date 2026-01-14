@@ -1,7 +1,7 @@
 // @ts-nocheck
 // TODO: Fix TypeScript errors in this file
 import { useState, useEffect, useMemo } from 'react';
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { useQuery, useMutation, useQueryClient, keepPreviousData } from '@tanstack/react-query';
 import { useSearchParams, Link } from 'react-router-dom';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -79,6 +79,10 @@ export function SnapshotsPage() {
   const [comparisonResult, setComparisonResult] = useState<SnapshotComparison | null>(null);
   const [compareDialogOpen, setCompareDialogOpen] = useState(false);
 
+  // Pagination state
+  const [currentPage, setCurrentPage] = useState(1);
+  const [pageSize, setPageSize] = useState(25);
+
   // Get snapshot ID from URL if present
   const snapshotIdFromUrl = searchParams.get('snapshot');
 
@@ -108,15 +112,27 @@ export function SnapshotsPage() {
     }
   }, [currentEnvironmentId, selectedEnvironment]);
 
+  // Reset to page 1 when environment changes
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [currentEnvironmentId]);
+
   // Fetch snapshots for current environment
-  const { data: snapshots, isLoading } = useQuery({
-    queryKey: ['snapshots', currentEnvironmentId],
+  const { data: snapshotsData, isLoading, isFetching } = useQuery({
+    queryKey: ['snapshots', currentEnvironmentId, currentPage, pageSize],
     queryFn: () =>
       apiClient.getSnapshots({
         environmentId: currentEnvironmentId,
+        page: currentPage,
+        pageSize,
       }),
     enabled: !!currentEnvironmentId,
+    placeholderData: keepPreviousData,
   });
+
+  const snapshotsList = snapshotsData?.data?.items || [];
+  const totalSnapshots = snapshotsData?.data?.total || 0;
+  const totalPages = snapshotsData?.data?.totalPages || 1;
 
   // Fetch specific snapshot if ID in URL
   const { data: snapshotDetail } = useQuery({
@@ -259,8 +275,6 @@ export function SnapshotsPage() {
   const getEnvironmentName = (envId: string) => {
     return environments?.data?.find((e) => e.id === envId)?.name || envId;
   };
-
-  const snapshotsList = snapshots?.data || [];
 
   if (!loadingFeatures && planLower === 'free' && !isLoading && snapshotsList.length === 0) {
     return (
@@ -500,6 +514,79 @@ export function SnapshotsPage() {
                 ))}
               </TableBody>
             </Table>
+          )}
+
+          {/* Pagination Controls */}
+          {snapshotsList.length > 0 && (
+            <div className="mt-4 flex items-center justify-between border-t pt-4">
+              <div className="flex items-center gap-4">
+                <div className="flex items-center gap-2">
+                  <Label htmlFor="pageSize" className="text-sm text-muted-foreground">
+                    Rows per page:
+                  </Label>
+                  <select
+                    id="pageSize"
+                    value={pageSize}
+                    onChange={(e) => {
+                      setPageSize(Number(e.target.value));
+                      setCurrentPage(1);
+                    }}
+                    className="h-8 w-20 rounded-md border border-input bg-background text-foreground px-2 py-1 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                  >
+                    <option value={10}>10</option>
+                    <option value={25}>25</option>
+                    <option value={50}>50</option>
+                    <option value={100}>100</option>
+                  </select>
+                </div>
+                <div className="text-sm text-muted-foreground">
+                  Showing {totalSnapshots > 0 ? ((currentPage - 1) * pageSize) + 1 : 0} to {Math.min(currentPage * pageSize, totalSnapshots)} of {totalSnapshots} snapshots
+                </div>
+              </div>
+
+              <div className="flex items-center gap-2">
+                {isFetching && (
+                  <span className="text-sm text-muted-foreground">Loading...</span>
+                )}
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setCurrentPage(1)}
+                  disabled={currentPage === 1 || isFetching}
+                >
+                  First
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setCurrentPage(currentPage - 1)}
+                  disabled={currentPage === 1 || isFetching}
+                >
+                  Previous
+                </Button>
+                <div className="flex items-center gap-1">
+                  <span className="text-sm">
+                    Page {currentPage} of {totalPages}
+                  </span>
+                </div>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setCurrentPage(currentPage + 1)}
+                  disabled={currentPage >= totalPages || isFetching}
+                >
+                  Next
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setCurrentPage(totalPages)}
+                  disabled={currentPage >= totalPages || isFetching}
+                >
+                  Last
+                </Button>
+              </div>
+            </div>
           )}
         </CardContent>
       </Card>

@@ -32,14 +32,20 @@ RETENTION_CLEANUP_INTERVAL_SECONDS = 86400  # 24 hours (daily)
 
 async def _get_environments_for_drift_check() -> List[Dict[str, Any]]:
     """
-    Get all environments that have Git configured and belong to tenants
+    Get all non-DEV environments that have Git configured and belong to tenants
     with drift detection enabled.
+
+    DEV environments are excluded because n8n is the source of truth for DEV,
+    so there's no concept of "drift" - changes in n8n ARE the canonical state.
     """
     try:
-        # Get environments with Git configured
+        # Get environments with Git configured, excluding DEV environments
+        # DEV environments use n8n as source of truth, so drift detection doesn't apply
         response = db_service.client.table("environments").select(
-            "id, tenant_id, n8n_name, git_repo_url, git_pat, n8n_type"
-        ).not_.is_("git_repo_url", "null").not_.is_("git_pat", "null").execute()
+            "id, tenant_id, n8n_name, git_repo_url, git_pat, n8n_type, environment_class"
+        ).not_.is_("git_repo_url", "null").not_.is_("git_pat", "null").neq(
+            "environment_class", "dev"
+        ).execute()
 
         environments = response.data or []
 

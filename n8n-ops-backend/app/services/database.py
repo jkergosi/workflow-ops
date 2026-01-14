@@ -58,7 +58,14 @@ class DatabaseService:
         return response.data[0]
 
     async def update_environment(self, environment_id: str, tenant_id: str, environment_data: Dict[str, Any]) -> Dict[str, Any]:
-        """Update an environment"""
+        """Update an environment
+
+        Supports updating all environment fields including:
+        - drift_status: Current drift status (IN_SYNC, DRIFT_DETECTED, etc.)
+        - last_drift_check_at: Timestamp of last drift check
+        - last_drift_detected_at: Timestamp when drift was last detected
+        - Any other environment table fields
+        """
         response = self.client.table("environments").update(environment_data).eq("id", environment_id).eq("tenant_id", tenant_id).execute()
         return response.data[0] if response.data else None
 

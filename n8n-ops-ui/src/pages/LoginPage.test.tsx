@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { screen, waitFor } from '@testing-library/react';
+import { screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { LoginPage } from './LoginPage';
 import { render } from '@/test/test-utils';
@@ -9,7 +9,7 @@ const mockLoginWithEmail = vi.fn();
 const mockNavigate = vi.fn();
 
 vi.mock('@/lib/auth', async (importOriginal) => {
-  const actual = await importOriginal();
+  const actual = await importOriginal() as Record<string, unknown>;
   return {
     ...actual,
     useAuth: () => ({

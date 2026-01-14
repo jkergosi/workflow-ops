@@ -24,14 +24,12 @@ import {
 import {
   Shield,
   Key,
-  Lock,
   AlertTriangle,
   CheckCircle,
   XCircle,
   RefreshCw,
   Plus,
   Trash2,
-  Globe,
   Clock,
 } from 'lucide-react';
 import { apiClient } from '@/lib/api-client';
@@ -103,17 +101,17 @@ export function SecurityPage() {
   const securityEvents: SecurityEvent[] = useMemo(() => {
     const logs = auditResp?.data?.logs || [];
     return logs.map((l) => {
-      const actionType = (l.action_type || '').toUpperCase();
+      const actionTypeValue = (l.actionType || '').toUpperCase();
       const type: SecurityEvent['type'] =
-        actionType.includes('FAILED') ? 'error' :
-        actionType.includes('SUSPENDED') ? 'warning' :
+        actionTypeValue.includes('FAILED') ? 'error' :
+        actionTypeValue.includes('SUSPENDED') ? 'warning' :
         'success';
       return {
         id: l.id,
         type,
-        event: l.action_type,
+        event: l.actionType,
         details: l.action || '',
-        ip: l.ip_address || '-',
+        ip: l.ipAddress || '-',
         timestamp: l.timestamp,
       };
     });

@@ -40,7 +40,7 @@ export function WorkflowsOverviewPage() {
   const [statusFilter, setStatusFilter] = useState<string>('all');
   // Pagination state
   const [currentPage, setCurrentPage] = useState(1);
-  const [pageSize] = useState(50); // Default page size
+  const [pageSize] = useState(25); // Default page size
 
   useEffect(() => {
     document.title = 'Workflows Overview - WorkflowOps';

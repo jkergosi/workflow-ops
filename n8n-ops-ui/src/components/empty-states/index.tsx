@@ -5,7 +5,6 @@
  * These provide consistent messaging, illustrations, and CTAs
  * for specific areas of the application.
  */
-import * as React from "react"
 import { useNavigate } from "react-router-dom"
 import { InformativeEmptyState, type InformativeEmptyStateProps } from "@/components/ui/informative-empty-state"
 import {
@@ -13,11 +12,8 @@ import {
   Server,
   GitBranch,
   Rocket,
-  Key,
   RefreshCw,
   FileText,
-  Settings,
-  ExternalLink,
 } from "lucide-react"
 
 // ============================================================================

@@ -133,24 +133,6 @@ const CancellableOperation = React.forwardRef<HTMLDivElement, CancellableOperati
       }
     }
 
-    // Helper function for status text - used in aria-label and tooltips
-    const _getStatusText = () => {
-      switch (status) {
-        case 'running':
-          return isBackground ? 'Running in background' : 'In progress'
-        case 'paused':
-          return 'Paused'
-        case 'completed':
-          return 'Completed'
-        case 'failed':
-          return 'Failed'
-        case 'cancelled':
-          return 'Cancelled'
-        default:
-          return 'Idle'
-      }
-    }
-
     const handleCancelClick = () => {
       if (progress > 25) {
         setShowCancelConfirm(true)

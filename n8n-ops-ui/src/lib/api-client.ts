@@ -143,12 +143,27 @@ class ApiClient {
         const config = error.config;
 
         // Network errors - retry with exponential backoff (disabled in tests)
-        if (import.meta.env.MODE !== 'test' && !error.response && (error.code === 'ECONNABORTED' || error.code === 'ERR_NETWORK' || error.message === 'Network Error')) {
+        // Detect ANY request without an HTTP response as a network error
+        // This covers: ERR_NETWORK, ERR_CONNECTION_REFUSED, ECONNABORTED, CORS errors, timeouts, etc.
+        const isNetworkError = !error.response && (
+          error.code === 'ECONNABORTED' ||
+          error.code === 'ERR_NETWORK' ||
+          error.code === 'ERR_CONNECTION_REFUSED' ||
+          error.code === 'ECONNREFUSED' ||
+          error.message === 'Network Error' ||
+          error.message?.includes('timeout') ||
+          error.message?.includes('CORS') ||
+          error.message?.includes('Failed to fetch') ||
+          // Fallback: any error without a response is likely a network issue
+          (error.request && !error.response)
+        );
+
+        if (import.meta.env.MODE !== 'test' && isNetworkError) {
           if (!config._retryCount) config._retryCount = 0;
           if (config._retryCount < 3) {
             config._retryCount++;
             const delay = Math.pow(2, config._retryCount) * 1000;
-            console.log(`[ApiClient] Network error, retrying in ${delay}ms (attempt ${config._retryCount}/3)`);
+            console.log(`[ApiClient] Network error (${error.code || error.message}), retrying in ${delay}ms (attempt ${config._retryCount}/3)`);
             await new Promise(resolve => setTimeout(resolve, delay));
             return this.client(config);
           }
@@ -309,6 +324,17 @@ class ApiClient {
     } else {
       localStorage.removeItem('auth_token');
     }
+  }
+
+  // Generic HTTP methods for endpoints not yet wrapped
+  async get<T = any>(url: string, config?: any): Promise<{ data: T }> {
+    const response = await this.client.get<T>(url, config);
+    return { data: response.data };
+  }
+
+  async post<T = any>(url: string, data?: any, config?: any): Promise<{ data: T }> {
+    const response = await this.client.post<T>(url, data, config);
+    return { data: response.data };
   }
 
   // Complete onboarding
@@ -509,16 +535,46 @@ class ApiClient {
   async getIncidents(params?: {
     environmentId?: string;
     status?: string;
-    limit?: number;
-  }): Promise<{ data: any[] }> {
-    const response = await this.client.get<any[]>('/incidents/', {
+    page?: number;
+    pageSize?: number;
+  }): Promise<{
+    data: {
+      items: any[];
+      total: number;
+      page: number;
+      pageSize: number;
+      totalPages: number;
+    };
+  }> {
+    const pageSize = params?.pageSize || 50;
+    const page = params?.page || 1;
+    const offset = (page - 1) * pageSize;
+
+    const response = await this.client.get<{
+      items: any[];
+      total: number;
+      has_more: boolean;
+    }>('/incidents/', {
       params: {
         environment_id: params?.environmentId,
         status_filter: params?.status,
-        limit: params?.limit,
+        limit: pageSize,
+        offset,
       },
     });
-    return { data: response.data || [] };
+
+    const total = response.data.total || 0;
+    const totalPages = Math.ceil(total / pageSize) || 1;
+
+    return {
+      data: {
+        items: response.data.items || [],
+        total,
+        page,
+        pageSize,
+        totalPages,
+      },
+    };
   }
 
   async getIncident(id: string): Promise<{ data: any }> {
@@ -1391,14 +1447,46 @@ class ApiClient {
     };
   }
 
-  async getPipelines(params?: { includeInactive?: boolean }): Promise<{ data: Pipeline[] }> {
+  async getPipelines(params?: {
+    includeInactive?: boolean;
+    page?: number;
+    pageSize?: number;
+  }): Promise<{
+    data: {
+      items: Pipeline[];
+      total: number;
+      page: number;
+      pageSize: number;
+      totalPages: number;
+    };
+  }> {
     const queryParams: any = {};
     if (params?.includeInactive !== undefined) {
       queryParams.include_inactive = params.includeInactive;
     }
+    if (params?.page !== undefined) {
+      queryParams.page = params.page;
+    }
+    if (params?.pageSize !== undefined) {
+      queryParams.page_size = params.pageSize;
+    }
     // Backend is configured with redirect_slashes=False, so list endpoints must include trailing slash.
-    const response = await this.client.get<any[]>('/pipelines/', { params: queryParams });
-    return { data: response.data.map((p) => this.transformPipelineResponse(p)) };
+    const response = await this.client.get<{
+      items: any[];
+      total: number;
+      page: number;
+      page_size: number;
+      total_pages: number;
+    }>('/pipelines/', { params: queryParams });
+    return {
+      data: {
+        items: response.data.items.map((p) => this.transformPipelineResponse(p)),
+        total: response.data.total,
+        page: response.data.page,
+        pageSize: response.data.page_size,
+        totalPages: response.data.total_pages,
+      },
+    };
   }
 
   async getPipeline(id: string): Promise<{ data: Pipeline }> {
@@ -1890,7 +1978,15 @@ class ApiClient {
     to?: string;
     page?: number;
     pageSize?: number;
-  }): Promise<{ data: Snapshot[] }> {
+  }): Promise<{
+    data: {
+      items: Snapshot[];
+      total: number;
+      page: number;
+      pageSize: number;
+      totalPages: number;
+    };
+  }> {
     const queryParams: any = {};
     if (params?.environmentId) queryParams.environment_id = params.environmentId;
     if (params?.type) queryParams.type = params.type;
@@ -1898,11 +1994,24 @@ class ApiClient {
     if (params?.to) queryParams.to = params.to;
     if (params?.page) queryParams.page = params.page;
     if (params?.pageSize) queryParams.page_size = params.pageSize;
-    
-    const response = await this.client.get<Snapshot[]>('/snapshots/', { params: queryParams });
-    // Transform snake_case to camelCase
-    const snapshots = (response.data || []).map((s: any) => this._transformSnapshot(s));
-    return { data: snapshots };
+
+    const response = await this.client.get<{
+      items: any[];
+      total: number;
+      page: number;
+      page_size: number;
+      total_pages: number;
+    }>('/snapshots/', { params: queryParams });
+
+    return {
+      data: {
+        items: (response.data.items || []).map((s: any) => this._transformSnapshot(s)),
+        total: response.data.total,
+        page: response.data.page,
+        pageSize: response.data.page_size,
+        totalPages: response.data.total_pages,
+      },
+    };
   }
 
   async getSnapshot(snapshotId: string): Promise<{ data: Snapshot }> {
@@ -2008,9 +2117,39 @@ class ApiClient {
   }
 
   // Team endpoints
-  async getTeamMembers(): Promise<{ data: TeamMember[] }> {
-    const response = await this.client.get<TeamMember[]>('/teams/');
-    return { data: response.data };
+  async getTeamMembers(params?: {
+    page?: number;
+    pageSize?: number;
+  }): Promise<{
+    data: {
+      items: TeamMember[];
+      total: number;
+      page: number;
+      pageSize: number;
+      totalPages: number;
+    };
+  }> {
+    const queryParams: any = {};
+    if (params?.page) queryParams.page = params.page;
+    if (params?.pageSize) queryParams.page_size = params.pageSize;
+
+    const response = await this.client.get<{
+      items: TeamMember[];
+      total: number;
+      page: number;
+      page_size: number;
+      total_pages: number;
+    }>('/teams/', { params: queryParams });
+
+    return {
+      data: {
+        items: response.data.items,
+        total: response.data.total,
+        page: response.data.page,
+        pageSize: response.data.page_size,
+        totalPages: response.data.total_pages,
+      },
+    };
   }
 
   async getTeamLimits(): Promise<{ data: TeamLimits }> {
@@ -2046,17 +2185,33 @@ class ApiClient {
   }
 
   // Credential endpoints
-  async getCredentials(params?: { environmentType?: string; environmentId?: string }): Promise<{ data: Credential[] }> {
-    const queryParams: Record<string, string> = {};
+  async getCredentials(params?: {
+    environmentType?: string;
+    environmentId?: string;
+    search?: string;
+    credentialType?: string;
+    page?: number;
+    pageSize?: number;
+  }): Promise<{ data: PaginatedResponse<Credential> }> {
+    const queryParams: Record<string, string | number> = {};
     if (params?.environmentType) queryParams.environment_type = params.environmentType;
     if (params?.environmentId) queryParams.environment_id = params.environmentId;
-    const response = await this.client.get<any[]>('/credentials/', { params: queryParams });
+    if (params?.search) queryParams.search = params.search;
+    if (params?.credentialType) queryParams.credential_type = params.credentialType;
+    if (params?.page) queryParams.page = params.page;
+    if (params?.pageSize) queryParams.page_size = params.pageSize;
+    const response = await this.client.get<PaginatedResponse<any>>('/credentials/', { params: queryParams });
     // Add provider field with default for backward compatibility
-    const data = response.data.map((cred: any) => ({
+    const items = (response.data.items || []).map((cred: any) => ({
       ...cred,
       provider: cred.provider || 'n8n',
     }));
-    return { data };
+    return {
+      data: {
+        ...response.data,
+        items
+      }
+    };
   }
 
   async getCredential(credentialId: string): Promise<{ data: Credential }> {
@@ -2394,10 +2549,41 @@ class ApiClient {
   }
 
   // Provider User endpoints (previously N8N Users)
-  async getN8NUsers(environmentType?: string): Promise<{ data: N8NUser[] }> {
-    const params = environmentType ? { environment_type: environmentType } : {};
-    const response = await this.client.get<N8NUser[]>('/n8n-users/', { params });
-    return { data: response.data };
+  async getN8NUsers(params?: {
+    environmentType?: string;
+    page?: number;
+    pageSize?: number;
+  }): Promise<{
+    data: {
+      items: N8NUser[];
+      total: number;
+      page: number;
+      pageSize: number;
+      totalPages: number;
+    };
+  }> {
+    const queryParams: Record<string, any> = {};
+    if (params?.environmentType) queryParams.environment_type = params.environmentType;
+    if (params?.page) queryParams.page = params.page;
+    if (params?.pageSize) queryParams.page_size = params.pageSize;
+
+    const response = await this.client.get<{
+      items: N8NUser[];
+      total: number;
+      page: number;
+      page_size: number;
+      total_pages: number;
+    }>('/n8n-users/', { params: queryParams });
+
+    return {
+      data: {
+        items: response.data.items,
+        total: response.data.total,
+        page: response.data.page,
+        pageSize: response.data.page_size,
+        totalPages: response.data.total_pages,
+      },
+    };
   }
 
   // Tag endpoints

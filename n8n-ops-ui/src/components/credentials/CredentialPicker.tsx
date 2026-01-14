@@ -33,11 +33,12 @@ export function CredentialPicker({
 
   const { data: credentialsData, isLoading } = useQuery({
     queryKey: ['cached-credentials', environmentId],
-    queryFn: () => apiClient.getCredentials({ environmentId }),
+    queryFn: () => apiClient.getCredentials({ environmentId, pageSize: 100 }),
     enabled: !!environmentId,
   });
 
-  const credentials = credentialsData?.data || [];
+  // Extract items from paginated response
+  const credentials = credentialsData?.data?.items || [];
 
   const filteredCredentials = useMemo(() => {
     let result = credentials;

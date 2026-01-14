@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach } from 'vitest';
 import { render, screen, waitFor, within } from '@/test/test-utils';
 import userEvent from '@testing-library/user-event';
 import { server } from '@/test/mocks/server';
@@ -370,7 +370,6 @@ describe('EnvironmentsPage', () => {
 
   describe('Navigation', () => {
     it('should navigate to workflows when clicking workflow count', async () => {
-      const user = userEvent.setup();
       render(<EnvironmentsPage />);
 
       await waitFor(() => {

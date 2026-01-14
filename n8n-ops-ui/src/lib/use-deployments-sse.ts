@@ -7,7 +7,7 @@
 
 import { useEffect, useRef, useCallback, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
-import type { Deployment, DeploymentDetail } from '@/types';
+import type { Deployment } from '@/types';
 
 // Convert snake_case keys to camelCase
 function snakeToCamel(str: string): string {
@@ -25,15 +25,6 @@ function transformKeys(obj: any): any {
     result[camelKey] = transformKeys(obj[key]);
   }
   return result;
-}
-
-interface SSEEvent {
-  event_id: string;
-  type: string;
-  tenant_id: string;
-  env_id?: string;
-  ts: string;
-  payload: any;
 }
 
 interface UseDeploymentsSSEOptions {

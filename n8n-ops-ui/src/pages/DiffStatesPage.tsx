@@ -23,11 +23,9 @@ import {
   GitBranch,
   AlertTriangle,
   Plus,
-  Minus,
   Edit3
 } from 'lucide-react';
 import { toast } from 'sonner';
-import { useAuth } from '@/lib/auth';
 import { apiClient } from '@/lib/api-client';
 import type {
   WorkflowDiffState,
@@ -39,7 +37,6 @@ import type {
 
 export function DiffStatesPage() {
   const navigate = useNavigate();
-  const { tenant } = useAuth();
   const [searchParams, setSearchParams] = useSearchParams();
 
   // Data state
@@ -50,7 +47,7 @@ export function DiffStatesPage() {
 
   // Pagination state
   const [currentPage, setCurrentPage] = useState(1);
-  const [pageSize, setPageSize] = useState(50);
+  const [pageSize, setPageSize] = useState(25);
   const [totalItems, setTotalItems] = useState(0);
   const [totalPages, setTotalPages] = useState(0);
 

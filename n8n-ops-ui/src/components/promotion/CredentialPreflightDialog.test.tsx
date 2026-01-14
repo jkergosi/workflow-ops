@@ -2,7 +2,7 @@ import { describe, it, expect, vi } from 'vitest';
 import { render, screen, waitFor } from '@/test/test-utils';
 import userEvent from '@testing-library/user-event';
 import { CredentialPreflightDialog } from './CredentialPreflightDialog';
-import type { CredentialPreflightResult, CredentialIssue } from '@/types/credentials';
+import type { CredentialPreflightResult } from '@/types/credentials';
 
 const mockPreflightResultValid: CredentialPreflightResult = {
   valid: true,

@@ -114,7 +114,7 @@ export function SmartEmptyState({
   const { user } = useAuth();
   const { status, healthStatus, checkHealth, isChecking } = useHealthCheck();
 
-  const isAdmin = user?.role === 'admin' || user?.role === 'super_admin';
+  const isAdmin = user?.role === 'admin' || user?.isPlatformAdmin;
 
   // Check if error is due to service unavailability
   const isServiceError =
@@ -203,8 +203,8 @@ export function SmartEmptyState({
     );
   }
 
-  // Service unavailable state
-  if (isServiceError || status === 'unhealthy') {
+  // Service unavailable state (isServiceError already includes status === 'unhealthy' check)
+  if (isServiceError) {
     return (
       <Card className={`border-yellow-200 bg-yellow-50 dark:bg-yellow-950/20 ${className}`}>
         <CardHeader className="text-center">

@@ -1,5 +1,5 @@
-import React, { ReactElement, ReactNode } from 'react';
-import { render, RenderOptions, RenderResult } from '@testing-library/react';
+import type { ReactElement, ReactNode } from 'react';
+import { render, type RenderOptions, type RenderResult } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { BrowserRouter, MemoryRouter } from 'react-router-dom';
 import { AuthProvider } from '@/lib/auth';
@@ -159,8 +159,8 @@ export function waitForAsync(ms = 0): Promise<void> {
 /**
  * Helper to create mock functions with typed signatures
  */
-export function createMockFn<T extends (...args: any[]) => any>(): jest.MockedFunction<T> {
-  return vi.fn() as unknown as jest.MockedFunction<T>;
+export function createMockFn<T extends (...args: any[]) => any>(): ReturnType<typeof vi.fn<T>> {
+  return vi.fn<T>();
 }
 
 // Import vi from vitest for global use

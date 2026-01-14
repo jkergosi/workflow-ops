@@ -2,7 +2,7 @@
 Pipelines API endpoints for managing promotion pipelines
 """
 from fastapi import APIRouter, HTTPException, status, Depends, Query
-from typing import List, Optional
+from typing import List, Optional, Any, Dict
 from datetime import datetime
 import uuid
 import logging
@@ -12,6 +12,7 @@ from app.core.feature_gate import require_feature
 from app.core.entitlements_gate import require_entitlement
 from app.services.database import db_service
 from app.schemas.pipeline import PipelineCreate, PipelineUpdate, PipelineResponse
+from app.schemas.pagination import PaginatedResponse
 from app.services.auth_service import get_current_user
 from app.core.rbac import require_tenant_admin
 
@@ -27,54 +28,76 @@ def get_tenant_id(user_info: dict) -> str:
     return tenant_id
 
 
-@router.get("", response_model=List[PipelineResponse])
-@router.get("/", response_model=List[PipelineResponse])
+def transform_pipeline(pipeline: Dict[str, Any]) -> Dict[str, Any]:
+    """Transform database pipeline record to response format."""
+    return {
+        "id": pipeline.get("id"),
+        "tenant_id": pipeline.get("tenant_id"),
+        "name": pipeline.get("name"),
+        "description": pipeline.get("description"),
+        "is_active": pipeline.get("is_active", True),
+        "environment_ids": pipeline.get("environment_ids", []),
+        "stages": pipeline.get("stages", []),
+        "last_modified_by": pipeline.get("last_modified_by"),
+        "last_modified_at": pipeline.get("last_modified_at", pipeline.get("updated_at")),
+        "created_at": pipeline.get("created_at"),
+        "updated_at": pipeline.get("updated_at"),
+    }
+
+
+@router.get("", response_model=PaginatedResponse[PipelineResponse])
+@router.get("/", response_model=PaginatedResponse[PipelineResponse])
 async def get_pipelines(
     include_inactive: bool = Query(True, description="Include inactive/deactivated pipelines"),
+    page: int = Query(1, ge=1, description="Page number"),
+    page_size: int = Query(50, ge=1, le=100, description="Items per page"),
     user_info: dict = Depends(get_current_user),
     _: None = Depends(require_entitlement("workflow_ci_cd"))
 ):
     """
-    Get all pipelines for the tenant.
+    Get all pipelines for the tenant with pagination.
     Requires Pro or Enterprise plan with environment_promotion feature.
-    
+
     Args:
         include_inactive: If True (default), returns all pipelines. If False, returns only active pipelines.
+        page: Page number (1-indexed)
+        page_size: Number of items per page (max 100)
     """
     try:
-        logger.info(f"API get_pipelines called: include_inactive={include_inactive} (type: {type(include_inactive).__name__})")
-        pipelines = await db_service.get_pipelines(get_tenant_id(user_info), include_inactive=include_inactive)
-        logger.info(f"Database returned {len(pipelines)} pipelines")
-        
-        # Debug: log pipeline statuses before transformation
-        active_count = sum(1 for p in pipelines if p.get("is_active", True))
-        inactive_count = sum(1 for p in pipelines if not p.get("is_active", True))
-        logger.info(f"Pipeline breakdown before transform: {active_count} active, {inactive_count} inactive")
-        
+        logger.info(f"API get_pipelines called: include_inactive={include_inactive}, page={page}, page_size={page_size}")
+        tenant_id = get_tenant_id(user_info)
+
+        # Get total count for pagination
+        all_pipelines = await db_service.get_pipelines(tenant_id, include_inactive=include_inactive)
+        total = len(all_pipelines)
+        total_pages = (total + page_size - 1) // page_size if total > 0 else 1
+
+        # Apply pagination
+        start_idx = (page - 1) * page_size
+        end_idx = start_idx + page_size
+        paginated_pipelines = all_pipelines[start_idx:end_idx]
+
+        logger.info(f"Database returned {total} total pipelines, returning page {page} with {len(paginated_pipelines)} items")
+
         # Transform database records to response format
         result = []
-        for pipeline in pipelines:
+        for pipeline in paginated_pipelines:
             try:
-                transformed = {
-                    "id": pipeline.get("id"),
-                    "tenant_id": pipeline.get("tenant_id"),
-                    "name": pipeline.get("name"),
-                    "description": pipeline.get("description"),
-                    "is_active": pipeline.get("is_active", True),
-                    "environment_ids": pipeline.get("environment_ids", []),
-                    "stages": pipeline.get("stages", []),
-                    "last_modified_by": pipeline.get("last_modified_by"),
-                    "last_modified_at": pipeline.get("last_modified_at", pipeline.get("updated_at")),
-                    "created_at": pipeline.get("created_at"),
-                    "updated_at": pipeline.get("updated_at"),
-                }
-                result.append(transformed)
+                result.append(transform_pipeline(pipeline))
             except Exception as e:
                 logger.error(f"Error transforming pipeline {pipeline.get('id', 'unknown')}: {str(e)}", exc_info=True)
                 continue
-        
-        logger.info(f"Returning {len(result)} pipelines after transformation (dropped {len(pipelines) - len(result)})")
-        return result
+
+        has_more = page < total_pages
+
+        return {
+            "items": result,
+            "total": total,
+            "page": page,
+            "page_size": page_size,
+            "total_pages": total_pages,
+            "hasMore": has_more,
+        }
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,

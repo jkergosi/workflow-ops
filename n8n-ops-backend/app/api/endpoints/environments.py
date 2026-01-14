@@ -703,6 +703,20 @@ async def _sync_environment_background(
                                 logger.info(f"DEV sync: committed {committed_count}/{len(workflows_to_commit)} workflows to Git")
                                 if commit_errors:
                                     logger.error(f"DEV sync Git errors: {commit_errors}")
+
+                                # Update drift_status to IN_SYNC after successful Git commit
+                                try:
+                                    await db_service.update_environment(
+                                        environment_id,
+                                        tenant_id,
+                                        {
+                                            "drift_status": "IN_SYNC",
+                                            "last_drift_check_at": datetime.utcnow().isoformat()
+                                        }
+                                    )
+                                    logger.info(f"DEV sync: Updated drift_status to IN_SYNC and last_drift_check_at after Git commit for environment {environment_id}")
+                                except Exception as drift_update_err:
+                                    logger.warning(f"Failed to update drift_status after Git commit: {str(drift_update_err)}")
                             else:
                                 logger.info("DEV sync: no workflow changes to commit to Git")
                                 await emit_sync_progress(
@@ -715,6 +729,20 @@ async def _sync_environment_background(
                                     message="No workflow changes to commit to Git",
                                     tenant_id=tenant_id
                                 )
+
+                                # Update drift_status to IN_SYNC even when no changes to commit
+                                try:
+                                    await db_service.update_environment(
+                                        environment_id,
+                                        tenant_id,
+                                        {
+                                            "drift_status": "IN_SYNC",
+                                            "last_drift_check_at": datetime.utcnow().isoformat()
+                                        }
+                                    )
+                                    logger.info(f"DEV sync: Updated drift_status to IN_SYNC and last_drift_check_at (no changes to commit) for environment {environment_id}")
+                                except Exception as drift_update_err:
+                                    logger.warning(f"Failed to update drift_status after no-change sync: {str(drift_update_err)}")
                         else:
                             logger.error(f"DEV sync: Could not parse Git repo URL: {git_repo_url}")
                             await emit_sync_progress(
@@ -739,6 +767,20 @@ async def _sync_environment_background(
                             message="Skipping Git: no repository configured",
                             tenant_id=tenant_id
                         )
+
+                        # Update drift_status to GIT_NOT_CONFIGURED for DEV environments without Git
+                        try:
+                            await db_service.update_environment(
+                                environment_id,
+                                tenant_id,
+                                {
+                                    "drift_status": "GIT_NOT_CONFIGURED",
+                                    "last_drift_check_at": datetime.utcnow().isoformat()
+                                }
+                            )
+                            logger.info(f"DEV sync: Updated drift_status to GIT_NOT_CONFIGURED and last_drift_check_at for environment {environment_id} (no Git config)")
+                        except Exception as drift_update_err:
+                            logger.warning(f"Failed to update drift_status for DEV environment without Git: {str(drift_update_err)}")
                 except Exception as git_err:
                     logger.error(f"Failed to commit DEV changes to Git: {git_err}", exc_info=True)
                     await emit_sync_progress(

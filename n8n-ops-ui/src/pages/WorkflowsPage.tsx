@@ -104,7 +104,7 @@ export function WorkflowsPage() {
   const [pendingDeleteWorkflow, setPendingDeleteWorkflow] = useState<Workflow | null>(null);
 
   const [currentPage, setCurrentPage] = useState(1);
-  const [pageSize, setPageSize] = useState(50);
+  const [pageSize, setPageSize] = useState(10);
   const [isRefreshing, setIsRefreshing] = useState(false);
 
   const [editForm, setEditForm] = useState({
@@ -112,6 +112,22 @@ export function WorkflowsPage() {
     active: false,
     tags: [] as string[],
   });
+
+  // Fetch environments to get the n8n base URL for opening workflows
+  const { data: environments } = useQuery({
+    queryKey: ['environments'],
+    queryFn: () => api.getEnvironments(),
+  });
+
+  // Get available environments for the tenant (filtered and sorted)
+  const availableEnvironments = useMemo(() => {
+    if (!environments?.data) return [];
+    return sortEnvironments(environments.data.filter((env) => env.isActive));
+  }, [environments]);
+
+  // Get the current environment's base URL and ID
+  // selectedEnvironment can now be either a type string or an environment ID
+  const currentEnvironment = resolveEnvironment(environments?.data, selectedEnvironment);
 
   // Server-side paginated workflow query (optimized)
   const { data: workflowsResponse, isLoading, isFetching } = useQuery({
@@ -146,22 +162,6 @@ export function WorkflowsPage() {
   const workflows = workflowsResponse?.data?.items || workflowsResponse?.data?.workflows || [];
   const totalWorkflows = workflowsResponse?.data?.total || 0;
   const totalPages = workflowsResponse?.data?.totalPages || workflowsResponse?.data?.total_pages || 1;
-
-  // Fetch environments to get the n8n base URL for opening workflows
-  const { data: environments } = useQuery({
-    queryKey: ['environments'],
-    queryFn: () => api.getEnvironments(),
-  });
-
-  // Get available environments for the tenant (filtered and sorted)
-  const availableEnvironments = useMemo(() => {
-    if (!environments?.data) return [];
-    return sortEnvironments(environments.data.filter((env) => env.isActive));
-  }, [environments]);
-
-  // Get the current environment's base URL and ID
-  // selectedEnvironment can now be either a type string or an environment ID
-  const currentEnvironment = resolveEnvironment(environments?.data, selectedEnvironment);
 
   // Set default environment if none selected and environments are available
   useEffect(() => {

@@ -1,7 +1,7 @@
 // @ts-nocheck
 // TODO: Fix TypeScript errors in this file
 import { useState, useMemo, useEffect } from 'react';
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { useQuery, useMutation, useQueryClient, keepPreviousData } from '@tanstack/react-query';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -37,6 +37,8 @@ export function N8NUsersPage() {
   const [selectedRole, setSelectedRole] = useState<string>('all');
   const [selectedStatus, setSelectedStatus] = useState<string>('all');
   const [isSyncing, setIsSyncing] = useState(false);
+  const [currentPage, setCurrentPage] = useState(1);
+  const [pageSize, setPageSize] = useState(25);
 
   // Fetch environments for filter
   const { data: environments } = useQuery({
@@ -64,11 +66,25 @@ export function N8NUsersPage() {
     }
   }, [availableEnvironments, currentEnvironmentId, selectedEnvironment, setSelectedEnvironment]);
 
+  // Reset pagination when environment changes
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [currentEnvironmentType]);
+
   // Fetch all N8N users (API expects environment_type, so we derive it from the selected environment)
-  const { data: n8nUsers, isLoading, refetch } = useQuery({
-    queryKey: ['n8n-users', currentEnvironmentType],
-    queryFn: () => api.getN8NUsers(currentEnvironmentType),
+  const { data: n8nUsers, isLoading, isFetching, refetch } = useQuery({
+    queryKey: ['n8n-users', currentEnvironmentType, currentPage, pageSize],
+    queryFn: () => api.getN8NUsers({
+      environmentType: currentEnvironmentType,
+      page: currentPage,
+      pageSize,
+    }),
+    placeholderData: keepPreviousData,
   });
+
+  const allUsers = n8nUsers?.data?.items || [];
+  const totalUsers = n8nUsers?.data?.total || 0;
+  const totalPages = n8nUsers?.data?.totalPages || 1;
 
   // Sync mutation to refresh from N8N (users only)
   const syncMutation = useMutation({
@@ -98,19 +114,19 @@ export function N8NUsersPage() {
 
   // Get unique roles
   const allRoles = useMemo(() => {
-    if (!n8nUsers?.data) return [];
+    if (!allUsers.length) return [];
     const roles = new Set<string>();
-    n8nUsers.data.forEach((user: any) => {
+    allUsers.forEach((user: any) => {
       if (user.role) roles.add(user.role);
     });
     return Array.from(roles).sort();
-  }, [n8nUsers?.data]);
+  }, [allUsers]);
 
-  // Filter and search users
+  // Filter and search users (client-side filtering on server-paginated data)
   const filteredUsers = useMemo(() => {
-    if (!n8nUsers?.data) return [];
+    if (!allUsers.length) return [];
 
-    return n8nUsers.data.filter((user: any) => {
+    return allUsers.filter((user: any) => {
       // Search filter
       const matchesSearch =
         !searchQuery ||
@@ -309,7 +325,7 @@ export function N8NUsersPage() {
             <div className="text-center py-8">
               <AlertCircle className="h-12 w-12 mx-auto mb-4 text-muted-foreground" />
               <p className="text-muted-foreground">
-                {n8nUsers?.data?.length === 0
+                {totalUsers === 0
                   ? 'No N8N users found. Run Sync on the Environments page to fetch users from N8N.'
                   : 'No users match your filters.'}
               </p>
@@ -356,10 +372,71 @@ export function N8NUsersPage() {
             </Table>
           )}
 
-          {/* Results count */}
-          {filteredUsers.length > 0 && (
-            <div className="mt-4 text-sm text-muted-foreground">
-              Showing {filteredUsers.length} of {n8nUsers?.data?.length || 0} users
+          {/* Pagination Controls */}
+          {totalUsers > 0 && (
+            <div className="mt-4 flex items-center justify-between">
+              <div className="text-sm text-muted-foreground">
+                Showing {filteredUsers.length} of {totalUsers} users
+                {isFetching && !isLoading && (
+                  <span className="ml-2">(updating...)</span>
+                )}
+              </div>
+              <div className="flex items-center gap-4">
+                <div className="flex items-center gap-2">
+                  <span className="text-sm text-muted-foreground">Rows per page:</span>
+                  <select
+                    value={pageSize}
+                    onChange={(e) => {
+                      setPageSize(Number(e.target.value));
+                      setCurrentPage(1);
+                    }}
+                    className="flex h-8 w-[70px] rounded-md border border-input bg-background px-2 py-1 text-sm"
+                  >
+                    <option value={25}>25</option>
+                    <option value={50}>50</option>
+                    <option value={100}>100</option>
+                  </select>
+                </div>
+                <div className="flex items-center gap-1">
+                  <span className="text-sm text-muted-foreground">
+                    Page {currentPage} of {totalPages}
+                  </span>
+                </div>
+                <div className="flex items-center gap-1">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setCurrentPage(1)}
+                    disabled={currentPage === 1}
+                  >
+                    First
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setCurrentPage((prev) => Math.max(1, prev - 1))}
+                    disabled={currentPage === 1}
+                  >
+                    Previous
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setCurrentPage((prev) => Math.min(totalPages, prev + 1))}
+                    disabled={currentPage >= totalPages}
+                  >
+                    Next
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setCurrentPage(totalPages)}
+                    disabled={currentPage >= totalPages}
+                  >
+                    Last
+                  </Button>
+                </div>
+              </div>
             </div>
           )}
         </CardContent>

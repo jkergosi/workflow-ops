@@ -2,37 +2,31 @@ import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
-import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { PaginationControls } from '@/components/ui/pagination-controls';
-import { CheckCircle2, AlertCircle, RefreshCw, GitBranch, Link2, FileText, AlertTriangle } from 'lucide-react';
+import { CheckCircle2, RefreshCw, GitBranch, AlertTriangle } from 'lucide-react';
 import { toast } from 'sonner';
-import { useAuth } from '@/lib/auth';
 import { apiClient } from '@/lib/api-client';
 import type {
   CanonicalWorkflow,
   WorkflowEnvMap,
-  WorkflowDiffState,
   Environment,
   PaginatedResponse
 } from '@/types';
 
 export function CanonicalWorkflowsPage() {
   const navigate = useNavigate();
-  const { tenant } = useAuth();
   const [workflows, setWorkflows] = useState<CanonicalWorkflow[]>([]);
   const [mappings, setMappings] = useState<WorkflowEnvMap[]>([]);
-  const [diffStates, setDiffStates] = useState<WorkflowDiffState[]>([]);
   const [environments, setEnvironments] = useState<Environment[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [selectedEnv, setSelectedEnv] = useState<string>('');
 
   // Pagination state
   const [currentPage, setCurrentPage] = useState(1);
-  const [pageSize, setPageSize] = useState(50);
+  const [pageSize, setPageSize] = useState(25);
   const [totalItems, setTotalItems] = useState(0);
   const [totalPages, setTotalPages] = useState(0);
 
@@ -141,18 +135,6 @@ export function CanonicalWorkflowsPage() {
 
   const getMappingForWorkflow = (canonicalId: string, envId: string): WorkflowEnvMap | undefined => {
     return mappings.find(m => m.canonicalId === canonicalId && m.environmentId === envId);
-  };
-
-  const getDiffForWorkflow = (canonicalId: string, sourceEnvId: string, targetEnvId: string): WorkflowDiffState | undefined => {
-    return diffStates.find(d => 
-      d.canonicalId === canonicalId && 
-      d.sourceEnvId === sourceEnvId && 
-      d.targetEnvId === targetEnvId
-    );
-  };
-
-  const getEnvName = (envId: string): string => {
-    return environments.find(e => e.id === envId)?.name || envId;
   };
 
   if (isLoading) {

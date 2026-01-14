@@ -1,7 +1,8 @@
 // @ts-nocheck
 // TODO: Fix TypeScript errors in this file
 import { useState, useMemo, useEffect } from 'react';
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { useQuery, useMutation, useQueryClient, keepPreviousData } from '@tanstack/react-query';
+import { useDebounce } from '@/hooks/useDebounce';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -53,7 +54,7 @@ import { apiClient } from '@/lib/api-client';
 import { useAppStore } from '@/store/use-app-store';
 import {
   Search, AlertCircle, RefreshCw, Key, Download, ArrowUpDown, ArrowUp, ArrowDown,
-  ExternalLink, Plus, MoreHorizontal, Pencil, Trash2, Eye, EyeOff, Info, Grid3X3, ShieldCheck
+  ExternalLink, Plus, MoreHorizontal, Pencil, Trash2, Eye, EyeOff, Info, Grid3X3, ShieldCheck, Loader2
 } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import type { EnvironmentType, Credential, Environment } from '@/types';
@@ -148,10 +149,15 @@ export function CredentialsPage() {
   const navigate = useNavigate();
 
   const [searchQuery, setSearchQuery] = useState('');
+  const debouncedSearch = useDebounce(searchQuery, 300);
   const [selectedType, setSelectedType] = useState<string>('all');
   const [isSyncing, setIsSyncing] = useState(false);
   const [sortField, setSortField] = useState<SortField>('name');
   const [sortDirection, setSortDirection] = useState<SortDirection>('asc');
+
+  // Pagination state
+  const [currentPage, setCurrentPage] = useState(1);
+  const [pageSize, setPageSize] = useState(25);
 
   // Dialog states
   const [createDialogOpen, setCreateDialogOpen] = useState(false);
@@ -195,24 +201,48 @@ export function CredentialsPage() {
     }
   }, [environments?.data, selectedEnvironment, setSelectedEnvironment]);
 
-  // Fetch credentials from the database cache (synced from N8N)
-  const { data: credentials, isLoading, refetch } = useQuery({
-    queryKey: ['physical-credentials', selectedEnvId],
+  // Fetch credentials from the database cache with server-side pagination
+  const { data: credentialsResponse, isLoading, isFetching, refetch } = useQuery({
+    queryKey: ['physical-credentials', selectedEnvId, debouncedSearch, selectedType, currentPage, pageSize],
     queryFn: async () => {
-      // Get environment type for filtering if a specific environment is selected
-      const envs = environments?.data || [];
-      let envType: string | undefined;
-      
+      const params: {
+        environmentId?: string;
+        search?: string;
+        credentialType?: string;
+        page: number;
+        pageSize: number;
+      } = {
+        page: currentPage,
+        pageSize: pageSize,
+      };
+
       if (selectedEnvId && selectedEnvId !== 'all') {
-        const env = envs.find((e: Environment) => e.id === selectedEnvId);
-        envType = env?.type;
+        params.environmentId = selectedEnvId;
       }
-      
-      // Fetch cached credentials from database
-      const result = await apiClient.getCredentials({ environmentType: envType });
-      return result;
+
+      if (debouncedSearch) {
+        params.search = debouncedSearch;
+      }
+
+      if (selectedType !== 'all') {
+        params.credentialType = selectedType;
+      }
+
+      const result = await apiClient.getCredentials(params);
+      return result.data;
     },
+    placeholderData: keepPreviousData,
   });
+
+  // Extract pagination data from response
+  const credentials = credentialsResponse?.items || [];
+  const totalCredentials = credentialsResponse?.total || 0;
+  const totalPages = credentialsResponse?.totalPages || 1;
+
+  // Reset to page 1 when filters change
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [debouncedSearch, selectedType, selectedEnvId]);
 
   // Create credential mutation
   const createMutation = useMutation({
@@ -477,35 +507,21 @@ export function CredentialsPage() {
       : <ArrowDown className="h-4 w-4 ml-1" />;
   };
 
-  // Get unique credential types
+  // Get unique credential types from current page (for type filter dropdown)
   const allTypes = useMemo(() => {
-    if (!credentials?.data) return [];
+    if (!credentials.length) return [];
     const types = new Set<string>();
-    credentials.data.forEach((cred: Credential) => {
+    credentials.forEach((cred: Credential) => {
       if (cred.type) types.add(cred.type);
     });
     return Array.from(types).sort();
-  }, [credentials?.data]);
+  }, [credentials]);
 
-  // Filter, search, and sort credentials
-  const filteredAndSortedCredentials = useMemo(() => {
-    if (!credentials?.data) return [];
+  // Sort credentials (filtering is done server-side)
+  const sortedCredentials = useMemo(() => {
+    if (!credentials.length) return [];
 
-    let result = [...credentials.data];
-
-    // Apply search filter (name and type)
-    if (searchQuery) {
-      const query = searchQuery.toLowerCase();
-      result = result.filter((cred: Credential) =>
-        cred.name?.toLowerCase().includes(query) ||
-        cred.type?.toLowerCase().includes(query)
-      );
-    }
-
-    // Apply type filter
-    if (selectedType !== 'all') {
-      result = result.filter((cred: Credential) => cred.type === selectedType);
-    }
+    const result = [...credentials];
 
     // Apply sorting
     result.sort((a: Credential, b: Credential) => {
@@ -540,7 +556,7 @@ export function CredentialsPage() {
     });
 
     return result;
-  }, [credentials?.data, searchQuery, selectedType, sortField, sortDirection]);
+  }, [credentials, sortField, sortDirection]);
 
   const getEnvironmentBadge = (type: string | undefined) => {
     if (!type) return null;
@@ -687,15 +703,15 @@ export function CredentialsPage() {
           {/* Credentials Table */}
           {isLoading ? (
             <div className="text-center py-8">Loading credentials...</div>
-          ) : filteredAndSortedCredentials.length === 0 ? (
+          ) : sortedCredentials.length === 0 ? (
             <div className="text-center py-8">
               <AlertCircle className="h-12 w-12 mx-auto mb-4 text-muted-foreground" />
               <p className="text-muted-foreground mb-2">
-                {credentials?.data?.length === 0
+                {totalCredentials === 0 && !debouncedSearch && selectedType === 'all'
                   ? 'No credentials found.'
                   : 'No credentials match your filters.'}
               </p>
-              {credentials?.data?.length === 0 && (
+              {totalCredentials === 0 && !debouncedSearch && selectedType === 'all' && (
                 <div className="space-y-2">
                   <p className="text-xs text-muted-foreground max-w-md mx-auto">
                     Click "Create Physical Credential" to add a new physical credential, or "Sync from N8N" to import existing credentials.
@@ -708,6 +724,7 @@ export function CredentialsPage() {
               )}
             </div>
           ) : (
+            <>
             <Table>
               <TableHeader>
                 <TableRow>
@@ -751,7 +768,7 @@ export function CredentialsPage() {
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {filteredAndSortedCredentials.map((cred: Credential) => (
+                {sortedCredentials.map((cred: Credential) => (
                   <TableRow key={cred.id}>
                     <TableCell className="font-medium">
                       <div className="flex items-center gap-2">
@@ -823,13 +840,78 @@ export function CredentialsPage() {
                 ))}
               </TableBody>
             </Table>
-          )}
 
-          {/* Results count */}
-          {filteredAndSortedCredentials.length > 0 && (
-            <div className="mt-4 text-sm text-muted-foreground">
-              Showing {filteredAndSortedCredentials.length} of {credentials?.data?.length || 0} credentials
+            {/* Pagination Controls */}
+            <div className="mt-4 flex items-center justify-between border-t pt-4">
+              <div className="flex items-center gap-4">
+                <div className="flex items-center gap-2">
+                  <Label htmlFor="pageSize" className="text-sm text-muted-foreground">
+                    Rows per page:
+                  </Label>
+                  <select
+                    id="pageSize"
+                    value={pageSize}
+                    onChange={(e) => {
+                      setPageSize(Number(e.target.value));
+                      setCurrentPage(1);
+                    }}
+                    className="h-8 w-20 rounded-md border border-input bg-background text-foreground px-2 py-1 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                  >
+                    <option value={10} className="bg-background text-foreground">10</option>
+                    <option value={25} className="bg-background text-foreground">25</option>
+                    <option value={50} className="bg-background text-foreground">50</option>
+                    <option value={100} className="bg-background text-foreground">100</option>
+                  </select>
+                </div>
+                <div className="text-sm text-muted-foreground">
+                  Showing {totalCredentials > 0 ? ((currentPage - 1) * pageSize) + 1 : 0} to {Math.min(currentPage * pageSize, totalCredentials)} of {totalCredentials} credentials
+                </div>
+              </div>
+
+              <div className="flex items-center gap-2">
+                {isFetching && (
+                  <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
+                )}
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setCurrentPage(1)}
+                  disabled={currentPage === 1 || isFetching}
+                >
+                  First
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setCurrentPage(currentPage - 1)}
+                  disabled={currentPage === 1 || isFetching}
+                >
+                  Previous
+                </Button>
+                <div className="flex items-center gap-1">
+                  <span className="text-sm">
+                    Page {currentPage} of {totalPages}
+                  </span>
+                </div>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setCurrentPage(currentPage + 1)}
+                  disabled={currentPage >= totalPages || isFetching}
+                >
+                  Next
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setCurrentPage(totalPages)}
+                  disabled={currentPage >= totalPages || isFetching}
+                >
+                  Last
+                </Button>
+              </div>
             </div>
+            </>
           )}
         </CardContent>
       </Card>

@@ -26,16 +26,6 @@ function transformKeys(obj: any): any {
   return result;
 }
 
-interface SSEEvent {
-  event_id: string;
-  type: string;
-  tenant_id: string;
-  env_id?: string;
-  job_id?: string;
-  ts: string;
-  payload: any;
-}
-
 interface UseBackgroundJobsSSEOptions {
   enabled?: boolean;
   environmentId?: string; // For filtering by environment
@@ -307,7 +297,7 @@ export function useBackgroundJobsSSE(
       emitLog('info', 'Connected to live updates stream', undefined, { connected: true });
     };
 
-    eventSource.onerror = (error) => {
+    eventSource.onerror = (_error) => {
       setIsConnected(false);
       setConnectionError('SSE connection error');
 

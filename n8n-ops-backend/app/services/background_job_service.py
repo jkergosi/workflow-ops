@@ -27,6 +27,7 @@ class BackgroundJobType:
     GITHUB_SYNC_FROM = "github_sync_from"
     GITHUB_SYNC_TO = "github_sync_to"
     RESTORE_EXECUTE = "restore_execute"
+    SNAPSHOT_CREATE = "snapshot_create"
     SNAPSHOT_RESTORE = "snapshot_restore"
     # Canonical workflow job types
     CANONICAL_REPO_SYNC = "canonical_repo_sync"

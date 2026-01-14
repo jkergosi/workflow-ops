@@ -22,12 +22,12 @@ export interface UseHealthCheckResult {
 
 /**
  * Hook to monitor backend service health
- * @param autoCheck Whether to start automatic polling (default: true)
- * @param pollInterval Polling interval in ms (default: 60000)
+ * @param _autoCheck Whether to start automatic polling (default: true) - reserved for future use
+ * @param _pollInterval Polling interval in ms (default: 60000) - reserved for future use
  */
 export function useHealthCheck(
-  autoCheck = true,
-  pollInterval = 60000
+  _autoCheck = true,
+  _pollInterval = 60000
 ): UseHealthCheckResult {
   const [status, setStatus] = useState<ServiceStatus>('healthy');
   const [healthStatus, setHealthStatus] = useState<HealthStatus | null>(

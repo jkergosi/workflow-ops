@@ -27,7 +27,6 @@ import { AlertsPage } from '@/pages/AlertsPage';
 import { ActivityCenterPage } from '@/pages/ActivityCenterPage';
 import { ActivityDetailPage } from '@/pages/ActivityDetailPage';
 import { TeamPage } from '@/pages/TeamPage';
-import { BillingPage } from '@/pages/BillingPage';
 import { N8NUsersPage } from '@/pages/N8NUsersPage';
 import { CredentialsPage } from '@/pages/CredentialsPage';
 import { IncidentsPage } from '@/pages/IncidentsPage';
@@ -66,7 +65,6 @@ import {
 import { LoadingStatesDemo } from '@/pages/LoadingStatesDemo';
 import { useLocation } from 'react-router-dom';
 import { canAccessRoute, mapBackendRoleToFrontendRole, normalizePlan, isAtLeastPlan, type Plan } from '@/lib/permissions';
-import { setLastRoute } from '@/lib/lastRoute';
 import { AdminUsagePage } from '@/pages/AdminUsagePage';
 import { AdminEntitlementsPage } from '@/pages/AdminEntitlementsPage';
 import { PlatformAdminsPage } from '@/pages/platform/PlatformAdminsPage';
@@ -89,7 +87,7 @@ const queryClient = new QueryClient({
 
 // Protected Route Component with Onboarding Check
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
-  const { isAuthenticated, isLoading, initComplete, needsOnboarding, backendUnavailable } = useAuth();
+  const { isAuthenticated, isLoading, initComplete, needsOnboarding, backendUnavailable = false } = useAuth();
   const navigate = useNavigate();
   const currentPath = window.location.pathname;
 
@@ -98,11 +96,12 @@ function ProtectedRoute({ children }: { children: React.ReactNode }) {
 
   useEffect(() => {
     // If user needs onboarding and not already on onboarding page, redirect
-    if (!isLoading && initComplete && needsOnboarding && window.location.pathname !== '/onboarding') {
+    // IMPORTANT: Don't redirect if backend is unavailable - show technical difficulties page instead
+    if (!isLoading && initComplete && needsOnboarding && !backendUnavailable && window.location.pathname !== '/onboarding') {
       console.log('[ProtectedRoute] Redirecting to onboarding');
       navigate('/onboarding', { replace: true });
     }
-  }, [isLoading, initComplete, needsOnboarding, navigate]);
+  }, [isLoading, initComplete, needsOnboarding, backendUnavailable, navigate]);
 
   // Wait for both loading to complete AND initialization to be done
   // This prevents redirects during the brief moment between state updates

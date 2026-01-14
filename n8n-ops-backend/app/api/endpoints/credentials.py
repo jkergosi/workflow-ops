@@ -1,4 +1,4 @@
-from fastapi import APIRouter, HTTPException, status, Depends
+from fastapi import APIRouter, HTTPException, status, Depends, Query
 from typing import List, Optional
 import json
 import logging
@@ -15,6 +15,7 @@ from app.schemas.credential import (
     CredentialTypeSchema,
     CredentialSyncResult,
 )
+from app.schemas.pagination import PaginatedResponse, DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE
 
 router = APIRouter()
 
@@ -52,15 +53,34 @@ def parse_used_by_workflows(credential: dict) -> dict:
     return credential
 
 
-@router.get("/")
+@router.get("/", response_model=PaginatedResponse[dict])
 async def get_credentials(
     environment_type: Optional[str] = None,
     environment_id: Optional[str] = None,
+    search: Optional[str] = Query(None, description="Search by name or type"),
+    credential_type: Optional[str] = Query(None, description="Filter by credential type"),
+    page: int = Query(1, ge=1, description="Page number (1-indexed)"),
+    page_size: int = Query(DEFAULT_PAGE_SIZE, ge=1, le=MAX_PAGE_SIZE, description="Items per page"),
     user_info: dict = Depends(get_current_user),
 ):
-    """Get all credentials, optionally filtered by environment type or ID"""
+    """Get credentials with pagination and optional filters.
+
+    Returns a paginated list of credentials with the standard pagination envelope.
+    Credentials are ordered by name ASC for deterministic pagination.
+
+    Query Parameters:
+    - page: Page number (1-indexed, default: 1)
+    - page_size: Items per page (default: 50, max: 100)
+    - environment_type: Filter by environment type (optional)
+    - environment_id: Filter by environment ID (optional)
+    - search: Search by name or type (optional)
+    - credential_type: Filter by credential type (optional)
+    """
     try:
         tenant_id = get_tenant_id(user_info)
+        page_size = max(1, min(page_size, MAX_PAGE_SIZE))
+        offset = (page - 1) * page_size
+
         # Get all environments first for lookup (include n8n_base_url for N8N links)
         envs_response = db_service.client.table("environments").select(
             "id, n8n_name, n8n_type, n8n_base_url"
@@ -79,16 +99,38 @@ async def get_credentials(
                 )
             resolved_env_id = env_config.get("id")
 
+        # Build base query for counting
+        count_query = db_service.client.table("credentials").select(
+            "id", count="exact"
+        ).eq("tenant_id", tenant_id).eq("is_deleted", False)
+
+        # Build base query for fetching
+        data_query = db_service.client.table("credentials").select(
+            "*"
+        ).eq("tenant_id", tenant_id).eq("is_deleted", False)
+
+        # Apply environment filter
         if resolved_env_id:
-            # Get credentials for specific environment
-            response = db_service.client.table("credentials").select(
-                "*"
-            ).eq("tenant_id", tenant_id).eq("environment_id", resolved_env_id).eq("is_deleted", False).order("name").execute()
-        else:
-            # Get all credentials across all environments
-            response = db_service.client.table("credentials").select(
-                "*"
-            ).eq("tenant_id", tenant_id).eq("is_deleted", False).order("name").execute()
+            count_query = count_query.eq("environment_id", resolved_env_id)
+            data_query = data_query.eq("environment_id", resolved_env_id)
+
+        # Apply credential type filter
+        if credential_type:
+            count_query = count_query.eq("type", credential_type)
+            data_query = data_query.eq("type", credential_type)
+
+        # Apply search filter (ilike for case-insensitive)
+        if search:
+            search_pattern = f"%{search}%"
+            count_query = count_query.or_(f"name.ilike.{search_pattern},type.ilike.{search_pattern}")
+            data_query = data_query.or_(f"name.ilike.{search_pattern},type.ilike.{search_pattern}")
+
+        # Get total count
+        count_response = count_query.execute()
+        total = count_response.count if count_response.count is not None else 0
+
+        # Get paginated data
+        response = data_query.order("name").range(offset, offset + page_size - 1).execute()
 
         # Add environment info and parse used_by_workflows for each credential
         credentials = []
@@ -97,7 +139,12 @@ async def get_credentials(
             credential = parse_used_by_workflows(credential)
             credentials.append(credential)
 
-        return credentials
+        return PaginatedResponse.create(
+            items=credentials,
+            total=total,
+            page=page,
+            page_size=page_size
+        )
 
     except HTTPException:
         raise

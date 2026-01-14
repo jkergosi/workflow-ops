@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useState, useEffect, useCallback } from 'react';
+import React, { createContext, useContext, useState, useEffect, useCallback, useRef } from 'react';
 import type { Session } from '@supabase/supabase-js';
 import { supabase } from './supabase';
 import { apiClient } from './api-client';
@@ -17,6 +17,7 @@ interface Tenant {
   id: string;
   name: string;
   subscriptionPlan: 'free' | 'pro' | 'agency' | 'agency_plus' | 'enterprise';
+  createdAt?: string;
 }
 
 interface ActorUser {
@@ -57,13 +58,19 @@ function isBackendUnavailableError(error: unknown): boolean {
   const err = error as any;
   // Check for service unavailable flag (set by api-client)
   if (err.isServiceUnavailable) return true;
-  // Check for network errors
-  if (err.code === 'ECONNABORTED' || err.code === 'ERR_NETWORK') return true;
+  // Check for network error codes (covers various browsers/scenarios)
+  if (err.code === 'ECONNABORTED' || err.code === 'ERR_NETWORK' ||
+      err.code === 'ERR_CONNECTION_REFUSED' || err.code === 'ECONNREFUSED') return true;
+  // Check for common network error messages
   if (err.message === 'Network Error') return true;
+  if (err.message?.includes('timeout')) return true;
+  if (err.message?.includes('CORS')) return true;
+  if (err.message?.includes('Failed to fetch')) return true;
   // Check for 503 status
   if (err.response?.status === 503) return true;
-  // Check for timeout
-  if (err.message?.includes('timeout')) return true;
+  // CRITICAL: If there's a request but no response, the backend is likely unreachable
+  // This is the ultimate fallback - any error where we sent a request but got no HTTP response
+  if (err.request && !err.response) return true;
   return false;
 }
 
@@ -88,6 +95,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [actorUser, setActorUser] = useState<ActorUser | null>(null);
   const [authStatus, setAuthStatus] = useState<'initializing' | 'authenticated' | 'unauthenticated'>('initializing');
   const [backendUnavailable, setBackendUnavailable] = useState(false);
+
+  // Track if we've already fetched user data to avoid duplicate calls
+  const hasFetchedRef = useRef(false);
 
   const isLoading = authStatus === 'initializing';
   const initComplete = authStatus !== 'initializing';
@@ -119,13 +129,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           id: statusData.user.id,
           email: statusData.user.email,
           name: statusData.user.name,
-          role: statusData.user.role || 'viewer',
+          role: (statusData.user.role || 'viewer') as User['role'],
           isPlatformAdmin: !!(statusData.user as any)?.is_platform_admin,
         });
         setTenant({
           id: statusData.tenant.id,
           name: statusData.tenant.name,
-          subscriptionPlan: statusData.tenant.subscription_plan || 'free',
+          subscriptionPlan: (statusData.tenant.subscription_plan || 'free') as Tenant['subscriptionPlan'],
         });
         setNeedsOnboarding(false);
 
@@ -173,6 +183,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         }
 
         if (currentSession) {
+          hasFetchedRef.current = true;
           await fetchUserData(currentSession.access_token);
         } else {
           // No Supabase session - check if backend is available before assuming unauthenticated
@@ -215,6 +226,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         if (!isTest) console.log('[Auth] Auth state changed:', event);
 
         if (event === 'SIGNED_OUT') {
+          hasFetchedRef.current = false; // Reset so next sign-in will fetch
           setSession(null);
           setUser(null);
           setTenant(null);
@@ -228,8 +240,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
         if (newSession) {
           setSession(newSession);
-          // Don't fetch if impersonating
-          if (!impersonating) {
+          // Only fetch user data on actual sign-in events, not token refreshes or redundant initial events
+          // Skip if we've already fetched (initAuth already handled it)
+          const shouldFetch = !hasFetchedRef.current && event === 'SIGNED_IN';
+
+          if (shouldFetch && !impersonating) {
+            hasFetchedRef.current = true;
             await fetchUserData(newSession.access_token);
           }
         }

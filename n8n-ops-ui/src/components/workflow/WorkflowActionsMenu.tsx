@@ -56,6 +56,7 @@ export function WorkflowActionsMenu({
 }: WorkflowActionsMenuProps) {
   const policy = useWorkflowActionPolicy(environment, workflow);
 
+  const isDevEnvironment = environment?.environmentClass?.toLowerCase() === 'dev';
   const hasDrift = workflow.syncStatus === 'local_changes' || workflow.syncStatus === 'conflict';
   const hasActiveIncident = environment?.driftStatus === 'DRIFT_INCIDENT_ACTIVE';
 
@@ -89,9 +90,9 @@ export function WorkflowActionsMenu({
         </DropdownMenuItem>
 
         {/* =============================================
-            DRIFT INCIDENT PATH
+            DRIFT INCIDENT PATH (not applicable for dev environments)
             ============================================= */}
-        {policy.canCreateDriftIncident && hasDrift && !hasActiveIncident && onCreateDriftIncident && (
+        {!isDevEnvironment && policy.canCreateDriftIncident && hasDrift && !hasActiveIncident && onCreateDriftIncident && (
           <DropdownMenuItem onClick={onCreateDriftIncident}>
             <AlertTriangle className="h-4 w-4 mr-2" />
             Create Drift Incident
@@ -100,7 +101,7 @@ export function WorkflowActionsMenu({
             )}
           </DropdownMenuItem>
         )}
-        {hasActiveIncident && onViewDriftIncident && (
+        {!isDevEnvironment && hasActiveIncident && onViewDriftIncident && (
           <DropdownMenuItem onClick={onViewDriftIncident}>
             <AlertCircle className="h-4 w-4 mr-2" />
             View Drift Incident
@@ -114,7 +115,7 @@ export function WorkflowActionsMenu({
           <>
             <DropdownMenuSeparator />
             <DropdownMenuLabel className="text-xs text-muted-foreground">
-              Direct Actions (creates drift)
+              {isDevEnvironment ? 'Direct Actions' : 'Direct Actions (creates drift)'}
             </DropdownMenuLabel>
           </>
         )}

@@ -5,7 +5,8 @@ import { http, HttpResponse } from 'msw';
 import { ExecutionsPage } from './ExecutionsPage';
 import { render } from '@/test/test-utils';
 import { server } from '@/test/mocks/server';
-import { mockEnvironments } from '@/test/mocks/handlers';
+// mockEnvironments imported for type reference if needed
+// import { mockEnvironments } from '@/test/mocks/handlers';
 
 const API_BASE = '/api/v1';
 

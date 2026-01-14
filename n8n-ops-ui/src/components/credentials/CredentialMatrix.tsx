@@ -1,4 +1,3 @@
-import { useMemo } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
@@ -6,7 +5,7 @@ import { Button } from '@/components/ui/button';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { apiClient } from '@/lib/api-client';
 import { Grid3X3, CheckCircle2, XCircle, AlertTriangle, Plus, Pencil, Loader2, Unlink } from 'lucide-react';
-import type { LogicalCredential, CredentialMapping, CredentialMatrixCell, CredentialMatrixEnvironment } from '@/types/credentials';
+import type { LogicalCredential, CredentialMatrixCell, CredentialMatrixEnvironment } from '@/types/credentials';
 
 interface CredentialMatrixProps {
   onCreateMapping?: (logicalId: string, envId: string) => void;

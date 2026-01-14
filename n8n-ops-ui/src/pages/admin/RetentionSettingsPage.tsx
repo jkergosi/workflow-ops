@@ -30,42 +30,7 @@ import {
 } from 'lucide-react';
 import { apiClient } from '@/lib/api-client';
 import { toast } from 'sonner';
-
-interface RetentionPolicy {
-  retention_days: number;
-  is_enabled: boolean;
-  min_executions_to_keep: number;
-  last_cleanup_at?: string | null;
-  last_cleanup_deleted_count: number;
-}
-
-interface CleanupPreview {
-  tenant_id: string;
-  total_executions: number;
-  old_executions_count: number;
-  executions_to_delete: number;
-  cutoff_date: string;
-  retention_days: number;
-  min_executions_to_keep: number;
-  would_delete: boolean;
-  is_enabled: boolean;
-}
-
-interface CleanupResult {
-  tenant_id: string;
-  deleted_count: number;
-  retention_days: number;
-  is_enabled: boolean;
-  timestamp: string;
-  summary?: {
-    before_count: number;
-    after_count: number;
-    oldest_execution: string;
-    newest_execution: string;
-  };
-  skipped?: boolean;
-  reason?: string;
-}
+import type { RetentionPolicy, CleanupPreview } from '@/types';
 
 export function RetentionSettingsPage() {
   useEffect(() => {
@@ -96,9 +61,9 @@ export function RetentionSettingsPage() {
   // Initialize form state when policy loads
   useEffect(() => {
     if (policy) {
-      setRetentionDays(policy.retention_days);
-      setIsEnabled(policy.is_enabled);
-      setMinExecutionsToKeep(policy.min_executions_to_keep);
+      setRetentionDays(policy.retentionDays);
+      setIsEnabled(policy.isEnabled);
+      setMinExecutionsToKeep(policy.minExecutionsToKeep);
       setHasUnsavedChanges(false);
     }
   }, [policy]);
@@ -107,9 +72,9 @@ export function RetentionSettingsPage() {
   useEffect(() => {
     if (policy) {
       const changed =
-        retentionDays !== policy.retention_days ||
-        isEnabled !== policy.is_enabled ||
-        minExecutionsToKeep !== policy.min_executions_to_keep;
+        retentionDays !== policy.retentionDays ||
+        isEnabled !== policy.isEnabled ||
+        minExecutionsToKeep !== policy.minExecutionsToKeep;
       setHasUnsavedChanges(changed);
     }
   }, [retentionDays, isEnabled, minExecutionsToKeep, policy]);
@@ -117,7 +82,7 @@ export function RetentionSettingsPage() {
   // Fetch cleanup preview
   const { data: previewResp, refetch: refetchPreview } = useQuery({
     queryKey: ['retention', 'preview'],
-    queryFn: () => apiClient.getRetentionPreview(),
+    queryFn: () => apiClient.getCleanupPreview(),
     enabled: false, // Only fetch when explicitly triggered
   });
 
@@ -127,9 +92,9 @@ export function RetentionSettingsPage() {
   const updatePolicyMutation = useMutation({
     mutationFn: () =>
       apiClient.updateRetentionPolicy({
-        retention_days: retentionDays,
-        is_enabled: isEnabled,
-        min_executions_to_keep: minExecutionsToKeep,
+        retentionDays: retentionDays,
+        isEnabled: isEnabled,
+        minExecutionsToKeep: minExecutionsToKeep,
       }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['retention', 'policy'] });
@@ -145,7 +110,7 @@ export function RetentionSettingsPage() {
   const cleanupMutation = useMutation({
     mutationFn: (force: boolean) => apiClient.triggerRetentionCleanup(force),
     onSuccess: (res) => {
-      const result: CleanupResult = res.data;
+      const result = res.data;
       queryClient.invalidateQueries({ queryKey: ['retention', 'policy'] });
       queryClient.invalidateQueries({ queryKey: ['retention', 'preview'] });
 
@@ -153,7 +118,7 @@ export function RetentionSettingsPage() {
         toast.info(result.reason || 'Cleanup was skipped');
       } else {
         toast.success(
-          `Cleanup completed: ${result.deleted_count.toLocaleString()} executions deleted`
+          `Cleanup completed: ${result.deletedCount.toLocaleString()} executions deleted`
         );
       }
       setShowCleanupDialog(false);
@@ -178,9 +143,9 @@ export function RetentionSettingsPage() {
 
   const handleReset = () => {
     if (policy) {
-      setRetentionDays(policy.retention_days);
-      setIsEnabled(policy.is_enabled);
-      setMinExecutionsToKeep(policy.min_executions_to_keep);
+      setRetentionDays(policy.retentionDays);
+      setIsEnabled(policy.isEnabled);
+      setMinExecutionsToKeep(policy.minExecutionsToKeep);
       setHasUnsavedChanges(false);
     }
   };
@@ -274,13 +239,13 @@ export function RetentionSettingsPage() {
               <div>
                 <p className="text-sm text-muted-foreground">Last Cleanup</p>
                 <p className="text-lg font-bold">
-                  {policy?.last_cleanup_at
-                    ? formatTimestamp(policy.last_cleanup_at)
+                  {policy?.lastCleanupAt
+                    ? formatTimestamp(policy.lastCleanupAt)
                     : 'Never'}
                 </p>
-                {policy?.last_cleanup_deleted_count > 0 && (
+                {policy && policy.lastCleanupDeletedCount > 0 && (
                   <p className="text-xs text-muted-foreground">
-                    {policy.last_cleanup_deleted_count.toLocaleString()} deleted
+                    {policy.lastCleanupDeletedCount.toLocaleString()} deleted
                   </p>
                 )}
               </div>
@@ -496,33 +461,33 @@ export function RetentionSettingsPage() {
                     <div>
                       <p className="text-muted-foreground">Total Executions</p>
                       <p className="text-lg font-bold text-foreground">
-                        {preview.total_executions.toLocaleString()}
+                        {preview.totalExecutions.toLocaleString()}
                       </p>
                     </div>
                     <div>
                       <p className="text-muted-foreground">Old Executions</p>
                       <p className="text-lg font-bold text-foreground">
-                        {preview.old_executions_count.toLocaleString()}
+                        {preview.oldExecutionsCount.toLocaleString()}
                       </p>
                     </div>
                     <div>
                       <p className="text-muted-foreground">To Be Deleted</p>
                       <p className="text-lg font-bold text-red-600">
-                        {preview.executions_to_delete.toLocaleString()}
+                        {preview.executionsToDelete.toLocaleString()}
                       </p>
                     </div>
                     <div>
                       <p className="text-muted-foreground">Cutoff Date</p>
                       <p className="text-lg font-bold text-foreground">
-                        {formatDate(preview.cutoff_date)}
+                        {formatDate(preview.cutoffDate)}
                       </p>
                     </div>
                   </div>
-                  {preview.would_delete ? (
+                  {preview.wouldDelete ? (
                     <div className="p-3 rounded-lg bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-900">
                       <p className="text-sm text-red-900 dark:text-red-100">
                         ⚠️ Running cleanup would delete{' '}
-                        <strong>{preview.executions_to_delete.toLocaleString()}</strong>{' '}
+                        <strong>{preview.executionsToDelete.toLocaleString()}</strong>{' '}
                         executions
                       </p>
                     </div>

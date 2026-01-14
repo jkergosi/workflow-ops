@@ -764,7 +764,21 @@ async def _run_env_sync_background(
                 logger.warning(f"Failed to get drift count: {str(drift_err)}")
         else:
             logger.info(f"DEV environment {environment_id}: Skipping drift detection (n8n is source of truth)")
-        
+            # DEV environment: Update drift_status to IN_SYNC since n8n is source of truth
+            # and we just successfully synced from it
+            try:
+                await db_service.update_environment(
+                    environment_id,
+                    tenant_id,
+                    {
+                        "drift_status": "IN_SYNC",
+                        "last_drift_check_at": now
+                    }
+                )
+                logger.info(f"DEV sync: Updated drift_status to IN_SYNC for environment {environment_id}")
+            except Exception as drift_update_err:
+                logger.warning(f"Failed to update drift_status after DEV sync: {str(drift_update_err)}")
+
         # Phase 4: Finalizing sync
         try:
             from app.api.endpoints.sse import emit_sync_progress
@@ -1023,7 +1037,20 @@ async def _run_dev_git_sync_background(
             job_id=job_id,
             tenant_id_for_sse=tenant_id
         )
-        
+
+        # Update last_backup timestamp after Git commit
+        from datetime import datetime
+        now = datetime.utcnow().isoformat()
+        try:
+            await db_service.update_environment(
+                environment_id,
+                tenant_id,
+                {"last_backup": now}
+            )
+            logger.info(f"Phase 2: Updated last_backup timestamp for environment {environment_id}")
+        except Exception as backup_err:
+            logger.warning(f"Failed to update last_backup: {str(backup_err)}")
+
         await background_job_service.update_job_status(
             job_id=job_id,
             status=BackgroundJobStatus.COMPLETED,

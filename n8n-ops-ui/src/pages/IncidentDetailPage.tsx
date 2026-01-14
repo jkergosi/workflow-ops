@@ -33,10 +33,9 @@ import {
   FileText,
   Loader2,
   Archive,
-  Info,
 } from 'lucide-react';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
-import type { DriftIncident, DriftIncidentStatus, DriftApproval } from '@/types';
+import type { DriftIncidentStatus, DriftApproval } from '@/types';
 
 const STATUS_CONFIG: Record<DriftIncidentStatus, {
   label: string;
@@ -94,7 +93,7 @@ export function IncidentDetailPage() {
   // Fetch approvals for this incident
   const { data: approvalsData, isLoading: approvalsLoading } = useQuery({
     queryKey: ['incident-approvals', id],
-    queryFn: () => apiClient.getDriftApprovals({ incident_id: id }),
+    queryFn: () => apiClient.getDriftApprovals({ incidentId: id }),
     enabled: !!id && hasDriftPolicies,
   });
 
@@ -132,10 +131,10 @@ export function IncidentDetailPage() {
 
   // Approval decision mutation
   const approvalMutation = useMutation({
-    mutationFn: (params: { approvalId: string; decision: 'approved' | 'rejected'; reason?: string }) =>
+    mutationFn: (params: { approvalId: string; decision: 'approved' | 'rejected'; decisionNotes?: string }) =>
       apiClient.decideDriftApproval(params.approvalId, {
         decision: params.decision,
-        reason: params.reason,
+        decisionNotes: params.decisionNotes,
       }),
     onSuccess: () => {
       toast.success('Approval decision recorded');
@@ -172,7 +171,7 @@ export function IncidentDetailPage() {
     approvalMutation.mutate({
       approvalId: approvalDialog.approval.id,
       decision: approvalDialog.decision,
-      reason: approvalReason || undefined,
+      decisionNotes: approvalReason || undefined,
     });
   };
 
@@ -527,8 +526,8 @@ export function IncidentDetailPage() {
                               {approval.created_at &&
                                 ` ${formatDistanceToNow(new Date(approval.created_at), { addSuffix: true })}`}
                             </p>
-                            {approval.reason && (
-                              <p className="text-sm mt-2">{approval.reason}</p>
+                            {approval.request_reason && (
+                              <p className="text-sm mt-2">{approval.request_reason}</p>
                             )}
                           </div>
                           {approval.status === 'pending' && (

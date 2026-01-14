@@ -1,13 +1,11 @@
-import { useState, useEffect } from 'react';
+import { useEffect } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
 import { formatDistanceToNow } from 'date-fns';
 import {
   AlertTriangle,
   Clock,
-  CheckCircle2,
   Timer,
-  TrendingUp,
   BarChart3,
 } from 'lucide-react';
 import { apiClient } from '@/lib/api-client';
@@ -45,11 +43,11 @@ export function DriftDashboardPage() {
   const hasDriftDashboard = canUseFeature('drift_ttl_sla');
 
   // Fetch all incidents
-  const { data: incidentsData, isLoading } = useQuery({
+  const { data: incidentsData } = useQuery({
     queryKey: ['incidents', 'all'],
     queryFn: async () => {
       const response = await apiClient.getIncidents({
-        limit: 100,
+        pageSize: 100,
       });
       return response.data;
     },
@@ -81,8 +79,8 @@ export function DriftDashboardPage() {
   // Calculate expired incidents
   const now = new Date();
   const expiredIncidents = incidents.filter((incident: DriftIncident) => {
-    if (!incident.ttl_expires_at) return false;
-    return new Date(incident.ttl_expires_at) < now;
+    if (!incident.expires_at) return false;
+    return new Date(incident.expires_at) < now;
   });
 
   // Active incidents (not closed)
@@ -249,8 +247,8 @@ export function DriftDashboardPage() {
               </TableHeader>
               <TableBody>
                 {expiredIncidents.map((incident: DriftIncident) => {
-                  const expiredAt = incident.ttl_expires_at
-                    ? formatDistanceToNow(new Date(incident.ttl_expires_at), {
+                  const expiredAt = incident.expires_at
+                    ? formatDistanceToNow(new Date(incident.expires_at), {
                         addSuffix: true,
                       })
                     : 'Unknown';
@@ -328,9 +326,9 @@ export function DriftDashboardPage() {
               </TableHeader>
               <TableBody>
                 {activeIncidents.map((incident: DriftIncident) => {
-                  const expiresIn = getTimeUntilExpiration(incident.ttl_expires_at);
-                  const isExpired = incident.ttl_expires_at
-                    ? new Date(incident.ttl_expires_at) < now
+                  const expiresIn = getTimeUntilExpiration(incident.expires_at);
+                  const isExpired = incident.expires_at
+                    ? new Date(incident.expires_at) < now
                     : false;
 
                   return (

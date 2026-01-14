@@ -35,7 +35,7 @@ export function AdminDiagnostics({ className }: AdminDiagnosticsProps) {
   const { user } = useAuth();
   const { status, healthStatus, isChecking, checkHealth } = useHealthCheck();
 
-  const isAdmin = user?.role === 'admin' || user?.role === 'super_admin';
+  const isAdmin = user?.role === 'admin' || user?.isPlatformAdmin;
 
   // Don't render for non-admin users
   if (!isAdmin) {
@@ -172,7 +172,7 @@ export function DiagnosticsInline() {
   const { user } = useAuth();
   const { status, healthStatus } = useHealthCheck();
 
-  const isAdmin = user?.role === 'admin' || user?.role === 'super_admin';
+  const isAdmin = user?.role === 'admin' || user?.isPlatformAdmin;
 
   if (!isAdmin || status === 'healthy') {
     return null;

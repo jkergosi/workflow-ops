@@ -1,26 +1,30 @@
 /**
  * Lifecycle stage definitions for Workflow Ops frontend.
- * 
+ *
  * These stages represent the journey of a workflow through the platform.
  * Note: AUTHORING is not included as it happens in n8n, outside Workflow Ops.
  */
-export enum LifecycleStage {
-  INGEST = 'ingest',
-  SNAPSHOT = 'snapshot',
-  PROMOTION = 'promotion',
-  DRIFT = 'drift',
-  RECONCILIATION = 'reconciliation',
-  OBSERVABILITY = 'observability',
-}
+export const LifecycleStage = {
+  INGEST: 'ingest',
+  SNAPSHOT: 'snapshot',
+  PROMOTION: 'promotion',
+  DRIFT: 'drift',
+  RECONCILIATION: 'reconciliation',
+  OBSERVABILITY: 'observability',
+} as const;
+
+export type LifecycleStage = typeof LifecycleStage[keyof typeof LifecycleStage];
 
 /**
  * Drift mode definitions for frontend.
  */
-export enum DriftMode {
-  PASSIVE = 'passive',
-  MANAGED = 'managed',
-  ENFORCED = 'enforced',
-}
+export const DriftMode = {
+  PASSIVE: 'passive',
+  MANAGED: 'managed',
+  ENFORCED: 'enforced',
+} as const;
+
+export type DriftMode = typeof DriftMode[keyof typeof DriftMode];
 
 /**
  * Plan-based drift mode mapping.

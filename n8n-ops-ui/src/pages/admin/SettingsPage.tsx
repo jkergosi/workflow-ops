@@ -8,6 +8,7 @@ import { Badge } from '@/components/ui/badge';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Switch } from '@/components/ui/switch';
 import { apiClient } from '@/lib/api-client';
+import { useAuth } from '@/lib/auth';
 import {
   Settings,
   Database,
@@ -2644,17 +2645,21 @@ function PlanFeaturesManagement() {
 // Workflow Policy Matrix Management Component
 function WorkflowPolicyMatrixManagement() {
   const queryClient = useQueryClient();
+  const { user } = useAuth();
+  const isPlatformAdmin = !!(user as any)?.isPlatformAdmin;
   const [editingPolicy, setEditingPolicy] = useState<string | null>(null);
   const [editingOverride, setEditingOverride] = useState<{ plan: string; env: string } | null>(null);
 
   const { data: matrixData } = useQuery({
     queryKey: ['workflow-policy-matrix'],
     queryFn: () => apiClient.getWorkflowPolicyMatrix(),
+    enabled: isPlatformAdmin,
   });
 
   const { data: overridesData } = useQuery({
     queryKey: ['plan-policy-overrides'],
     queryFn: () => apiClient.getPlanPolicyOverrides(),
+    enabled: isPlatformAdmin,
   });
 
   const matrix = matrixData?.data || [];

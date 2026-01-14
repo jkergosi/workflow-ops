@@ -3,7 +3,6 @@ import { useQuery } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
-import { Button } from '@/components/ui/button';
 import {
   Table,
   TableBody,
@@ -23,10 +22,6 @@ import {
   Key,
   Shield,
   UserCheck,
-  Building2,
-  Settings,
-  HelpCircle,
-  History,
   TrendingUp,
   AlertCircle,
 } from 'lucide-react';
@@ -459,7 +454,7 @@ export function PlatformDashboardPage() {
                   <AlertCircle className="h-4 w-4 text-yellow-500" />
                   <span className="text-sm">Entitlement Exceptions</span>
                 </div>
-                <Badge variant="secondary">{data.revenue.entitlement_exceptions}</Badge>
+                <Badge variant="secondary">{data?.revenue?.entitlement_exceptions}</Badge>
               </Link>
             )}
           </CardContent>

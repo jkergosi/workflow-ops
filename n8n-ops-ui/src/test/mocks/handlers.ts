@@ -234,7 +234,7 @@ export const handlers = [
   }),
 
   http.post(`${API_BASE}/environments`, async ({ request }) => {
-    const body = await request.json();
+    const body = await request.json() as Record<string, unknown>;
     const newEnv = {
       id: `env-${Date.now()}`,
       tenant_id: 'tenant-1',
@@ -253,7 +253,7 @@ export const handlers = [
     return HttpResponse.json({ success: true, message: 'Connection successful' });
   }),
 
-  http.post(`${API_BASE}/environments/:id/sync`, ({ params }) => {
+  http.post(`${API_BASE}/environments/:id/sync`, () => {
     return HttpResponse.json({
       success: true,
       message: 'Sync completed',
@@ -305,7 +305,7 @@ export const handlers = [
     if (!workflow) {
       return new HttpResponse(null, { status: 404 });
     }
-    const body = await request.json();
+    const body = await request.json() as Record<string, unknown>;
     return HttpResponse.json({ ...workflow, ...body, updated_at: new Date().toISOString() });
   }),
 
@@ -322,8 +322,8 @@ export const handlers = [
     if (!workflow) {
       return new HttpResponse(null, { status: 404 });
     }
-    const body = await request.json();
-    return HttpResponse.json({ ...workflow, tags: body.tags || body });
+    const body = await request.json() as { tags?: unknown[] } | unknown[];
+    return HttpResponse.json({ ...workflow, tags: (body as { tags?: unknown[] }).tags || body });
   }),
 
   http.post(`${API_BASE}/workflows/sync-to-github`, () => {
@@ -390,7 +390,12 @@ export const handlers = [
   }),
 
   http.post(`${API_BASE}/promotions/initiate`, async ({ request }) => {
-    const body = await request.json();
+    const body = await request.json() as {
+      pipeline_id?: string;
+      source_environment_id?: string;
+      target_environment_id?: string;
+      workflow_ids?: string[];
+    };
     return HttpResponse.json({
       id: `promo-${Date.now()}`,
       status: 'pending_approval',
@@ -430,7 +435,7 @@ export const handlers = [
   }),
 
   http.post(`${API_BASE}/pipelines`, async ({ request }) => {
-    const body = await request.json();
+    const body = await request.json() as Record<string, unknown>;
     const newPipeline = {
       id: `pipeline-${Date.now()}`,
       tenant_id: 'tenant-1',
@@ -681,7 +686,7 @@ export const handlers = [
 
   // User profile update
   http.patch(`${API_BASE}/auth/me`, async ({ request }) => {
-    const body = await request.json();
+    const body = await request.json() as Record<string, unknown>;
     return HttpResponse.json({
       id: 'user-1',
       ...body,
@@ -889,7 +894,7 @@ export const handlers = [
   }),
 
   http.post(`${API_BASE}/notifications/channels`, async ({ request }) => {
-    const body = await request.json();
+    const body = await request.json() as Record<string, unknown>;
     return HttpResponse.json({
       id: `channel-${Date.now()}`,
       ...body,
@@ -898,7 +903,7 @@ export const handlers = [
   }),
 
   http.post(`${API_BASE}/notifications/rules`, async ({ request }) => {
-    const body = await request.json();
+    const body = await request.json() as Record<string, unknown>;
     return HttpResponse.json({
       id: `rule-${Date.now()}`,
       ...body,
@@ -912,7 +917,7 @@ export const handlers = [
     if (!pipeline) {
       return new HttpResponse(null, { status: 404 });
     }
-    const body = await request.json();
+    const body = await request.json() as Record<string, unknown>;
     return HttpResponse.json({ ...pipeline, ...body, updated_at: new Date().toISOString() });
   }),
 
@@ -922,7 +927,7 @@ export const handlers = [
     if (!env) {
       return new HttpResponse(null, { status: 404 });
     }
-    const body = await request.json();
+    const body = await request.json() as Record<string, unknown>;
     return HttpResponse.json({ ...env, ...body, updated_at: new Date().toISOString() });
   }),
 
@@ -1001,7 +1006,7 @@ export const handlers = [
   }),
 
   http.post(`${API_BASE}/admin/tenants`, async ({ request }) => {
-    const body = await request.json();
+    const body = await request.json() as Record<string, unknown>;
     return HttpResponse.json({
       id: `tenant-${Date.now()}`,
       ...body,
@@ -1011,7 +1016,7 @@ export const handlers = [
   }),
 
   http.patch(`${API_BASE}/admin/tenants/:id`, async ({ params, request }) => {
-    const body = await request.json();
+    const body = await request.json() as Record<string, unknown>;
     return HttpResponse.json({
       id: params.id,
       ...body,
@@ -1461,7 +1466,7 @@ export const handlers = [
   }),
 
   http.post(`${API_BASE}/admin/credentials/logical`, async ({ request }) => {
-    const body = await request.json();
+    const body = await request.json() as Record<string, unknown>;
     return HttpResponse.json({
       id: `logical-${Date.now()}`,
       ...body,
@@ -1470,7 +1475,7 @@ export const handlers = [
   }),
 
   http.patch(`${API_BASE}/admin/credentials/logical/:id`, async ({ params, request }) => {
-    const body = await request.json();
+    const body = await request.json() as Record<string, unknown>;
     return HttpResponse.json({
       id: params.id,
       ...body,
@@ -1490,7 +1495,7 @@ export const handlers = [
   }),
 
   http.post(`${API_BASE}/admin/credentials/mappings`, async ({ request }) => {
-    const body = await request.json();
+    const body = await request.json() as Record<string, unknown>;
     return HttpResponse.json({
       id: `mapping-${Date.now()}`,
       ...body,
@@ -1499,7 +1504,7 @@ export const handlers = [
   }),
 
   http.patch(`${API_BASE}/admin/credentials/mappings/:id`, async ({ params, request }) => {
-    const body = await request.json();
+    const body = await request.json() as Record<string, unknown>;
     return HttpResponse.json({
       id: params.id,
       ...body,
@@ -1512,7 +1517,7 @@ export const handlers = [
   }),
 
   // Credential preflight check endpoint
-  http.post(`${API_BASE}/admin/credentials/preflight`, async ({ request }) => {
+  http.post(`${API_BASE}/admin/credentials/preflight`, async () => {
     return HttpResponse.json({
       valid: true,
       blocking_issues: [],

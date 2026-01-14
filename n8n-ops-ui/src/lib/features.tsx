@@ -1,6 +1,6 @@
 // @ts-nocheck
 // TODO: Fix TypeScript errors in this file
-import { createContext, useContext, useState, useEffect, type ReactNode } from 'react';
+import React, { createContext, useContext, useState, useEffect, type ReactNode } from 'react';
 import { useAuth } from '@/lib/auth';
 import { apiClient } from '@/lib/api-client';
 
@@ -255,7 +255,15 @@ interface FeaturesContextValue {
   providerEntitlements: ProviderEntitlements | null;
 }
 
-const FeaturesContext = createContext<FeaturesContextValue | null>(null);
+// Keep a single context instance across Vite HMR updates.
+// Without this, edits to this file can produce multiple live module copies (different `?t=`),
+// causing providers/consumers to reference different contexts and crash at runtime.
+const FEATURES_CONTEXT_KEY = '__n8n_ops_features_context__';
+const FeaturesContext: React.Context<FeaturesContextValue | null> =
+  (globalThis as any)[FEATURES_CONTEXT_KEY] ?? createContext<FeaturesContextValue | null>(null);
+if (import.meta.env.DEV) {
+  (globalThis as any)[FEATURES_CONTEXT_KEY] = FeaturesContext;
+}
 
 interface FeaturesProviderProps {
   children: ReactNode;

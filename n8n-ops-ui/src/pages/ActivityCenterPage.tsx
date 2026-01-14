@@ -3,7 +3,7 @@
  */
 
 import { useEffect, useState, useRef, useMemo } from 'react';
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { useQuery, useMutation, useQueryClient, keepPreviousData } from '@tanstack/react-query';
 import { useSearchParams, useNavigate, Link } from 'react-router-dom';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
@@ -33,6 +33,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog';
+import { Label } from '@/components/ui/label';
 import { apiClient } from '@/lib/api-client';
 import { useBackgroundJobsSSE } from '@/lib/use-background-jobs-sse';
 import { Activity, Loader2, CheckCircle2, XCircle, Clock, RefreshCw, Server, AlertTriangle, Ban } from 'lucide-react';
@@ -58,29 +59,36 @@ interface Job {
   id: string;
   job_type: string;
   status: 'pending' | 'running' | 'completed' | 'failed' | 'cancelled';
-  resource_type: string;
-  resource_id: string;
-  progress: {
+  resource_type?: string;
+  resource_id?: string;
+  progress?: {
     current: number;
     total: number;
     percentage: number;
     message: string;
+    current_step?: string;
   };
   created_at: string;
   started_at?: string;
   completed_at?: string;
   error_message?: string;
+  result?: unknown;
+  error_details?: unknown;
 }
 
 export function ActivityCenterPage() {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const { toast } = useToast();
-  const [searchParams, setSearchParams] = useSearchParams();
+  const [searchParams] = useSearchParams();
   const [jobTypeFilter, setJobTypeFilter] = useState<string>('all');
   const [statusFilter, setStatusFilter] = useState<string>('all');
   const [jobToCancel, setJobToCancel] = useState<Job | null>(null);
   const selectedJobIdRef = useRef<string | null>(null);
+
+  // Pagination state
+  const [currentPage, setCurrentPage] = useState(1);
+  const [pageSize, setPageSize] = useState(25);
 
   // Get job_id from URL query param for pre-selection
   const jobIdFromUrl = searchParams.get('jobId') || searchParams.get('job_id');
@@ -130,45 +138,44 @@ export function ActivityCenterPage() {
     return environments.find((e) => e.id === envId)?.name || envId;
   };
 
-  // Fetch all background jobs
-  const { data: jobsData, isLoading, refetch, error } = useQuery({
-    queryKey: ['all-background-jobs', jobTypeFilter, statusFilter],
+  // Fetch all background jobs with server-side pagination
+  const { data: jobsResponse, isLoading, isFetching, refetch, error } = useQuery({
+    queryKey: ['all-background-jobs', jobTypeFilter, statusFilter, currentPage, pageSize],
     queryFn: async () => {
-      try {
-        const params: any = {
-          limit: 50,
-        };
-        
-        if (jobTypeFilter !== 'all') {
-          params.job_type = jobTypeFilter;
-        }
-        
-        if (statusFilter !== 'all') {
-          params.status = statusFilter;
-        }
-        
-        const response = await apiClient.getAllBackgroundJobs(params);
-        console.log('[ActivityCenter] Query params:', params);
-        console.log('[ActivityCenter] Full API response:', JSON.stringify(response, null, 2));
-        console.log('[ActivityCenter] response.data:', response.data);
-        console.log('[ActivityCenter] response.data type:', typeof response.data);
-        console.log('[ActivityCenter] response.data is array:', Array.isArray(response.data));
-        console.log('[ActivityCenter] Jobs array:', response.data?.jobs);
-        console.log('[ActivityCenter] Total count:', response.data?.total);
-        
-        // Handle both response formats (array or object)
-        if (Array.isArray(response.data)) {
-          console.warn('[ActivityCenter] WARNING: Response is an array, not an object with jobs/total');
-          return response.data;
-        }
-        return response.data?.jobs || [];
-      } catch (err) {
-        console.error('[ActivityCenter] Error fetching jobs:', err);
-        throw err;
+      const params: {
+        page?: number;
+        pageSize?: number;
+        jobType?: string;
+        status?: string;
+      } = {
+        page: currentPage,
+        pageSize: pageSize,
+      };
+
+      if (jobTypeFilter !== 'all') {
+        params.jobType = jobTypeFilter;
       }
+
+      if (statusFilter !== 'all') {
+        params.status = statusFilter;
+      }
+
+      const response = await apiClient.getAllBackgroundJobs(params);
+      return response.data;
     },
+    placeholderData: keepPreviousData,
     refetchInterval: 5000, // Poll every 5 seconds
   });
+
+  // Extract pagination data from response
+  const jobsData: Job[] = (jobsResponse as { items?: Job[] })?.items || [];
+  const totalJobs = (jobsResponse as { total?: number })?.total || 0;
+  const totalPages = (jobsResponse as { totalPages?: number })?.totalPages || 1;
+
+  // Reset to page 1 when filters change
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [jobTypeFilter, statusFilter]);
 
   // If job_id is in URL but not in the list, fetch it individually
   const { data: selectedJobData } = useQuery({
@@ -201,20 +208,15 @@ export function ActivityCenterPage() {
   });
 
   // Merge selected job into jobs list if it's not already there
-  const allJobs = jobsData || [];
-  const jobs = useMemo(() => {
-    console.log('[ActivityCenter] Processing jobs - allJobs:', allJobs.length, 'selectedJobData:', !!selectedJobData, 'jobIdFromUrl:', jobIdFromUrl);
+  const jobs: Job[] = useMemo(() => {
     if (selectedJobData && jobIdFromUrl) {
-      const exists = allJobs.find((j) => j.id === jobIdFromUrl);
-      console.log('[ActivityCenter] Selected job exists in list:', !!exists);
+      const exists = jobsData.find((j: Job) => j.id === jobIdFromUrl);
       if (!exists) {
-        console.log('[ActivityCenter] Adding selected job to list');
-        return [selectedJobData, ...allJobs];
+        return [selectedJobData as Job, ...jobsData];
       }
     }
-    console.log('[ActivityCenter] Returning jobs list with', allJobs.length, 'items');
-    return allJobs;
-  }, [allJobs, selectedJobData, jobIdFromUrl]);
+    return jobsData;
+  }, [jobsData, selectedJobData, jobIdFromUrl]);
 
   // Scroll to selected job when it loads
   useEffect(() => {
@@ -393,136 +395,231 @@ export function ActivityCenterPage() {
               </p>
             </div>
           ) : (
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead>Type</TableHead>
-                  <TableHead>Resource</TableHead>
-                  <TableHead>Status</TableHead>
-                  <TableHead>Progress</TableHead>
-                  <TableHead>Duration</TableHead>
-                  <TableHead>Started</TableHead>
-                  <TableHead>Error</TableHead>
-                  <TableHead className="text-right">Actions</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {jobs.map((job) => {
-                  const canCancel = job.status === 'pending' || job.status === 'running';
-                  return (
-                  <TableRow
-                    key={job.id}
-                    id={`job-${job.id}`}
-                    className={`${job.id === jobIdFromUrl ? 'bg-blue-50 dark:bg-blue-950/30' : ''}`}
-                  >
-                    <TableCell className="font-medium">
-                      {getJobTypeLabel(job.job_type)}
-                    </TableCell>
-                    <TableCell>
-                      {job.resource_type === 'environment' ? (
-                        <Link
-                          to={`/environments/${job.resource_id}`}
-                          className="flex items-center gap-2 text-sm text-primary hover:underline"
-                          onClick={(e) => e.stopPropagation()}
-                        >
-                          <Server className="h-4 w-4 text-muted-foreground" />
-                          {getEnvironmentName(job.resource_id)}
-                        </Link>
-                      ) : job.resource_type === 'promotion' ? (
-                        <Link
-                          to={`/deployments/${job.resource_id}`}
-                          className="text-sm text-primary hover:underline flex items-center gap-1"
-                          onClick={(e) => e.stopPropagation()}
-                        >
-                          <Activity className="h-4 w-4 text-muted-foreground" />
-                          Deployment {job.resource_id.slice(0, 8)}...
-                        </Link>
-                      ) : (
-                        <div className="text-sm text-muted-foreground">
-                          {job.resource_type || '—'}
-                        </div>
-                      )}
-                    </TableCell>
-                    <TableCell>
-                      <Badge variant={getStatusVariant(job.status)} className="flex items-center gap-1 w-fit">
-                        {getStatusIcon(job.status)}
-                        {job.status}
-                      </Badge>
-                    </TableCell>
-                    <TableCell>
-                      {job.progress ? (
-                        <div className="space-y-1">
-                          {job.progress.current_step ? (
-                            <div className="text-sm font-medium">
-                              {getPhaseLabelForJob(job.progress.current_step)}
+            <>
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>Type</TableHead>
+                    <TableHead>Resource</TableHead>
+                    <TableHead>Status</TableHead>
+                    <TableHead>Progress</TableHead>
+                    <TableHead>Duration</TableHead>
+                    <TableHead>Started</TableHead>
+                    <TableHead>Error</TableHead>
+                    <TableHead className="text-right">Actions</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {jobs.map((job) => {
+                    const canCancel = job.status === 'pending' || job.status === 'running';
+                    return (
+                    <TableRow
+                      key={job.id}
+                      id={`job-${job.id}`}
+                      className={`${job.id === jobIdFromUrl ? 'bg-blue-50 dark:bg-blue-950/30' : ''}`}
+                    >
+                      <TableCell className="font-medium">
+                        {getJobTypeLabel(job.job_type)}
+                      </TableCell>
+                      <TableCell>
+                        {job.resource_type === 'environment' && job.resource_id ? (
+                          <Link
+                            to={`/environments/${job.resource_id}`}
+                            className="flex items-center gap-2 text-sm text-primary hover:underline"
+                            onClick={(e) => e.stopPropagation()}
+                          >
+                            <Server className="h-4 w-4 text-muted-foreground" />
+                            {getEnvironmentName(job.resource_id)}
+                          </Link>
+                        ) : job.resource_type === 'promotion' && job.resource_id ? (
+                          <Link
+                            to={`/deployments/${job.resource_id}`}
+                            className="text-sm text-primary hover:underline flex items-center gap-1"
+                            onClick={(e) => e.stopPropagation()}
+                          >
+                            <Activity className="h-4 w-4 text-muted-foreground" />
+                            Deployment {job.resource_id.slice(0, 8)}...
+                          </Link>
+                        ) : (
+                          <div className="text-sm text-muted-foreground">
+                            {job.resource_type || '—'}
+                          </div>
+                        )}
+                      </TableCell>
+                      <TableCell>
+                        <Badge variant={getStatusVariant(job.status)} className="flex items-center gap-1 w-fit">
+                          {getStatusIcon(job.status)}
+                          {job.status}
+                        </Badge>
+                      </TableCell>
+                      <TableCell>
+                        {job.status === 'completed' ? (
+                          <div className="space-y-1">
+                            <div className="text-sm font-medium text-green-600 dark:text-green-400">
+                              Completed
                             </div>
-                          ) : null}
-                          {job.progress.current !== undefined && job.progress.total !== undefined && job.progress.total > 0 ? (
-                            <div className="text-sm">
-                              {job.progress.current} / {job.progress.total} ({job.progress.percentage || Math.round((job.progress.current / job.progress.total) * 100)}%)
+                            {job.progress?.current !== undefined && job.progress?.total !== undefined && job.progress.total > 0 && (
+                              <div className="text-xs text-muted-foreground">
+                                {job.progress.total} workflow{job.progress.total !== 1 ? 's' : ''} processed
+                              </div>
+                            )}
+                          </div>
+                        ) : job.status === 'failed' ? (
+                          <div className="space-y-1">
+                            <div className="text-sm font-medium text-red-600 dark:text-red-400">
+                              Failed
                             </div>
-                          ) : null}
-                          {job.progress.message && !job.progress.message.includes('batch') && !job.progress.message.includes('Completed batch') && (
-                            <div className="text-xs text-muted-foreground">
-                              {job.progress.message}
-                            </div>
-                          )}
-                        </div>
-                      ) : (
-                        '—'
-                      )}
-                    </TableCell>
-                    <TableCell className="text-sm text-muted-foreground">
-                      {formatDuration(job.started_at, job.completed_at)}
-                    </TableCell>
-                    <TableCell className="text-sm text-muted-foreground">
-                      {formatRelativeTime(new Date(job.created_at))}
-                    </TableCell>
-                    <TableCell>
-                      {job.error_message ? (
-                        <div className="flex items-center gap-1 text-red-600 dark:text-red-400">
-                          <AlertTriangle className="h-4 w-4" />
-                          <span className="text-xs truncate max-w-[200px]" title={job.error_message}>
-                            {job.error_message}
-                          </span>
-                        </div>
-                      ) : (
-                        '—'
-                      )}
-                    </TableCell>
-                    <TableCell className="text-right">
-                      <div className="flex justify-end gap-2">
-                        <Button
-                          size="sm"
-                          variant="ghost"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            navigate(`/activity/${job.id}`);
-                          }}
-                        >
-                          View
-                        </Button>
-                        {canCancel && (
+                            {job.progress?.current_step && (
+                              <div className="text-xs text-muted-foreground">
+                                During: {getPhaseLabelForJob(job.progress.current_step)}
+                              </div>
+                            )}
+                          </div>
+                        ) : job.progress ? (
+                          <div className="space-y-1">
+                            {job.progress.current_step ? (
+                              <div className="text-sm font-medium">
+                                {getPhaseLabelForJob(job.progress.current_step)}
+                              </div>
+                            ) : null}
+                            {job.progress.current !== undefined && job.progress.total !== undefined && job.progress.total > 0 ? (
+                              <div className="text-sm">
+                                {job.progress.current} / {job.progress.total} ({job.progress.percentage || Math.round((job.progress.current / job.progress.total) * 100)}%)
+                              </div>
+                            ) : null}
+                            {job.progress.message && !job.progress.message.includes('batch') && !job.progress.message.includes('Completed batch') && (
+                              <div className="text-xs text-muted-foreground">
+                                {job.progress.message}
+                              </div>
+                            )}
+                          </div>
+                        ) : (
+                          '—'
+                        )}
+                      </TableCell>
+                      <TableCell className="text-sm text-muted-foreground">
+                        {formatDuration(job.started_at, job.completed_at)}
+                      </TableCell>
+                      <TableCell className="text-sm text-muted-foreground">
+                        {formatRelativeTime(new Date(job.created_at))}
+                      </TableCell>
+                      <TableCell>
+                        {job.error_message ? (
+                          <div className="flex items-center gap-1 text-red-600 dark:text-red-400">
+                            <AlertTriangle className="h-4 w-4" />
+                            <span className="text-xs truncate max-w-[200px]" title={job.error_message}>
+                              {job.error_message}
+                            </span>
+                          </div>
+                        ) : (
+                          '—'
+                        )}
+                      </TableCell>
+                      <TableCell className="text-right">
+                        <div className="flex justify-end gap-2">
                           <Button
                             size="sm"
-                            variant="outline"
+                            variant="ghost"
                             onClick={(e) => {
                               e.stopPropagation();
-                              setJobToCancel(job);
+                              navigate(`/activity/${job.id}`);
                             }}
-                            disabled={cancelJobMutation.isPending}
                           >
-                            <Ban className="h-4 w-4 mr-1" />
-                            Cancel
+                            View
                           </Button>
-                        )}
-                      </div>
-                    </TableCell>
-                  </TableRow>
-                  );
-                })}
-              </TableBody>
-            </Table>
+                          {canCancel && (
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setJobToCancel(job);
+                              }}
+                              disabled={cancelJobMutation.isPending}
+                            >
+                              <Ban className="h-4 w-4 mr-1" />
+                              Cancel
+                            </Button>
+                          )}
+                        </div>
+                      </TableCell>
+                    </TableRow>
+                    );
+                  })}
+                </TableBody>
+              </Table>
+
+              {/* Pagination Controls */}
+              <div className="mt-4 flex items-center justify-between border-t pt-4">
+                <div className="flex items-center gap-4">
+                  <div className="flex items-center gap-2">
+                    <Label htmlFor="pageSize" className="text-sm text-muted-foreground">
+                      Rows per page:
+                    </Label>
+                    <select
+                      id="pageSize"
+                      value={pageSize}
+                      onChange={(e) => {
+                        setPageSize(Number(e.target.value));
+                        setCurrentPage(1);
+                      }}
+                      className="h-8 w-20 rounded-md border border-input bg-background text-foreground px-2 py-1 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                    >
+                      <option value={10} className="bg-background text-foreground">10</option>
+                      <option value={25} className="bg-background text-foreground">25</option>
+                      <option value={50} className="bg-background text-foreground">50</option>
+                      <option value={100} className="bg-background text-foreground">100</option>
+                    </select>
+                  </div>
+                  <div className="text-sm text-muted-foreground">
+                    Showing {totalJobs > 0 ? ((currentPage - 1) * pageSize) + 1 : 0} to {Math.min(currentPage * pageSize, totalJobs)} of {totalJobs} jobs
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-2">
+                  {isFetching && (
+                    <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
+                  )}
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setCurrentPage(1)}
+                    disabled={currentPage === 1 || isFetching}
+                  >
+                    First
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setCurrentPage(currentPage - 1)}
+                    disabled={currentPage === 1 || isFetching}
+                  >
+                    Previous
+                  </Button>
+                  <div className="flex items-center gap-1">
+                    <span className="text-sm">
+                      Page {currentPage} of {totalPages}
+                    </span>
+                  </div>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setCurrentPage(currentPage + 1)}
+                    disabled={currentPage >= totalPages || isFetching}
+                  >
+                    Next
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setCurrentPage(totalPages)}
+                    disabled={currentPage >= totalPages || isFetching}
+                  >
+                    Last
+                  </Button>
+                </div>
+              </div>
+            </>
           )}
         </CardContent>
       </Card>

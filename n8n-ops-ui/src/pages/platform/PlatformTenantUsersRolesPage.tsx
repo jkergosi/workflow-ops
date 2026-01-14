@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { useParams, useNavigate, Link } from 'react-router-dom';
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { useQuery, useMutation } from '@tanstack/react-query';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -75,7 +75,6 @@ export function PlatformTenantUsersRolesPage() {
 
   const { tenantId } = useParams<{ tenantId: string }>();
   const navigate = useNavigate();
-  const queryClient = useQueryClient();
 
   const [searchQuery, setSearchQuery] = useState('');
   const [roleFilter, setRoleFilter] = useState<string>('all');
@@ -122,7 +121,7 @@ export function PlatformTenantUsersRolesPage() {
   // Mutations
   const impersonateMutation = useMutation({
     mutationFn: (userId: string) => apiClient.startPlatformImpersonation(userId),
-    onSuccess: async (data) => {
+    onSuccess: async (_data) => {
       toast.success('Impersonation started');
       setImpersonateDialogOpen(false);
       window.location.reload();

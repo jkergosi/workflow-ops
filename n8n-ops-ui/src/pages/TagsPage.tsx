@@ -42,7 +42,7 @@ export function TagsPage() {
   const [sortField, setSortField] = useState<SortField>('name');
   const [sortDirection, setSortDirection] = useState<SortDirection>('asc');
   const [currentPage, setCurrentPage] = useState(1);
-  const [pageSize, setPageSize] = useState(50);
+  const [pageSize, setPageSize] = useState(25);
   const [isSyncing, setIsSyncing] = useState(false);
 
   // Fetch environments to get environment ID

@@ -40,11 +40,11 @@ class ResizeObserverMock {
   observe = vi.fn();
   unobserve = vi.fn();
   disconnect = vi.fn();
-  constructor(callback: ResizeObserverCallback) {
+  constructor(_callback: ResizeObserverCallback) {
     // Store callback if needed
   }
 }
-global.ResizeObserver = ResizeObserverMock as unknown as typeof ResizeObserver;
+globalThis.ResizeObserver = ResizeObserverMock as unknown as typeof ResizeObserver;
 
 // Mock IntersectionObserver as a proper class
 class IntersectionObserverMock {
@@ -55,11 +55,11 @@ class IntersectionObserverMock {
   rootMargin = '';
   thresholds = [];
   takeRecords = vi.fn().mockReturnValue([]);
-  constructor(callback: IntersectionObserverCallback, options?: IntersectionObserverInit) {
+  constructor(_callback: IntersectionObserverCallback, _options?: IntersectionObserverInit) {
     // Store callback if needed
   }
 }
-global.IntersectionObserver = IntersectionObserverMock as unknown as typeof IntersectionObserver;
+globalThis.IntersectionObserver = IntersectionObserverMock as unknown as typeof IntersectionObserver;
 
 // Mock localStorage
 const localStorageMock = {

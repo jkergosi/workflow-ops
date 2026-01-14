@@ -1,4 +1,4 @@
-from fastapi import APIRouter, HTTPException, status, Depends
+from fastapi import APIRouter, HTTPException, status, Depends, Query
 from typing import List
 import secrets
 import logging
@@ -9,6 +9,7 @@ from app.schemas.team import (
     TeamMemberResponse,
     TeamLimitsResponse
 )
+from app.schemas.pagination import PaginatedResponse
 from app.services.database import db_service
 from app.core.entitlements_gate import require_entitlement
 from app.services.email_service import email_service
@@ -30,18 +31,41 @@ def get_tenant_id(user_info: dict) -> str:
     return tenant_id
 
 
-@router.get("/", response_model=List[TeamMemberResponse])
+@router.get("/", response_model=PaginatedResponse[TeamMemberResponse])
 async def get_team_members(
+    page: int = Query(1, ge=1, description="Page number"),
+    page_size: int = Query(50, ge=1, le=100, description="Items per page"),
     user_info: dict = Depends(get_current_user),
     _: dict = Depends(require_entitlement("rbac_basic"))
 ):
-    """Get all team members for the current tenant"""
+    """Get all team members for the current tenant with pagination"""
     try:
-        response = db_service.client.table("users").select("*").eq(
-            "tenant_id", get_tenant_id(user_info)
-        ).order("created_at", desc=False).execute()
+        tenant_id = get_tenant_id(user_info)
 
-        return response.data
+        # Get total count
+        count_response = db_service.client.table("users").select("id", count="exact").eq(
+            "tenant_id", tenant_id
+        ).execute()
+        total = count_response.count if count_response.count is not None else 0
+
+        # Get paginated data
+        from_index = (page - 1) * page_size
+        to_index = from_index + page_size - 1
+        response = db_service.client.table("users").select("*").eq(
+            "tenant_id", tenant_id
+        ).order("created_at", desc=False).range(from_index, to_index).execute()
+
+        total_pages = (total + page_size - 1) // page_size if total > 0 else 1
+        has_more = page < total_pages
+
+        return {
+            "items": response.data,
+            "total": total,
+            "page": page,
+            "page_size": page_size,
+            "total_pages": total_pages,
+            "hasMore": has_more,
+        }
 
     except Exception as e:
         raise HTTPException(

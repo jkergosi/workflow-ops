@@ -6,7 +6,7 @@ import { Progress } from '@/components/ui/progress';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Alert, AlertDescription } from '@/components/ui/alert';
-import { CheckCircle2, AlertCircle, Loader2, GitBranch, Link2, FileCheck, AlertTriangle } from 'lucide-react';
+import { CheckCircle2, AlertCircle, Loader2, GitBranch, AlertTriangle } from 'lucide-react';
 import { toast } from 'sonner';
 import { useAuth } from '@/lib/auth';
 import { apiClient } from '@/lib/api-client';
@@ -18,7 +18,6 @@ import type {
   MigrationPRRequest,
   MigrationPRResponse,
   OnboardingCompleteCheck,
-  Environment
 } from '@/types';
 
 type OnboardingPhase = 'preflight' | 'inventory' | 'migration-pr' | 'link-resolution' | 'complete';
@@ -29,12 +28,12 @@ export function CanonicalOnboardingPage() {
   const [phase, setPhase] = useState<OnboardingPhase>('preflight');
   const [isLoading, setIsLoading] = useState(false);
   const [preflight, setPreflight] = useState<OnboardingPreflight | null>(null);
-  const [inventoryJobId, setInventoryJobId] = useState<string | null>(null);
+  const [_inventoryJobId, setInventoryJobId] = useState<string | null>(null);
   const [inventoryProgress, setInventoryProgress] = useState(0);
   const [inventoryResults, setInventoryResults] = useState<OnboardingInventoryResults | null>(null);
   const [tenantSlug, setTenantSlug] = useState('');
   const [migrationPR, setMigrationPR] = useState<MigrationPRResponse | null>(null);
-  const [onboardingComplete, setOnboardingComplete] = useState<OnboardingCompleteCheck | null>(null);
+  const [_onboardingComplete, setOnboardingComplete] = useState<OnboardingCompleteCheck | null>(null);
 
   useEffect(() => {
     document.title = 'Canonical Workflow Onboarding - WorkflowOps';

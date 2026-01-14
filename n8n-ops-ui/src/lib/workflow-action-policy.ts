@@ -47,7 +47,7 @@ let POLICY_MATRIX_CACHE: Record<EnvironmentClass, WorkflowActionPolicy> = {
     canHardDelete: false,
     canCreateDriftIncident: true,
     driftIncidentRequired: false,
-    editRequiresConfirmation: true,
+    editRequiresConfirmation: false,
     editRequiresAdmin: false,
   },
   staging: {
@@ -90,17 +90,19 @@ export async function loadWorkflowPolicyMatrix() {
     for (const row of matrixResponse.data || []) {
       const envClass = row.environment_class as EnvironmentClass;
       if (envClass) {
+        // Use existing cache values as fallback to preserve hard-coded defaults
+        const existingPolicy = POLICY_MATRIX_CACHE[envClass];
         POLICY_MATRIX_CACHE[envClass] = {
-          canViewDetails: row.can_view_details ?? true,
-          canOpenInN8N: row.can_open_in_n8n ?? true,
-          canCreateDeployment: row.can_create_deployment ?? true,
-          canEditDirectly: row.can_edit_directly ?? false,
-          canSoftDelete: row.can_soft_delete ?? false,
-          canHardDelete: row.can_hard_delete ?? false,
-          canCreateDriftIncident: row.can_create_drift_incident ?? false,
-          driftIncidentRequired: row.drift_incident_required ?? false,
-          editRequiresConfirmation: row.edit_requires_confirmation ?? true,
-          editRequiresAdmin: row.edit_requires_admin ?? false,
+          canViewDetails: row.can_view_details ?? existingPolicy.canViewDetails,
+          canOpenInN8N: row.can_open_in_n8n ?? existingPolicy.canOpenInN8N,
+          canCreateDeployment: row.can_create_deployment ?? existingPolicy.canCreateDeployment,
+          canEditDirectly: row.can_edit_directly ?? existingPolicy.canEditDirectly,
+          canSoftDelete: row.can_soft_delete ?? existingPolicy.canSoftDelete,
+          canHardDelete: row.can_hard_delete ?? existingPolicy.canHardDelete,
+          canCreateDriftIncident: row.can_create_drift_incident ?? existingPolicy.canCreateDriftIncident,
+          driftIncidentRequired: row.drift_incident_required ?? existingPolicy.driftIncidentRequired,
+          editRequiresConfirmation: row.edit_requires_confirmation ?? existingPolicy.editRequiresConfirmation,
+          editRequiresAdmin: row.edit_requires_admin ?? existingPolicy.editRequiresAdmin,
         };
       }
     }
@@ -213,6 +215,16 @@ export function getWorkflowActionPolicy(
   // Hard delete: Admin-only in dev, never elsewhere
   if (envClass === 'dev' && isAdmin) {
     basePolicy.canHardDelete = true; // Unlocks "Permanently delete" option
+  }
+
+  // =============================================
+  // ENVIRONMENT-SPECIFIC OVERRIDES
+  // =============================================
+
+  // Dev environments: Never require confirmation for direct edits
+  // (dev environments don't have drift since they are the source of truth)
+  if (envClass === 'dev') {
+    basePolicy.editRequiresConfirmation = false;
   }
 
   // =============================================

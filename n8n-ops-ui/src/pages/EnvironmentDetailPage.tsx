@@ -112,7 +112,7 @@ export function EnvironmentDetailPage() {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const { canUseFeature } = useFeatures();
-  const { user } = useAuth();
+  const { user, isAuthenticated } = useAuth();
   const { environmentTypes } = useEnvironmentTypes();
 
   // Dialog states
@@ -133,9 +133,18 @@ export function EnvironmentDetailPage() {
     affectedWorkflows: Array<{
       id: string;
       name: string;
+      active: boolean;
       hasDrift: boolean;
       notInGit: boolean;
       driftType: string;
+      summary?: {
+        nodesAdded: number;
+        nodesRemoved: number;
+        nodesModified: number;
+        connectionsChanged: boolean;
+        settingsChanged: boolean;
+      };
+      differenceCount?: number;
     }>;
   } | null>(null);
 
@@ -212,7 +221,7 @@ export function EnvironmentDetailPage() {
     enabled: !!id,
   });
 
-  const workflows = workflowsData?.data || [];
+  const workflows = workflowsData?.data?.items || [];
 
   // Fetch snapshots for this environment
   const { data: snapshotsData, isLoading: snapshotsLoading } = useQuery({
@@ -221,7 +230,7 @@ export function EnvironmentDetailPage() {
     enabled: !!id,
   });
 
-  const snapshots = snapshotsData?.data || [];
+  const snapshots = snapshotsData?.data?.items || [];
 
   // Fetch credentials for this environment
   const { data: credentialsData, isLoading: credentialsLoading } = useQuery({
@@ -230,9 +239,30 @@ export function EnvironmentDetailPage() {
     enabled: !!id,
   });
 
-  const credentials = credentialsData?.data || [];
+  const credentials = credentialsData?.data?.items || [];
+
+  // Fetch drift details for non-DEV environments when drift is detected
+  const isDriftRelevant = environment?.environmentClass?.toLowerCase() !== 'dev' &&
+    (environment?.driftStatus === 'DRIFT_DETECTED' || environment?.activeDriftIncidentId);
+
+  const { data: driftData, isLoading: driftLoading, error: driftError } = useQuery({
+    queryKey: ['environment-drift', id],
+    queryFn: () => apiClient.getEnvironmentDrift(id!, true), // refresh=true to get full details
+    enabled: !!id && !!environment && isDriftRelevant && isAuthenticated,
+    staleTime: 30000, // 30 seconds
+    retry: false, // Don't retry on auth errors
+  });
+
+  // Update driftSummary when drift data is fetched
+  useEffect(() => {
+    if (driftData?.data?.summary) {
+      setDriftSummary(driftData.data.summary);
+    }
+  }, [driftData]);
 
   // Fetch recent jobs for this environment
+  // Only poll frequently when there are active jobs running
+  const hasActiveJobs = Object.keys(activeJobs).length > 0;
   const { data: jobsData } = useQuery({
     queryKey: ['environment-jobs', id],
     queryFn: async () => {
@@ -245,7 +275,7 @@ export function EnvironmentDetailPage() {
       return [];
     },
     enabled: !!id,
-    refetchInterval: 5000,
+    refetchInterval: hasActiveJobs ? 5000 : false, // Only poll when jobs are running
   });
 
   const recentJobs = Array.isArray(jobsData) ? jobsData.slice(0, 20) : [];
@@ -271,17 +301,16 @@ export function EnvironmentDetailPage() {
     }));
 
     if (payload.status === 'completed' || payload.status === 'failed') {
-      setTimeout(() => {
-        setActiveJobs((prev) => {
-          const next = { ...prev };
-          delete next[envId];
-          return next;
-        });
-        queryClient.invalidateQueries({ queryKey: ['environment', id] });
-        queryClient.invalidateQueries({ queryKey: ['environment-jobs', id] });
-        queryClient.invalidateQueries({ queryKey: ['workflows', id] });
-        queryClient.invalidateQueries({ queryKey: ['snapshots', id] });
-      }, 10000);
+      setActiveJobs((prev) => {
+        const next = { ...prev };
+        delete next[envId];
+        return next;
+      });
+      // Invalidate immediately - the SSE event confirms the job is done
+      queryClient.invalidateQueries({ queryKey: ['environment', id] });
+      queryClient.invalidateQueries({ queryKey: ['environment-jobs', id] });
+      queryClient.invalidateQueries({ queryKey: ['workflows', id] });
+      queryClient.invalidateQueries({ queryKey: ['snapshots', id] });
     }
   }, [id, queryClient]);
 
@@ -1017,10 +1046,19 @@ export function EnvironmentDetailPage() {
                     >
                       {envStateLabel}
                     </Badge>
-                    {environment.lastDriftDetectedAt && (
-                      <span className="text-xs text-muted-foreground">
-                        Last checked: {formatRelativeTime(environment.lastDriftDetectedAt)}
-                      </span>
+                    {/* DEV: Show last sync time. Non-DEV: Show last drift check time */}
+                    {environment.environmentClass?.toLowerCase() === 'dev' ? (
+                      environment.lastSyncAt && (
+                        <span className="text-xs text-muted-foreground">
+                          Last synced: {formatRelativeTime(environment.lastSyncAt)}
+                        </span>
+                      )
+                    ) : (
+                      environment.lastDriftDetectedAt && (
+                        <span className="text-xs text-muted-foreground">
+                          Last checked: {formatRelativeTime(environment.lastDriftDetectedAt)}
+                        </span>
+                      )
                     )}
                   </div>
                   {!environment.gitRepoUrl && (
@@ -1062,8 +1100,25 @@ export function EnvironmentDetailPage() {
                 </div>
               </div>
 
+              {/* Loading state for drift details */}
+              {driftLoading && isDriftRelevant && (
+                <div className="border-t pt-4 flex items-center justify-center gap-2 text-sm text-muted-foreground">
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                  Loading drift details...
+                </div>
+              )}
+
+              {/* Error state for drift details */}
+              {driftError && isDriftRelevant && !driftLoading && (
+                <div className="border-t pt-4 text-sm text-muted-foreground">
+                  <p className="text-yellow-600 dark:text-yellow-400">
+                    Unable to load drift details. The summary information may require re-authentication.
+                  </p>
+                </div>
+              )}
+
               {/* Drift Summary Stats */}
-              {driftSummary && (
+              {driftSummary && !driftLoading && (
                 <div className="border-t pt-4 space-y-3">
                   <div className="grid grid-cols-4 gap-4 text-center">
                     <div>
@@ -1084,22 +1139,81 @@ export function EnvironmentDetailPage() {
                     </div>
                   </div>
 
-                  {/* Affected Workflows List */}
+                  {/* Drift Details Section */}
                   {driftSummary.affectedWorkflows.length > 0 && (
-                    <div className="space-y-2">
-                      <p className="text-sm font-medium">Affected Workflows:</p>
-                      <div className="max-h-48 overflow-y-auto space-y-1">
-                        {driftSummary.affectedWorkflows.slice(0, 10).map((wf) => (
-                          <div key={wf.id} className="flex items-center justify-between text-sm p-2 bg-muted/50 rounded">
-                            <span className="font-medium">{wf.name}</span>
-                            <Badge variant={wf.hasDrift ? 'secondary' : 'outline'} className="text-xs">
-                              {wf.hasDrift ? 'Modified' : wf.notInGit ? 'Not in Git' : 'Unknown'}
-                            </Badge>
+                    <div className="space-y-3">
+                      <div className="flex items-center gap-2">
+                        <AlertTriangle className="h-4 w-4 text-yellow-600" />
+                        <p className="text-sm font-semibold">Details</p>
+                      </div>
+                      <p className="text-xs text-muted-foreground">
+                        The following workflows have differences between the Git source of truth and the runtime environment:
+                      </p>
+                      <div className="max-h-64 overflow-y-auto space-y-2">
+                        {driftSummary.affectedWorkflows.slice(0, 15).map((wf) => (
+                          <div key={wf.id} className="p-3 bg-muted/50 rounded-lg border">
+                            <div className="flex items-center justify-between mb-2">
+                              <div className="flex items-center gap-2">
+                                <Workflow className="h-4 w-4 text-muted-foreground" />
+                                <span className="font-medium text-sm">{wf.name}</span>
+                                {wf.active && (
+                                  <Badge variant="outline" className="text-xs bg-green-50 text-green-700 border-green-200">
+                                    Active
+                                  </Badge>
+                                )}
+                              </div>
+                              <Badge
+                                variant={wf.hasDrift ? 'secondary' : 'outline'}
+                                className={`text-xs ${wf.notInGit ? 'bg-blue-50 text-blue-700 border-blue-200' : ''}`}
+                              >
+                                {wf.hasDrift ? 'Modified' : wf.notInGit ? 'Not in Git' : 'Unknown'}
+                              </Badge>
+                            </div>
+                            {/* Detailed drift breakdown */}
+                            {wf.hasDrift && wf.summary && (
+                              <div className="flex flex-wrap gap-2 mt-2">
+                                {wf.summary.nodesAdded > 0 && (
+                                  <span className="inline-flex items-center gap-1 text-xs px-2 py-1 rounded bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-300">
+                                    +{wf.summary.nodesAdded} node{wf.summary.nodesAdded !== 1 ? 's' : ''} added
+                                  </span>
+                                )}
+                                {wf.summary.nodesRemoved > 0 && (
+                                  <span className="inline-flex items-center gap-1 text-xs px-2 py-1 rounded bg-red-100 text-red-800 dark:bg-red-900/30 dark:text-red-300">
+                                    -{wf.summary.nodesRemoved} node{wf.summary.nodesRemoved !== 1 ? 's' : ''} removed
+                                  </span>
+                                )}
+                                {wf.summary.nodesModified > 0 && (
+                                  <span className="inline-flex items-center gap-1 text-xs px-2 py-1 rounded bg-yellow-100 text-yellow-800 dark:bg-yellow-900/30 dark:text-yellow-300">
+                                    {wf.summary.nodesModified} node{wf.summary.nodesModified !== 1 ? 's' : ''} modified
+                                  </span>
+                                )}
+                                {wf.summary.connectionsChanged && (
+                                  <span className="inline-flex items-center gap-1 text-xs px-2 py-1 rounded bg-purple-100 text-purple-800 dark:bg-purple-900/30 dark:text-purple-300">
+                                    Connections changed
+                                  </span>
+                                )}
+                                {wf.summary.settingsChanged && (
+                                  <span className="inline-flex items-center gap-1 text-xs px-2 py-1 rounded bg-orange-100 text-orange-800 dark:bg-orange-900/30 dark:text-orange-300">
+                                    Settings changed
+                                  </span>
+                                )}
+                                {wf.differenceCount !== undefined && wf.differenceCount > 0 && (
+                                  <span className="text-xs text-muted-foreground ml-auto">
+                                    {wf.differenceCount} total difference{wf.differenceCount !== 1 ? 's' : ''}
+                                  </span>
+                                )}
+                              </div>
+                            )}
+                            {wf.notInGit && !wf.hasDrift && (
+                              <p className="text-xs text-muted-foreground mt-1">
+                                This workflow exists in the runtime environment but has no corresponding file in Git.
+                              </p>
+                            )}
                           </div>
                         ))}
-                        {driftSummary.affectedWorkflows.length > 10 && (
-                          <p className="text-xs text-muted-foreground text-center">
-                            +{driftSummary.affectedWorkflows.length - 10} more workflows
+                        {driftSummary.affectedWorkflows.length > 15 && (
+                          <p className="text-xs text-muted-foreground text-center py-2">
+                            +{driftSummary.affectedWorkflows.length - 15} more workflows with drift
                           </p>
                         )}
                       </div>
@@ -1334,7 +1448,7 @@ export function EnvironmentDetailPage() {
               <div>
                 <CardTitle>Snapshots</CardTitle>
                 <CardDescription>
-                  Git-backed environment state backups ({snapshots.length} total)
+                  Git-backed environment state backups ({snapshotsData?.data?.total ?? snapshots.length} total)
                 </CardDescription>
               </div>
             </CardHeader>

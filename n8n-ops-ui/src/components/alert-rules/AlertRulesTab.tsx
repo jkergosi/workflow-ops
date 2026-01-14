@@ -54,10 +54,8 @@ import type {
   AlertRule,
   AlertRuleCreate,
   AlertRuleType,
-  AlertRuleTypeCatalogItem,
   NotificationChannel,
   Environment,
-  AlertRuleSummary,
 } from '@/types';
 
 interface AlertRulesTabProps {

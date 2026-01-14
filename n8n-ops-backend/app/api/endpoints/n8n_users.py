@@ -1,9 +1,10 @@
-from fastapi import APIRouter, HTTPException, status, Depends
+from fastapi import APIRouter, HTTPException, status, Depends, Query
 from typing import List, Optional
 from datetime import datetime
 
 from app.services.database import db_service
 from app.services.auth_service import get_current_user
+from app.schemas.pagination import PaginatedResponse
 
 router = APIRouter()
 
@@ -16,7 +17,12 @@ def get_tenant_id(user_info: dict) -> str:
 
 
 @router.get("/")
-async def get_n8n_users(environment_type: Optional[str] = None, user_info: dict = Depends(get_current_user)):
+async def get_n8n_users(
+    environment_type: Optional[str] = None,
+    page: int = Query(1, ge=1, description="Page number"),
+    page_size: int = Query(50, ge=1, le=100, description="Items per page"),
+    user_info: dict = Depends(get_current_user)
+):
     """Get all N8N users, optionally filtered by environment type (dev, staging, production)"""
     try:
         tenant_id = get_tenant_id(user_info)
@@ -26,6 +32,8 @@ async def get_n8n_users(environment_type: Optional[str] = None, user_info: dict 
         ).eq("tenant_id", tenant_id).execute()
         env_lookup = {env["id"]: {"id": env["id"], "name": env["n8n_name"], "type": env["n8n_type"]} for env in envs_response.data}
 
+        # Build base query conditions
+        environment_id = None
         if environment_type:
             # Resolve environment type to environment ID
             env_config = await db_service.get_environment_by_type(tenant_id, environment_type)
@@ -36,15 +44,25 @@ async def get_n8n_users(environment_type: Optional[str] = None, user_info: dict 
                 )
             environment_id = env_config.get("id")
 
-            # Get users for specific environment
-            response = db_service.client.table("n8n_users").select(
-                "*"
-            ).eq("tenant_id", tenant_id).eq("environment_id", environment_id).eq("is_deleted", False).order("email").execute()
-        else:
-            # Get all users across all environments
-            response = db_service.client.table("n8n_users").select(
-                "*"
-            ).eq("tenant_id", tenant_id).eq("is_deleted", False).order("email").execute()
+        # Get total count for pagination
+        count_query = db_service.client.table("n8n_users").select("id", count="exact").eq(
+            "tenant_id", tenant_id
+        ).eq("is_deleted", False)
+        if environment_id:
+            count_query = count_query.eq("environment_id", environment_id)
+        count_result = count_query.execute()
+        total = count_result.count if count_result.count is not None else 0
+
+        # Get paginated data
+        from_index = (page - 1) * page_size
+        to_index = from_index + page_size - 1
+
+        data_query = db_service.client.table("n8n_users").select("*").eq(
+            "tenant_id", tenant_id
+        ).eq("is_deleted", False)
+        if environment_id:
+            data_query = data_query.eq("environment_id", environment_id)
+        response = data_query.order("email").range(from_index, to_index).execute()
 
         # Add environment info to each user
         users = []
@@ -52,7 +70,17 @@ async def get_n8n_users(environment_type: Optional[str] = None, user_info: dict 
             user["environment"] = env_lookup.get(user.get("environment_id"))
             users.append(user)
 
-        return users
+        total_pages = (total + page_size - 1) // page_size if total > 0 else 1
+        has_more = page < total_pages
+
+        return {
+            "items": users,
+            "total": total,
+            "page": page,
+            "page_size": page_size,
+            "total_pages": total_pages,
+            "hasMore": has_more,
+        }
 
     except HTTPException:
         raise

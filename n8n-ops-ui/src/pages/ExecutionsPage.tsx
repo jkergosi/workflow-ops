@@ -48,7 +48,7 @@ export function ExecutionsPage() {
   const [sortField, setSortField] = useState<SortField>('startedAt');
   const [sortDirection, setSortDirection] = useState<SortDirection>('desc');
   const [currentPage, setCurrentPage] = useState(1);
-  const [pageSize, setPageSize] = useState(50);
+  const [pageSize, setPageSize] = useState(25);
   const [isSyncing, setIsSyncing] = useState(false);
 
   // Update URL when workflow filter changes
