@@ -36,7 +36,7 @@ import {
 import { Label } from '@/components/ui/label';
 import { apiClient } from '@/lib/api-client';
 import { useBackgroundJobsSSE } from '@/lib/use-background-jobs-sse';
-import { Activity, Loader2, CheckCircle2, XCircle, Clock, RefreshCw, Server, AlertTriangle, Ban } from 'lucide-react';
+import { Activity, Loader2, CheckCircle2, XCircle, Clock, RefreshCw, Server, AlertTriangle, Ban, GitBranch } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
 
 // Helper function to format relative time
@@ -80,15 +80,47 @@ export function ActivityCenterPage() {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const { toast } = useToast();
-  const [searchParams] = useSearchParams();
+  const [searchParams, setSearchParams] = useSearchParams();
   const [jobTypeFilter, setJobTypeFilter] = useState<string>('all');
   const [statusFilter, setStatusFilter] = useState<string>('all');
   const [jobToCancel, setJobToCancel] = useState<Job | null>(null);
   const selectedJobIdRef = useRef<string | null>(null);
 
+  // Environment filter state
+  const [selectedEnvironmentId, setSelectedEnvironmentId] = useState<string>('');
+
   // Pagination state
   const [currentPage, setCurrentPage] = useState(1);
   const [pageSize, setPageSize] = useState(25);
+
+  // Fetch environments to get names (must be before useEffect that uses it)
+  const { data: environmentsData } = useQuery({
+    queryKey: ['environments'],
+    queryFn: () => apiClient.getEnvironments(),
+  });
+
+  const environments = environmentsData?.data || [];
+
+  // Read env_id URL parameter on mount and set selected environment
+  useEffect(() => {
+    const envIdParam = searchParams.get('env_id');
+    if (envIdParam && envIdParam !== selectedEnvironmentId) {
+      // Validate that env_id exists in available environments
+      const envExists = environments?.some(env => env.id === envIdParam);
+      if (envExists) {
+        setSelectedEnvironmentId(envIdParam);
+        // Reset to page 1 when environment filter changes
+        setCurrentPage(1);
+      } else {
+        // Invalid env_id: remove from URL and fall back to "All Environments"
+        const newSearchParams = new URLSearchParams(searchParams);
+        newSearchParams.delete('env_id');
+        setSearchParams(newSearchParams, { replace: true });
+        setSelectedEnvironmentId('');
+        setCurrentPage(1);
+      }
+    }
+  }, [searchParams, environments]);
 
   // Get job_id from URL query param for pre-selection
   const jobIdFromUrl = searchParams.get('jobId') || searchParams.get('job_id');
@@ -126,21 +158,13 @@ export function ActivityCenterPage() {
   // Subscribe to real-time updates
   useBackgroundJobsSSE({ enabled: true });
 
-  // Fetch environments to get names
-  const { data: environmentsData } = useQuery({
-    queryKey: ['environments'],
-    queryFn: () => apiClient.getEnvironments(),
-  });
-
-  const environments = environmentsData?.data || [];
-
   const getEnvironmentName = (envId: string) => {
     return environments.find((e) => e.id === envId)?.name || envId;
   };
 
   // Fetch all background jobs with server-side pagination
   const { data: jobsResponse, isLoading, isFetching, refetch, error } = useQuery({
-    queryKey: ['all-background-jobs', jobTypeFilter, statusFilter, currentPage, pageSize],
+    queryKey: ['all-background-jobs', jobTypeFilter, statusFilter, selectedEnvironmentId, currentPage, pageSize],
     queryFn: async () => {
       const params: {
         page?: number;
@@ -160,6 +184,9 @@ export function ActivityCenterPage() {
         params.status = statusFilter;
       }
 
+      // Note: Environment filtering will be added to the backend API in a future task (T025-T027)
+      // For now, we include it in the queryKey so the query refetches when the filter changes
+
       const response = await apiClient.getAllBackgroundJobs(params);
       return response.data;
     },
@@ -173,6 +200,7 @@ export function ActivityCenterPage() {
   const totalPages = (jobsResponse as { totalPages?: number })?.totalPages || 1;
 
   // Reset to page 1 when filters change
+  // Note: selectedEnvironmentId resets are handled explicitly in onChange and URL sync useEffect
   useEffect(() => {
     setCurrentPage(1);
   }, [jobTypeFilter, statusFilter]);
@@ -242,7 +270,7 @@ export function ActivityCenterPage() {
   const getJobTypeLabel = (jobType: string) => {
     switch (jobType) {
       case 'environment_sync':
-        return 'Environment Sync';
+        return 'Environment Refresh';
       case 'github_sync_to':
         return 'GitHub Backup';
       case 'github_sync_from':
@@ -254,12 +282,21 @@ export function ActivityCenterPage() {
       case 'snapshot_restore':
         return 'Snapshot Restore';
       case 'canonical_env_sync':
-        return 'Canonical Sync';
+        return 'Refresh';
       case 'dev_git_sync':
-        return 'DEV Git Sync';
+        return 'Refresh';
       default:
         return jobType;
     }
+  };
+
+  const hasGitSideEffect = (job: Job): boolean => {
+    // Check if this is a dev_git_sync job with Git persisted workflows
+    if (job.job_type === 'dev_git_sync' && job.status === 'completed' && job.result) {
+      const result = job.result as { workflows_persisted?: number };
+      return (result.workflows_persisted ?? 0) > 0;
+    }
+    return false;
   };
 
   const getPhaseLabelForJob = (currentStep?: string): string => {
@@ -269,7 +306,7 @@ export function ActivityCenterPage() {
       'discovering_workflows': 'Discovering workflows',
       'updating_environment_state': 'Updating environment state',
       'reconciling_drift': 'Reconciling drift',
-      'finalizing_sync': 'Finalizing sync',
+      'finalizing_sync': 'Finalizing refresh',
       'persisting_to_git': 'Persisting to Git',
       'completed': 'Completed',
       'failed': 'Failed',
@@ -331,7 +368,7 @@ export function ActivityCenterPage() {
             Activity Center
           </h1>
           <p className="text-muted-foreground">
-            View all background jobs, syncs, backups, and deployments
+            View all background jobs, refreshes, backups, and deployments
           </p>
         </div>
         <Button onClick={() => refetch()} variant="outline" size="sm">
@@ -339,6 +376,48 @@ export function ActivityCenterPage() {
           Refresh
         </Button>
       </div>
+
+      {/* Environment Filter */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base">Filter by Environment</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <div className="flex items-center gap-4">
+            <div className="space-y-2 flex-1">
+              <Label htmlFor="environment">Environment</Label>
+              <select
+                id="environment"
+                value={selectedEnvironmentId}
+                onChange={(e) => {
+                  const newEnvId = e.target.value;
+                  setSelectedEnvironmentId(newEnvId);
+
+                  // Reset to page 1 when environment filter changes
+                  setCurrentPage(1);
+
+                  // Sync selection to URL env_id param
+                  const newSearchParams = new URLSearchParams(searchParams);
+                  if (newEnvId) {
+                    newSearchParams.set('env_id', newEnvId);
+                  } else {
+                    newSearchParams.delete('env_id');
+                  }
+                  setSearchParams(newSearchParams, { replace: true });
+                }}
+                className="flex h-9 w-full rounded-md border border-input bg-background text-foreground px-3 py-1 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+              >
+                <option value="" className="bg-background text-foreground">All Environments</option>
+                {environments?.map((env) => (
+                  <option key={env.id} value={env.id} className="bg-background text-foreground">
+                    {env.name}
+                  </option>
+                ))}
+              </select>
+            </div>
+          </div>
+        </CardContent>
+      </Card>
 
       <Card>
         <CardHeader>
@@ -356,7 +435,7 @@ export function ActivityCenterPage() {
                 </SelectTrigger>
                 <SelectContent>
                   <SelectItem value="all">All Types</SelectItem>
-                  <SelectItem value="environment_sync">Sync</SelectItem>
+                  <SelectItem value="environment_sync">Refresh</SelectItem>
                   <SelectItem value="github_sync_to">Backup</SelectItem>
                   <SelectItem value="github_sync_from">Restore</SelectItem>
                   <SelectItem value="promotion_execute">Deployment</SelectItem>
@@ -391,7 +470,7 @@ export function ActivityCenterPage() {
             <div className="text-center py-8 text-muted-foreground">
               <p>No background jobs found.</p>
               <p className="text-sm mt-2">
-                Background jobs will appear here when you run sync, backup, or restore operations.
+                Background jobs will appear here when you run refresh, backup, or restore operations.
               </p>
             </div>
           ) : (
@@ -419,7 +498,15 @@ export function ActivityCenterPage() {
                       className={`${job.id === jobIdFromUrl ? 'bg-blue-50 dark:bg-blue-950/30' : ''}`}
                     >
                       <TableCell className="font-medium">
-                        {getJobTypeLabel(job.job_type)}
+                        <div className="flex items-center gap-2">
+                          <span>{getJobTypeLabel(job.job_type)}</span>
+                          {hasGitSideEffect(job) && (
+                            <Badge variant="outline" className="flex items-center gap-1 text-xs">
+                              <GitBranch className="h-3 w-3" />
+                              Git updated
+                            </Badge>
+                          )}
+                        </div>
                       </TableCell>
                       <TableCell>
                         {job.resource_type === 'environment' && job.resource_id ? (
