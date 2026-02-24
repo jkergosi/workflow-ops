@@ -17,7 +17,15 @@ from app.schemas.canonical_workflow import (
     MigrationPRRequest,
     MigrationPRResponse,
     OnboardingCompleteCheck,
-    WorkflowMappingStatus
+    WorkflowMappingStatus,
+    UnmappedWorkflowsResponse,
+    EnvironmentUnmappedWorkflows,
+    UnmappedWorkflowItem,
+    ScanEnvironmentsResponse,
+    ScanEnvironmentResult,
+    OnboardWorkflowsRequest,
+    OnboardWorkflowsResponse,
+    OnboardWorkflowResult
 )
 from app.schemas.pagination import PaginatedResponse, DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE
 from app.services.canonical_workflow_service import CanonicalWorkflowService
@@ -1922,19 +1930,262 @@ async def resolve_link_suggestion(
     """Resolve a workflow link suggestion"""
     tenant_id = get_tenant_id(user_info)
     user_id = user_info.get("user_id")
-    
+
     result = await db_service.update_workflow_link_suggestion(
         suggestion_id=suggestion_id,
         tenant_id=tenant_id,
         status=status,
         resolved_by_user_id=user_id
     )
-    
+
     if not result:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Link suggestion not found"
         )
-    
+
     return result
+
+
+# Unmapped Workflows Endpoints
+
+@router.get("/unmapped", response_model=UnmappedWorkflowsResponse)
+async def get_unmapped_workflows(
+    user_info: dict = Depends(get_current_user),
+    _: dict = Depends(require_entitlement("workflow_read"))
+):
+    """
+    Get all unmapped workflows across all environments.
+
+    Unmapped workflows are those that exist in n8n but are not yet linked
+    to a canonical workflow record. They have status='unmapped' or
+    canonical_id is NULL in the workflow_env_map table.
+
+    Returns cached data from the database. To refresh, call POST /unmapped/scan first.
+    """
+    tenant_id = get_tenant_id(user_info)
+
+    # Get all environments for the tenant
+    environments = await db_service.get_environments(tenant_id)
+
+    result_environments = []
+    total_unmapped = 0
+
+    for env in environments:
+        env_id = env.get("id")
+        env_name = env.get("name", "Unknown")
+        env_class = env.get("environment_class", "unknown")
+
+        # Get unmapped workflows for this environment
+        # Unmapped means: status = 'unmapped' OR (canonical_id is NULL and n8n_workflow_id is not NULL)
+        mappings = await db_service.get_workflow_mappings(
+            tenant_id=tenant_id,
+            environment_id=env_id,
+            status="unmapped"
+        )
+
+        # Also get workflows with NULL canonical_id (might not have status set)
+        all_mappings = await db_service.get_workflow_mappings(
+            tenant_id=tenant_id,
+            environment_id=env_id
+        )
+
+        # Filter to find unmapped: canonical_id is NULL and n8n_workflow_id is not NULL
+        null_canonical_mappings = [
+            m for m in all_mappings
+            if m.get("canonical_id") is None
+            and m.get("n8n_workflow_id") is not None
+            and m.get("status") not in ["deleted", "ignored", "missing"]
+        ]
+
+        # Combine and deduplicate by n8n_workflow_id
+        seen_ids = set()
+        unmapped_workflows = []
+
+        for mapping in mappings + null_canonical_mappings:
+            n8n_id = mapping.get("n8n_workflow_id")
+            if n8n_id and n8n_id not in seen_ids:
+                seen_ids.add(n8n_id)
+                workflow_data = mapping.get("workflow_data") or {}
+                unmapped_workflows.append(UnmappedWorkflowItem(
+                    n8n_workflow_id=n8n_id,
+                    name=workflow_data.get("name", "Unknown"),
+                    active=workflow_data.get("active", False),
+                    created_at=workflow_data.get("createdAt"),
+                    updated_at=workflow_data.get("updatedAt")
+                ))
+
+        if unmapped_workflows:
+            result_environments.append(EnvironmentUnmappedWorkflows(
+                environment_id=env_id,
+                environment_name=env_name,
+                environment_class=env_class,
+                unmapped_workflows=unmapped_workflows
+            ))
+            total_unmapped += len(unmapped_workflows)
+
+    return UnmappedWorkflowsResponse(
+        environments=result_environments,
+        total_unmapped=total_unmapped
+    )
+
+
+@router.post("/unmapped/scan", response_model=ScanEnvironmentsResponse)
+async def scan_environments_for_unmapped(
+    user_info: dict = Depends(get_current_user),
+    _: dict = Depends(require_entitlement("workflow_read"))
+):
+    """
+    Scan all active environments for unmapped workflows.
+
+    This performs a live sync from each n8n instance to update the database,
+    then returns the count of unmapped workflows found.
+
+    Note: This is a potentially long-running operation that syncs all environments.
+    """
+    tenant_id = get_tenant_id(user_info)
+
+    # Get all active environments
+    environments = await db_service.get_environments(tenant_id)
+
+    results = []
+    total_scanned = 0
+    total_failed = 0
+    total_workflows_found = 0
+    total_unmapped = 0
+
+    for env in environments:
+        env_id = env.get("id")
+        env_name = env.get("name", "Unknown")
+
+        try:
+            # Initialize sync service for this environment
+            env_sync_service = CanonicalEnvSyncService(tenant_id, env_id)
+
+            # Perform environment sync
+            sync_result = await env_sync_service.sync_environment_to_canonical()
+
+            workflows_found = sync_result.get("workflows_synced", 0) + sync_result.get("workflows_skipped", 0)
+            unmapped_count = sync_result.get("workflows_unmapped", 0)
+
+            results.append(ScanEnvironmentResult(
+                environment_id=env_id,
+                environment_name=env_name,
+                status="success",
+                workflows_found=workflows_found,
+                unmapped_count=unmapped_count
+            ))
+
+            total_scanned += 1
+            total_workflows_found += workflows_found
+            total_unmapped += unmapped_count
+
+        except Exception as e:
+            logger.error(f"Failed to scan environment {env_name}: {e}")
+            results.append(ScanEnvironmentResult(
+                environment_id=env_id,
+                environment_name=env_name,
+                status="failed",
+                error=str(e)
+            ))
+            total_failed += 1
+
+    return ScanEnvironmentsResponse(
+        environments_scanned=total_scanned,
+        environments_failed=total_failed,
+        total_workflows_found=total_workflows_found,
+        total_unmapped=total_unmapped,
+        results=results
+    )
+
+
+@router.post("/unmapped/onboard", response_model=OnboardWorkflowsResponse)
+async def onboard_unmapped_workflows(
+    request: OnboardWorkflowsRequest,
+    user_info: dict = Depends(get_current_user),
+    _: dict = Depends(require_entitlement("workflow_push"))
+):
+    """
+    Onboard selected unmapped workflows into the canonical system.
+
+    For each workflow:
+    1. Creates a new canonical workflow record
+    2. Links the n8n workflow to the canonical record
+    3. Sets status to 'linked'
+
+    Workflows that are already linked will be skipped.
+    """
+    tenant_id = get_tenant_id(user_info)
+    user_id = user_info.get("user_id")
+
+    results = []
+    total_onboarded = 0
+    total_skipped = 0
+    total_failed = 0
+
+    for item in request.workflows:
+        env_id = item.environment_id
+        n8n_workflow_id = item.n8n_workflow_id
+
+        try:
+            # Check if workflow is already linked
+            existing_mappings = await db_service.get_workflow_mappings(
+                tenant_id=tenant_id,
+                environment_id=env_id
+            )
+
+            existing = next(
+                (m for m in existing_mappings if m.get("n8n_workflow_id") == n8n_workflow_id),
+                None
+            )
+
+            if existing and existing.get("canonical_id"):
+                # Already linked
+                results.append(OnboardWorkflowResult(
+                    environment_id=env_id,
+                    n8n_workflow_id=n8n_workflow_id,
+                    status="skipped",
+                    canonical_id=existing.get("canonical_id")
+                ))
+                total_skipped += 1
+                continue
+
+            # Get workflow data from the mapping
+            workflow_data = existing.get("workflow_data") if existing else None
+            display_name = workflow_data.get("name") if workflow_data else None
+
+            # Create canonical workflow and link
+            canonical = await db_service.create_canonical_workflow_with_mapping(
+                tenant_id=tenant_id,
+                environment_id=env_id,
+                n8n_workflow_id=n8n_workflow_id,
+                display_name=display_name,
+                created_by_user_id=user_id,
+                workflow_data=workflow_data
+            )
+
+            results.append(OnboardWorkflowResult(
+                environment_id=env_id,
+                n8n_workflow_id=n8n_workflow_id,
+                status="onboarded",
+                canonical_id=canonical.get("canonical_id")
+            ))
+            total_onboarded += 1
+
+        except Exception as e:
+            logger.error(f"Failed to onboard workflow {n8n_workflow_id}: {e}")
+            results.append(OnboardWorkflowResult(
+                environment_id=env_id,
+                n8n_workflow_id=n8n_workflow_id,
+                status="failed",
+                error=str(e)
+            ))
+            total_failed += 1
+
+    return OnboardWorkflowsResponse(
+        total_onboarded=total_onboarded,
+        total_skipped=total_skipped,
+        total_failed=total_failed,
+        results=results
+    )
 

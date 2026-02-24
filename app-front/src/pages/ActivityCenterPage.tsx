@@ -171,6 +171,8 @@ export function ActivityCenterPage() {
         pageSize?: number;
         jobType?: string;
         status?: string;
+        resourceType?: string;
+        resourceId?: string;
       } = {
         page: currentPage,
         pageSize: pageSize,
@@ -184,8 +186,11 @@ export function ActivityCenterPage() {
         params.status = statusFilter;
       }
 
-      // Note: Environment filtering will be added to the backend API in a future task (T025-T027)
-      // For now, we include it in the queryKey so the query refetches when the filter changes
+      // Filter by environment using resource_type and resource_id
+      if (selectedEnvironmentId) {
+        params.resourceType = 'environment';
+        params.resourceId = selectedEnvironmentId;
+      }
 
       const response = await apiClient.getAllBackgroundJobs(params);
       return response.data;

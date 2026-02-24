@@ -958,10 +958,6 @@ export function EnvironmentDetailPage() {
               <p className="text-sm">{environment.provider || 'n8n'}</p>
             </div>
             <div className="space-y-1">
-              <p className="text-sm font-medium text-muted-foreground">Source of Truth</p>
-              <p className="text-sm">{environment.gitRepoUrl ? 'Git' : 'Manual'}</p>
-            </div>
-            <div className="space-y-1">
               <p className="text-sm font-medium text-muted-foreground">Workflows</p>
               <p className="text-sm font-semibold">{environment.workflowCount || 0}</p>
             </div>
@@ -1463,203 +1459,6 @@ export function EnvironmentDetailPage() {
           </div>
       </div>
 
-      {/* Snapshots Section */}
-      <div className="space-y-4">
-          <Card>
-            <CardHeader>
-              <div>
-                <CardTitle>Snapshots</CardTitle>
-                <CardDescription>
-                  Git-backed environment state backups ({snapshotsData?.data?.total ?? snapshots.length} total)
-                </CardDescription>
-              </div>
-            </CardHeader>
-            <CardContent>
-              {snapshotsLoading ? (
-                <div className="flex items-center justify-center py-8">
-                  <Loader2 className="h-6 w-6 animate-spin" />
-                </div>
-              ) : snapshots.length === 0 ? (
-                <p className="text-sm text-muted-foreground text-center py-8">
-                  No snapshots found. Create a snapshot to generate a Git-backed backup.
-                </p>
-              ) : (
-                <Table>
-                  <TableHeader>
-                    <TableRow>
-                      <TableHead>Created</TableHead>
-                      <TableHead>Type</TableHead>
-                      <TableHead>Commit SHA</TableHead>
-                      <TableHead>Notes</TableHead>
-                      <TableHead>Actions</TableHead>
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {snapshots.map((snapshot: Snapshot) => (
-                      <TableRow key={snapshot.id}>
-                        <TableCell className="text-sm">
-                          {formatDateTime(snapshot.createdAt)}
-                        </TableCell>
-                        <TableCell>
-                          <Badge variant="outline">
-                            {getSnapshotTypeLabel(snapshot.type)}
-                          </Badge>
-                        </TableCell>
-                        <TableCell className="font-mono text-xs">
-                          {snapshot.gitCommitSha?.substring(0, 8) || 'N/A'}
-                        </TableCell>
-                        <TableCell className="text-sm text-muted-foreground max-w-xs truncate">
-                          {snapshot.metadataJson?.reason || snapshot.metadataJson?.notes || '-'}
-                        </TableCell>
-                        <TableCell>
-                          {canUseDriftIncidents ? (
-                            <Button
-                              variant="outline"
-                              size="sm"
-                              onClick={() => navigate(`/incidents?environment_id=${id}&snapshot_id=${snapshot.id}`)}
-                            >
-                              Use in Incident
-                            </Button>
-                          ) : (
-                            <span className="text-xs text-muted-foreground">—</span>
-                          )}
-                        </TableCell>
-                      </TableRow>
-                    ))}
-                  </TableBody>
-                </Table>
-              )}
-            </CardContent>
-          </Card>
-      </div>
-
-      {/* Activity Section */}
-      <div className="space-y-4">
-          <Card>
-            <CardHeader>
-              <div className="flex items-start justify-between gap-3">
-                <div>
-                  <CardTitle>Activity</CardTitle>
-                  <CardDescription>
-                    Audit log of operations for this environment
-                  </CardDescription>
-                </div>
-                <Link to="/activity" className="text-sm text-primary hover:underline whitespace-nowrap">
-                  Activity Center →
-                </Link>
-              </div>
-            </CardHeader>
-            <CardContent>
-              {recentJobs.length === 0 ? (
-                <p className="text-sm text-muted-foreground text-center py-8">
-                  No activity found.
-                </p>
-              ) : (
-                <Table>
-                  <TableHeader>
-                    <TableRow>
-                      <TableHead>Type</TableHead>
-                      <TableHead>Status</TableHead>
-                      <TableHead>Progress</TableHead>
-                      <TableHead>Started</TableHead>
-                      <TableHead>Actions</TableHead>
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {recentJobs.map((job: any) => (
-                      <TableRow key={job.id}>
-                        <TableCell className="font-medium">
-                          {getJobTypeLabel(job.job_type)}
-                        </TableCell>
-                        <TableCell>
-                          <Badge variant={getStatusVariant(job.status)} className="flex items-center gap-1 w-fit">
-                            {getStatusIcon(job.status)}
-                            {job.status}
-                          </Badge>
-                        </TableCell>
-                        <TableCell>
-                          {job.progress ? (
-                            <div className="text-sm">
-                              {job.progress.current} / {job.progress.total} ({job.progress.percentage}%)
-                            </div>
-                          ) : (
-                            '-'
-                          )}
-                        </TableCell>
-                        <TableCell className="text-sm text-muted-foreground">
-                          {formatRelativeTime(job.created_at)}
-                        </TableCell>
-                        <TableCell>
-                          <Link
-                            to={`/activity/${job.id}`}
-                            className="text-sm text-primary hover:underline"
-                          >
-                            View
-                          </Link>
-                        </TableCell>
-                      </TableRow>
-                    ))}
-                  </TableBody>
-                </Table>
-              )}
-            </CardContent>
-          </Card>
-      </div>
-
-      {/* Credentials Section */}
-      <div className="space-y-4">
-          <Card>
-            <CardHeader>
-              <CardTitle>Credentials</CardTitle>
-              <CardDescription>
-                Credential health summary ({credentials.length} total)
-              </CardDescription>
-            </CardHeader>
-            <CardContent>
-              {credentialsLoading ? (
-                <div className="flex items-center justify-center py-8">
-                  <Loader2 className="h-6 w-6 animate-spin" />
-                </div>
-              ) : credentials.length === 0 ? (
-                <p className="text-sm text-muted-foreground text-center py-8">
-                  No credentials cached. Run a deployment via Deployments to sync metadata, or check your plan/permissions.
-                </p>
-              ) : (
-                <Table>
-                  <TableHeader>
-                    <TableRow>
-                      <TableHead>Name</TableHead>
-                      <TableHead>Type</TableHead>
-                      <TableHead>Created</TableHead>
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {credentials.map((credential: Credential) => (
-                      <TableRow key={credential.id}>
-                        <TableCell className="font-medium">{credential.name}</TableCell>
-                        <TableCell>
-                          <Badge variant="outline">{credential.type}</Badge>
-                        </TableCell>
-                        <TableCell className="text-sm text-muted-foreground">
-                          {formatRelativeTime(credential.created_at)}
-                        </TableCell>
-                      </TableRow>
-                    ))}
-                  </TableBody>
-                </Table>
-              )}
-              <div className="mt-4">
-                <Link to={`/credentials?environment=${id}`}>
-                  <Button variant="outline" size="sm" className="w-full">
-                    <Key className="h-4 w-4 mr-2" />
-                    Manage Credentials
-                  </Button>
-                </Link>
-              </div>
-            </CardContent>
-          </Card>
-      </div>
-
       {/* Related Views Section */}
       <Card>
         <CardHeader>
@@ -1930,24 +1729,6 @@ export function EnvironmentDetailPage() {
               )}
 
               <div className="border-t pt-4">
-                <h3 className="text-sm font-semibold mb-4">Feature Flags</h3>
-                <div className="flex flex-wrap gap-3">
-                  <div className="flex items-center gap-2">
-                    <Badge variant={environment.isActive ? 'default' : 'outline'}>
-                      {environment.isActive ? 'Active' : 'Inactive'}
-                    </Badge>
-                    <span className="text-sm text-muted-foreground">Environment Status</span>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <Badge variant={environment.allowUpload ? 'default' : 'outline'}>
-                      {environment.allowUpload ? 'Enabled' : 'Disabled'}
-                    </Badge>
-                    <span className="text-sm text-muted-foreground">Workflow Upload</span>
-                  </div>
-                </div>
-              </div>
-
-              <div className="border-t pt-4">
                 <h3 className="text-sm font-semibold mb-4">Timestamps</h3>
                 <div className="grid grid-cols-2 gap-4 text-sm">
                   <div>
@@ -2044,27 +1825,6 @@ export function EnvironmentDetailPage() {
               </Select>
               <p className="text-xs text-muted-foreground">
                 Optional metadata for categorization and display. Not used for business logic.
-              </p>
-            </div>
-
-            {/* Feature Flags */}
-            <div className="space-y-3 p-4 border rounded-lg bg-muted/50">
-              <div className="flex items-center space-x-2">
-                <input
-                  type="checkbox"
-                  id="allowUpload"
-                  checked={formData.allowUpload}
-                  onChange={(e) =>
-                    setFormData({ ...formData, allowUpload: e.target.checked })
-                  }
-                  className="h-4 w-4 rounded border-gray-300"
-                />
-                <Label htmlFor="allowUpload" className="cursor-pointer">
-                  Allow Workflow Upload
-                </Label>
-              </div>
-              <p className="text-xs text-muted-foreground ml-6">
-                When enabled, workflows can be uploaded/backed up to GitHub from this environment.
               </p>
             </div>
 

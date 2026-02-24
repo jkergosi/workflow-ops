@@ -353,3 +353,75 @@ class OnboardingInventoryResults(BaseModel):
         description="Per-environment operation summaries"
     )
 
+
+# Unmapped Workflows Models
+
+class UnmappedWorkflowItem(BaseModel):
+    """A single unmapped workflow from an n8n environment"""
+    n8n_workflow_id: str
+    name: str
+    active: bool
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
+
+
+class EnvironmentUnmappedWorkflows(BaseModel):
+    """Unmapped workflows grouped by environment"""
+    environment_id: str
+    environment_name: str
+    environment_class: str
+    unmapped_workflows: List[UnmappedWorkflowItem] = Field(default_factory=list)
+
+
+class UnmappedWorkflowsResponse(BaseModel):
+    """Response for GET /api/v1/canonical/unmapped"""
+    environments: List[EnvironmentUnmappedWorkflows] = Field(default_factory=list)
+    total_unmapped: int = 0
+
+
+class ScanEnvironmentResult(BaseModel):
+    """Per-environment scan result"""
+    environment_id: str
+    environment_name: str
+    status: str = Field(..., description="'success' or 'failed'")
+    workflows_found: int = 0
+    unmapped_count: int = 0
+    error: Optional[str] = None
+
+
+class ScanEnvironmentsResponse(BaseModel):
+    """Response for POST /api/v1/canonical/unmapped/scan"""
+    environments_scanned: int = 0
+    environments_failed: int = 0
+    total_workflows_found: int = 0
+    total_unmapped: int = 0
+    results: List[ScanEnvironmentResult] = Field(default_factory=list)
+
+
+class OnboardWorkflowItem(BaseModel):
+    """A single workflow to onboard"""
+    environment_id: str
+    n8n_workflow_id: str
+
+
+class OnboardWorkflowsRequest(BaseModel):
+    """Request for POST /api/v1/canonical/unmapped/onboard"""
+    workflows: List[OnboardWorkflowItem]
+
+
+class OnboardWorkflowResult(BaseModel):
+    """Per-workflow onboard result"""
+    environment_id: str
+    n8n_workflow_id: str
+    status: str = Field(..., description="'onboarded', 'skipped', or 'failed'")
+    canonical_id: Optional[str] = None
+    error: Optional[str] = None
+
+
+class OnboardWorkflowsResponse(BaseModel):
+    """Response for POST /api/v1/canonical/unmapped/onboard"""
+    total_onboarded: int = 0
+    total_skipped: int = 0
+    total_failed: int = 0
+    results: List[OnboardWorkflowResult] = Field(default_factory=list)
+
